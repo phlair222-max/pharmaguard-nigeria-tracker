@@ -1,0 +1,212 @@
+import { useMemo, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useStore } from "@/lib/store";
+import { NGN, expiryStatus, daysUntil } from "@/lib/format";
+import { format, startOfDay } from "date-fns";
+import { FileDown, FileText } from "lucide-react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
+
+export default function Reports() {
+  const sales = useStore((s) => s.sales);
+  const products = useStore((s) => s.products);
+  const [from, setFrom] = useState(format(new Date(Date.now() - 6 * 86400000), "yyyy-MM-dd"));
+  const [to, setTo] = useState(format(new Date(), "yyyy-MM-dd"));
+
+  const inRange = useMemo(() => {
+    const f = startOfDay(new Date(from)).getTime();
+    const t = startOfDay(new Date(to)).getTime() + 86400000;
+    return sales.filter((s) => { const x = new Date(s.createdAt).getTime(); return x >= f && x < t; });
+  }, [sales, from, to]);
+
+  const totals = inRange.reduce((a, s) => ({ rev: a.rev + s.total, profit: a.profit + s.profit, count: a.count + 1 }), { rev: 0, profit: 0, count: 0 });
+
+  const expiryRows = products.map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
+    .sort((a, b) => a.days - b.days);
+
+  const exportPDF = (title: string, head: string[], body: any[][]) => {
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text("PharmaGuard NG", 14, 14);
+    doc.setFontSize(10); doc.text(title, 14, 21);
+    doc.text(`Generated ${format(new Date(), "dd MMM yyyy HH:mm")}`, 14, 27);
+    autoTable(doc, { head: [head], body, startY: 32, styles: { fontSize: 9 }, headStyles: { fillColor: [22, 160, 110] } });
+    doc.save(`${title.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.pdf`);
+  };
+  const exportXLSX = (name: string, rows: any[]) => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, name);
+    XLSX.writeFile(wb, `${name.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Reports & Compliance</h1>
+        <p className="text-sm text-muted-foreground">Generate sales, stock and expiry reports</p>
+      </div>
+
+      <Card className="shadow-card">
+        <CardContent className="flex flex-wrap items-end gap-3 p-4">
+          <div><Label className="text-xs">From</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+          <div><Label className="text-xs">To</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+          <div className="ml-auto grid grid-cols-3 gap-3 text-sm">
+            <Stat label="Revenue" v={NGN(totals.rev)} />
+            <Stat label="Profit" v={NGN(totals.profit)} />
+            <Stat label="Transactions" v={String(totals.count)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="sales">
+        <TabsList>
+          <TabsTrigger value="sales">Sales</TabsTrigger>
+          <TabsTrigger value="stock">Stock</TabsTrigger>
+          <TabsTrigger value="expiry">Expiry</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="sales">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Sales report</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Sales", inRange.map((s) => ({
+                  Date: format(new Date(s.createdAt), "yyyy-MM-dd HH:mm"), Receipt: s.id.slice(0,8).toUpperCase(),
+                  Items: s.items.length, Total: s.total, Profit: s.profit, Payment: s.payment, Cashier: s.cashier,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Sales Report",
+                  ["Date","Receipt","Items","Total","Profit","Payment"],
+                  inRange.map((s) => [format(new Date(s.createdAt), "dd MMM HH:mm"), s.id.slice(0,8).toUpperCase(), s.items.length, s.total.toFixed(2), s.profit.toFixed(2), s.payment])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Date</TableHead><TableHead>Receipt</TableHead><TableHead>Items</TableHead>
+                    <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Profit</TableHead>
+                    <TableHead>Payment</TableHead><TableHead>Cashier</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {inRange.length === 0 && <TableRow><TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">No sales in range</TableCell></TableRow>}
+                    {inRange.map((s) => (
+                      <TableRow key={s.id}>
+                        <TableCell className="text-xs">{format(new Date(s.createdAt), "dd MMM yyyy HH:mm")}</TableCell>
+                        <TableCell className="text-xs font-mono">{s.id.slice(0,8).toUpperCase()}</TableCell>
+                        <TableCell>{s.items.length}</TableCell>
+                        <TableCell className="text-right font-medium">{NGN(s.total)}</TableCell>
+                        <TableCell className="text-right text-success">{NGN(s.profit)}</TableCell>
+                        <TableCell><Badge variant="outline">{s.payment}</Badge></TableCell>
+                        <TableCell className="text-xs">{s.cashier}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="stock">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Stock report</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Stock", products.map((p) => ({
+                  Name: p.name, Generic: p.generic, NAFDAC: p.nafdac, Batch: p.batch, Expiry: p.expiry,
+                  Quantity: p.quantity, Cost: p.costPrice, Price: p.sellingPrice, Value: p.quantity * p.costPrice, Supplier: p.supplier,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Stock Report",
+                  ["Name","NAFDAC","Batch","Expiry","Qty","Cost","Price"],
+                  products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, p.costPrice, p.sellingPrice])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Name</TableHead><TableHead>NAFDAC</TableHead><TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Value</TableHead><TableHead>Supplier</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {products.map((p) => (
+                      <TableRow key={p.id}>
+                        <TableCell><div className="font-medium">{p.name}</div><div className="text-xs text-muted-foreground">{p.generic}</div></TableCell>
+                        <TableCell className="text-xs">{p.nafdac}</TableCell>
+                        <TableCell className="text-right">{p.quantity}</TableCell>
+                        <TableCell className="text-right">{NGN(p.quantity * p.costPrice)}</TableCell>
+                        <TableCell className="text-xs">{p.supplier}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="expiry">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Expiry report</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Expiry", expiryRows.map((p) => ({
+                  Name: p.name, Batch: p.batch, Expiry: p.expiry, DaysLeft: p.days, Status: p.status, Quantity: p.quantity,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Expiry Report",
+                  ["Name","Batch","Expiry","Days","Status","Qty"],
+                  expiryRows.map((p) => [p.name, p.batch, p.expiry, p.days, p.status, p.quantity])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Name</TableHead><TableHead>Batch</TableHead><TableHead>Expiry</TableHead>
+                    <TableHead>Status</TableHead><TableHead className="text-right">Qty</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {expiryRows.map((p) => (
+                      <TableRow key={p.id}>
+                        <TableCell className="font-medium">{p.name}</TableCell>
+                        <TableCell className="text-xs">{p.batch}</TableCell>
+                        <TableCell className="text-xs">{format(new Date(p.expiry), "dd MMM yyyy")} <span className="text-muted-foreground">({p.days < 0 ? `${-p.days}d ago` : `${p.days}d`})</span></TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={
+                            p.status === "expired" || p.status === "critical" ? "border-destructive text-destructive" :
+                            p.status === "warning" ? "border-warning text-warning" :
+                            "border-success text-success"
+                          }>{p.status}</Badge>
+                        </TableCell>
+                        <TableCell className="text-right">{p.quantity}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function Stat({ label, v }: { label: string; v: string }) {
+  return (
+    <div className="rounded-md border bg-muted/40 px-3 py-2">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="font-semibold">{v}</div>
+    </div>
+  );
+}
