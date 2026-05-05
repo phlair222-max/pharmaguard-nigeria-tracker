@@ -50,7 +50,7 @@ type DB = {
 
 const KEY = "pharmaguard_db_v1";
 
-const seedProducts: Product[] = [
+const seedProducts: Array<[string, string, string, string, number, number, number, number, string, string]> = [
   ["Paracetamol 500mg", "Paracetamol", "A4-1234", "PCM-2024-001", 240, 60, 8, 15, "Emzor", "Analgesics"],
   ["Amoxicillin 500mg", "Amoxicillin", "A4-2210", "AMX-2024-014", 35, 30, 35, 60, "Fidson", "Antibiotics"],
   ["Coartem 80/480", "Artemether/Lumefantrine", "A4-9911", "CRT-2024-007", 18, 20, 950, 1500, "Novartis", "Antimalarials"],
