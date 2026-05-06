@@ -4,7 +4,7 @@ import { useStore, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, Pill, CalendarClock, Boxes, Banknote, Activity } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
-import { format, startOfDay, differenceInCalendarDays } from "date-fns";
+import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
 
 export default function Dashboard() {
