@@ -171,6 +171,13 @@ export default function Reports() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="stock">
+          <div className="mb-3 flex flex-wrap gap-2 text-sm">
+            <Badge variant="outline" className="border-info text-info">Stock value (cost): {NGN(stockCostValue)}</Badge>
+            <Badge variant="outline" className="border-success text-success">Stock value (retail): {NGN(stockSellValue)}</Badge>
+            <Badge variant="outline">Potential margin: {NGN(stockSellValue - stockCostValue)}</Badge>
+          </div>
           <Card className="shadow-card">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <CardTitle className="text-base">Stock report</CardTitle>
