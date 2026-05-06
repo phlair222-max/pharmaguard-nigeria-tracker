@@ -31,6 +31,22 @@ export default function Reports() {
   const expiryRows = products.map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
     .sort((a, b) => a.days - b.days);
 
+  const stockCostValue = products.reduce((a, p) => a + p.quantity * p.costPrice, 0);
+  const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
+
+  // Profit by product within range
+  const profitMap = new Map<string, { name: string; units: number; revenue: number; profit: number }>();
+  for (const s of inRange) {
+    for (const it of s.items) {
+      const cur = profitMap.get(it.productId) || { name: it.name, units: 0, revenue: 0, profit: 0 };
+      const cost = it.cost ?? products.find((p) => p.id === it.productId)?.costPrice ?? 0;
+      cur.units += it.qty; cur.revenue += it.qty * it.price; cur.profit += it.qty * (it.price - cost);
+      profitMap.set(it.productId, cur);
+    }
+  }
+  const profitRows = [...profitMap.values()].sort((a, b) => b.profit - a.profit);
+
+
   const exportPDF = (title: string, head: string[], body: any[][]) => {
     const doc = new jsPDF();
     doc.setFontSize(14); doc.text("PharmaGuard NG", 14, 14);
@@ -68,6 +84,7 @@ export default function Reports() {
       <Tabs defaultValue="sales">
         <TabsList>
           <TabsTrigger value="sales">Sales</TabsTrigger>
+          <TabsTrigger value="profit">Profit by Product</TabsTrigger>
           <TabsTrigger value="stock">Stock</TabsTrigger>
           <TabsTrigger value="expiry">Expiry</TabsTrigger>
         </TabsList>
