@@ -1,10 +1,10 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useStore } from "@/lib/store";
-import { NGN, num, expiryStatus } from "@/lib/format";
-import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, Pill, CalendarClock } from "lucide-react";
+import { useStore, salesVelocityMap, movementSpeed } from "@/lib/store";
+import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
+import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, Pill, CalendarClock, Boxes, Banknote, Activity } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
-import { format, startOfDay } from "date-fns";
+import { format, startOfDay, differenceInCalendarDays } from "date-fns";
 import { Link } from "react-router-dom";
 
 export default function Dashboard() {
@@ -16,12 +16,19 @@ export default function Dashboard() {
   const todayRevenue = todaySales.reduce((a, s) => a + s.total, 0);
   const todayProfit = todaySales.reduce((a, s) => a + s.profit, 0);
 
-  const lowStock = products.filter((p) => p.quantity <= p.reorderLevel);
-  const expiredCount = products.filter((p) => expiryStatus(p.expiry) === "expired").length;
-  const near30 = products.filter((p) => { const s = expiryStatus(p.expiry); return s === "critical"; }).length;
-  const near90 = products.filter((p) => { const s = expiryStatus(p.expiry); return s === "warning" || s === "critical"; }).length;
+  // daily average — over the period since first sale (capped 30d)
+  const last30Start = todayStart - 29 * 86400000;
+  const last30 = sales.filter((s) => new Date(s.createdAt).getTime() >= last30Start);
+  const distinctDays = Math.max(1, new Set(last30.map((s) => format(new Date(s.createdAt), "yyyy-MM-dd"))).size);
+  const dailyAvg = last30.reduce((a, s) => a + s.total, 0) / distinctDays;
 
-  // Sales trend last 7 days
+  const stockCostValue = products.reduce((a, p) => a + p.quantity * p.costPrice, 0);
+  const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
+
+  const lowStock = products.filter((p) => p.quantity <= p.reorderLevel);
+  const expiredCount = products.filter((p) => daysUntil(p.expiry) < 0).length;
+  const near30 = products.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; });
+
   const trend = Array.from({ length: 7 }).map((_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
     const start = startOfDay(d).getTime();
@@ -30,14 +37,12 @@ export default function Dashboard() {
     return { day: format(d, "EEE"), revenue: day.reduce((a, s) => a + s.total, 0) };
   });
 
-  // Top products
-  const counter = new Map<string, { name: string; qty: number; revenue: number }>();
-  sales.forEach((s) => s.items.forEach((it) => {
-    const cur = counter.get(it.productId) || { name: it.name, qty: 0, revenue: 0 };
-    cur.qty += it.qty; cur.revenue += it.qty * it.price;
-    counter.set(it.productId, cur);
-  }));
-  const top = [...counter.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+  const velocity = salesVelocityMap(sales, 30);
+  const fastMovers = products
+    .map((p) => ({ p, units: velocity.get(p.id) || 0 }))
+    .filter((x) => x.units > 0)
+    .sort((a, b) => b.units - a.units)
+    .slice(0, 10);
 
   return (
     <div className="space-y-6">
@@ -50,12 +55,19 @@ export default function Dashboard() {
         <Stat icon={Wallet} label="Today's Sales" value={NGN(todayRevenue)} accent="primary" />
         <Stat icon={TrendingUp} label="Today's Profit" value={NGN(todayProfit)} accent="success" />
         <Stat icon={Receipt} label="Transactions" value={num(todaySales.length)} accent="info" />
-        <Stat icon={Pill} label="Total Products" value={num(products.length)} accent="secondary" />
+        <Stat icon={Activity} label="Daily Avg (30d)" value={NGN(dailyAvg)} accent="secondary" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat icon={Pill} label="Total Products" value={num(products.length)} accent="primary" />
+        <Stat icon={Boxes} label="Stock Value (Cost)" value={NGN(stockCostValue)} accent="info" />
+        <Stat icon={Banknote} label="Stock Value (Retail)" value={NGN(stockSellValue)} accent="success" />
+        <Stat icon={TrendingUp} label="Potential Margin" value={NGN(stockSellValue - stockCostValue)} accent="secondary" />
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <AlertCard icon={PackageX} label="Low stock" count={lowStock.length} tone="warning" link="/inventory?filter=low" hint="Below reorder level" />
-        <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30} tone="destructive" link="/inventory?filter=critical" hint="Urgent action needed" />
+        <AlertCard icon={PackageX} label="Low stock" count={lowStock.length} tone="warning" link="/inventory?filter=low" hint="At or below reorder level" />
+        <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length} tone="destructive" link="/inventory?filter=near" hint="Urgent action needed" />
         <AlertCard icon={AlertTriangle} label="Expired items" count={expiredCount} tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
       </div>
 
@@ -68,10 +80,7 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={(v) => `₦${(v/1000).toFixed(0)}k`} />
-                <Tooltip
-                  contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }}
-                  formatter={(v: number) => NGN(v)}
-                />
+                <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} formatter={(v: number) => NGN(v)} />
                 <Line type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
@@ -79,18 +88,18 @@ export default function Dashboard() {
         </Card>
 
         <Card className="shadow-card">
-          <CardHeader><CardTitle className="text-base">Top Products</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">Top 10 Fast-Moving Drugs (30d)</CardTitle></CardHeader>
           <CardContent className="h-[260px]">
-            {top.length === 0 ? (
+            {fastMovers.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No sales yet</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={top} layout="vertical" margin={{ left: 10 }}>
+                <BarChart data={fastMovers.map((x) => ({ name: x.p.name, units: x.units }))} layout="vertical" margin={{ left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={(v) => `₦${(v/1000).toFixed(0)}k`} />
-                  <YAxis dataKey="name" type="category" stroke="hsl(var(--muted-foreground))" fontSize={11} width={120} />
-                  <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} formatter={(v: number) => NGN(v)} />
-                  <Bar dataKey="revenue" fill="hsl(var(--secondary))" radius={[0, 6, 6, 0]} />
+                  <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis dataKey="name" type="category" stroke="hsl(var(--muted-foreground))" fontSize={11} width={130} />
+                  <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
+                  <Bar dataKey="units" fill="hsl(var(--primary))" radius={[0, 6, 6, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -98,24 +107,59 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {lowStock.length > 0 && (
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="shadow-card">
-          <CardHeader><CardTitle className="text-base">Reorder suggestions</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">Near Expiry — Next 30 Days</CardTitle></CardHeader>
           <CardContent>
-            <div className="grid gap-2 md:grid-cols-2">
-              {lowStock.slice(0, 8).map((p) => (
-                <Link key={p.id} to="/inventory" className="flex items-center justify-between rounded-md border bg-card p-3 hover:bg-muted/50">
-                  <div>
-                    <div className="font-medium">{p.name}</div>
-                    <div className="text-xs text-muted-foreground">{p.generic} · {p.supplier}</div>
-                  </div>
-                  <Badge variant="outline" className="border-warning text-warning">{p.quantity} left</Badge>
-                </Link>
-              ))}
-            </div>
+            {near30.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">Nothing expiring soon 🎉</div>
+            ) : (
+              <div className="space-y-2">
+                {near30.slice(0, 8).map((p) => {
+                  const tier = expiryTier(p.expiry);
+                  const d = daysUntil(p.expiry);
+                  return (
+                    <Link key={p.id} to="/inventory?filter=near" className="flex items-center justify-between rounded-md border p-2 hover:bg-muted/50">
+                      <div>
+                        <div className="text-sm font-medium">{p.name}</div>
+                        <div className="text-[11px] text-muted-foreground">Batch {p.batch} · qty {p.quantity}</div>
+                      </div>
+                      <Badge variant="outline" className={expiryBadgeClass(tier)}>{d < 0 ? `${-d}d ago` : `${d}d left`}</Badge>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
-      )}
+
+        <Card className="shadow-card">
+          <CardHeader><CardTitle className="text-base">Low Stock — Reorder Suggestions</CardTitle></CardHeader>
+          <CardContent>
+            {lowStock.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">All products are well stocked</div>
+            ) : (
+              <div className="space-y-2">
+                {lowStock.slice(0, 8).map((p) => {
+                  const speed = movementSpeed(velocity.get(p.id) || 0);
+                  return (
+                    <Link key={p.id} to="/inventory?filter=low" className="flex items-center justify-between rounded-md border p-2 hover:bg-muted/50">
+                      <div>
+                        <div className="text-sm font-medium">{p.name}</div>
+                        <div className="text-[11px] text-muted-foreground">{p.supplier} · order {p.reorderQuantity || p.reorderLevel * 3}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className={movementBadgeClass(speed)}>{speed}</Badge>
+                        <Badge variant="outline" className="border-warning text-warning">{p.quantity} left</Badge>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -133,9 +177,9 @@ function Stat({ icon: Icon, label, value, accent }: { icon: any; label: string; 
         <div className={`flex h-11 w-11 items-center justify-center rounded-lg ${map[accent]}`}>
           <Icon className="h-5 w-5" />
         </div>
-        <div>
+        <div className="min-w-0">
           <div className="text-xs text-muted-foreground">{label}</div>
-          <div className="text-lg font-semibold">{value}</div>
+          <div className="truncate text-lg font-semibold">{value}</div>
         </div>
       </CardContent>
     </Card>
@@ -144,8 +188,8 @@ function Stat({ icon: Icon, label, value, accent }: { icon: any; label: string; 
 
 function AlertCard({ icon: Icon, label, count, tone, hint, link }: any) {
   const map: Record<string, string> = {
-    warning: "border-warning/50 bg-warning/5 text-warning",
-    destructive: "border-destructive/50 bg-destructive/5 text-destructive",
+    warning: "border-warning/50 bg-warning/5",
+    destructive: "border-destructive/50 bg-destructive/5",
   };
   return (
     <Link to={link}>
@@ -155,7 +199,7 @@ function AlertCard({ icon: Icon, label, count, tone, hint, link }: any) {
             <div className="text-sm font-medium text-foreground">{label}</div>
             <div className="text-xs text-muted-foreground">{hint}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 ${tone === "warning" ? "text-warning" : "text-destructive"}`}>
             <span className="text-2xl font-bold">{count}</span>
             <Icon className="h-5 w-5" />
           </div>
