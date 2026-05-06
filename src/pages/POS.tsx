@@ -23,6 +23,7 @@ export default function POS() {
   const [tendered, setTendered] = useState(0);
   const [lastReceipt, setLastReceipt] = useState<any>(null);
   const [quickMode, setQuickMode] = useState(false);
+  const settings = useStore((s) => s.settings);
 
   const results = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -59,7 +60,7 @@ export default function POS() {
   const checkout = () => {
     if (cart.length === 0) return;
     const sale = store.recordSale({
-      items: cart.map(({ productId, name, qty, price }) => ({ productId, name, qty, price })),
+      items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
       total, profit, payment, cashier: user?.username || "user", customer: customer || undefined,
     });
     setLastReceipt({ ...sale, customer, tendered, change });
@@ -190,18 +191,20 @@ export default function POS() {
         </Card>
       </div>
 
-      {lastReceipt && <Receipt sale={lastReceipt} />}
+      {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
     </div>
   );
 }
 
-function Receipt({ sale }: { sale: any }) {
+function Receipt({ sale, settings }: { sale: any; settings: any }) {
   return (
     <div className="receipt-print" style={{ display: "none" }}>
       <div style={{ textAlign: "center", marginBottom: 6 }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>PHARMAGUARD NG</div>
-        <div style={{ fontSize: 10 }}>Retail Pharmacy · Lagos, Nigeria</div>
-        <div style={{ fontSize: 10 }}>Tel: 0800-PHARMA</div>
+        <div style={{ fontWeight: 700, fontSize: 14, textTransform: "uppercase" }}>{settings.name}</div>
+        <div style={{ fontSize: 10 }}>{settings.address}</div>
+        <div style={{ fontSize: 10 }}>Tel: {settings.phone}</div>
+        {settings.email && <div style={{ fontSize: 10 }}>{settings.email}</div>}
+        {settings.premiseLicense && <div style={{ fontSize: 10 }}>Lic: {settings.premiseLicense}</div>}
       </div>
       <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "4px 0", fontSize: 11 }}>
         <div>Receipt: {sale.id.slice(0, 8).toUpperCase()}</div>
