@@ -132,7 +132,45 @@ export default function Reports() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="stock">
+        <TabsContent value="profit">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Profit by product</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Profit", profitRows.map((r) => ({
+                  Product: r.name, UnitsSold: r.units, Revenue: r.revenue, Profit: r.profit,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Profit by Product",
+                  ["Product","Units","Revenue","Profit"],
+                  profitRows.map((r) => [r.name, r.units, r.revenue.toFixed(2), r.profit.toFixed(2)])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Product</TableHead>
+                    <TableHead className="text-right">Units</TableHead>
+                    <TableHead className="text-right">Revenue</TableHead>
+                    <TableHead className="text-right">Profit</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {profitRows.length === 0 && <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No sales in range</TableCell></TableRow>}
+                    {profitRows.map((r, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="font-medium">{r.name}</TableCell>
+                        <TableCell className="text-right">{r.units}</TableCell>
+                        <TableCell className="text-right">{NGN(r.revenue)}</TableCell>
+                        <TableCell className="text-right text-success">{NGN(r.profit)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
           <Card className="shadow-card">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <CardTitle className="text-base">Stock report</CardTitle>
