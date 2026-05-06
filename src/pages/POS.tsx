@@ -60,7 +60,7 @@ export default function POS() {
   const checkout = () => {
     if (cart.length === 0) return;
     const sale = store.recordSale({
-      items: cart.map(({ productId, name, qty, price }) => ({ productId, name, qty, price })),
+      items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
       total, profit, payment, cashier: user?.username || "user", customer: customer || undefined,
     });
     setLastReceipt({ ...sale, customer, tendered, change });
