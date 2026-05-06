@@ -31,6 +31,22 @@ export default function Reports() {
   const expiryRows = products.map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
     .sort((a, b) => a.days - b.days);
 
+  const stockCostValue = products.reduce((a, p) => a + p.quantity * p.costPrice, 0);
+  const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
+
+  // Profit by product within range
+  const profitMap = new Map<string, { name: string; units: number; revenue: number; profit: number }>();
+  for (const s of inRange) {
+    for (const it of s.items) {
+      const cur = profitMap.get(it.productId) || { name: it.name, units: 0, revenue: 0, profit: 0 };
+      const cost = it.cost ?? products.find((p) => p.id === it.productId)?.costPrice ?? 0;
+      cur.units += it.qty; cur.revenue += it.qty * it.price; cur.profit += it.qty * (it.price - cost);
+      profitMap.set(it.productId, cur);
+    }
+  }
+  const profitRows = [...profitMap.values()].sort((a, b) => b.profit - a.profit);
+
+
   const exportPDF = (title: string, head: string[], body: any[][]) => {
     const doc = new jsPDF();
     doc.setFontSize(14); doc.text("PharmaGuard NG", 14, 14);
@@ -68,6 +84,7 @@ export default function Reports() {
       <Tabs defaultValue="sales">
         <TabsList>
           <TabsTrigger value="sales">Sales</TabsTrigger>
+          <TabsTrigger value="profit">Profit by Product</TabsTrigger>
           <TabsTrigger value="stock">Stock</TabsTrigger>
           <TabsTrigger value="expiry">Expiry</TabsTrigger>
         </TabsList>
@@ -115,7 +132,52 @@ export default function Reports() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="profit">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Profit by product</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Profit", profitRows.map((r) => ({
+                  Product: r.name, UnitsSold: r.units, Revenue: r.revenue, Profit: r.profit,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Profit by Product",
+                  ["Product","Units","Revenue","Profit"],
+                  profitRows.map((r) => [r.name, r.units, r.revenue.toFixed(2), r.profit.toFixed(2)])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Product</TableHead>
+                    <TableHead className="text-right">Units</TableHead>
+                    <TableHead className="text-right">Revenue</TableHead>
+                    <TableHead className="text-right">Profit</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {profitRows.length === 0 && <TableRow><TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">No sales in range</TableCell></TableRow>}
+                    {profitRows.map((r, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="font-medium">{r.name}</TableCell>
+                        <TableCell className="text-right">{r.units}</TableCell>
+                        <TableCell className="text-right">{NGN(r.revenue)}</TableCell>
+                        <TableCell className="text-right text-success">{NGN(r.profit)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="stock">
+          <div className="mb-3 flex flex-wrap gap-2 text-sm">
+            <Badge variant="outline" className="border-info text-info">Stock value (cost): {NGN(stockCostValue)}</Badge>
+            <Badge variant="outline" className="border-success text-success">Stock value (retail): {NGN(stockSellValue)}</Badge>
+            <Badge variant="outline">Potential margin: {NGN(stockSellValue - stockCostValue)}</Badge>
+          </div>
           <Card className="shadow-card">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <CardTitle className="text-base">Stock report</CardTitle>
