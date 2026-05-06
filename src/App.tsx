@@ -12,6 +12,9 @@ import POS from "@/pages/POS";
 import Reports from "@/pages/Reports";
 import Audit from "@/pages/Audit";
 import Poisons from "@/pages/Poisons";
+import Suppliers from "@/pages/Suppliers";
+import SalesHistory from "@/pages/SalesHistory";
+import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
 import { useStore } from "@/lib/store";
 
@@ -36,9 +39,12 @@ const App = () => (
               <Route path="/" element={<Dashboard />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/pos" element={<POS />} />
+              <Route path="/sales" element={<SalesHistory />} />
+              <Route path="/suppliers" element={<Suppliers />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/audit" element={<Audit />} />
               <Route path="/poisons" element={<Poisons />} />
+              <Route path="/settings" element={<Settings />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
