@@ -200,6 +200,11 @@ function Receipt({ sale, settings }: { sale: any; settings: any }) {
   return (
     <div className="receipt-print" style={{ display: "none" }}>
       <div style={{ textAlign: "center", marginBottom: 6 }}>
+        {settings.logo && (
+          <div style={{ marginBottom: 4 }}>
+            <img src={settings.logo} alt="logo" style={{ height: 50, width: 50, objectFit: "contain", display: "inline-block" }} />
+          </div>
+        )}
         <div style={{ fontWeight: 700, fontSize: 14, textTransform: "uppercase" }}>{settings.name}</div>
         <div style={{ fontSize: 10 }}>{settings.address}</div>
         <div style={{ fontSize: 10 }}>Tel: {settings.phone}</div>
