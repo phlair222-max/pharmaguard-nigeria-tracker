@@ -20,6 +20,7 @@ export type Product = {
   description?: string;
   controlled?: boolean;
   barcode?: string;
+  image?: string; // data URL
 };
 
 export type SaleItem = { productId: string; name: string; qty: number; price: number; cost?: number };
@@ -61,6 +62,9 @@ export type PharmacySettings = {
   phone: string;
   email?: string;
   premiseLicense?: string;
+  logo?: string; // data URL
+  ownerPhoto?: string; // data URL
+  ownerName?: string;
 };
 
 type DB = {
