@@ -24,16 +24,21 @@ const items = [
 function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
+  const settings = useStore((s) => s.settings);
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 px-2 py-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-elevated">
-            <Pill className="h-5 w-5" />
-          </div>
+          {settings.logo ? (
+            <img src={settings.logo} alt="logo" className="h-9 w-9 rounded-lg object-cover border bg-white shadow-elevated" />
+          ) : (
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-elevated">
+              <Pill className="h-5 w-5" />
+            </div>
+          )}
           {!collapsed && (
-            <div className="leading-tight">
-              <div className="font-semibold text-sidebar-foreground">PharmaGuard NG</div>
+            <div className="leading-tight min-w-0">
+              <div className="font-semibold text-sidebar-foreground truncate">{settings.name || "PharmaGuard NG"}</div>
               <div className="text-[11px] text-sidebar-foreground/70">Nigeria Pharma Tracker</div>
             </div>
           )}
