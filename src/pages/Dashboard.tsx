@@ -191,10 +191,11 @@ export default function Dashboard() {
         </Card>
       </div>
     </div>
+    </TooltipProvider>
   );
 }
 
-function Stat({ icon: Icon, label, value, accent }: { icon: any; label: string; value: string; accent: string }) {
+function Stat({ icon: Icon, label, value, accent, tip }: { icon: any; label: string; value: string; accent: string; tip?: string }) {
   const map: Record<string, string> = {
     primary: "bg-primary/10 text-primary",
     success: "bg-success/10 text-success",
@@ -207,8 +208,16 @@ function Stat({ icon: Icon, label, value, accent }: { icon: any; label: string; 
         <div className={`flex h-11 w-11 items-center justify-center rounded-lg ${map[accent]}`}>
           <Icon className="h-5 w-5" />
         </div>
-        <div className="min-w-0">
-          <div className="text-xs text-muted-foreground">{label}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <span className="truncate">{label}</span>
+            {tip && (
+              <UITooltip>
+                <TooltipTrigger asChild><Info className="h-3 w-3 cursor-help opacity-60 hover:opacity-100" /></TooltipTrigger>
+                <TooltipContent className="max-w-xs text-xs">{tip}</TooltipContent>
+              </UITooltip>
+            )}
+          </div>
           <div className="truncate text-lg font-semibold">{value}</div>
         </div>
       </CardContent>
