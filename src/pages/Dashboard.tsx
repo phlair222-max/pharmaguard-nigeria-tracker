@@ -1,8 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useStore, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
-import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, Pill, CalendarClock, Boxes, Banknote, Activity } from "lucide-react";
+import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, Pill, CalendarClock, Boxes, Banknote, Activity, Info, Flame } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
@@ -44,32 +45,61 @@ export default function Dashboard() {
     .sort((a, b) => b.units - a.units)
     .slice(0, 10);
 
+  const settings = useStore((s) => s.settings);
+
   return (
+    <TooltipProvider delayDuration={150}>
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">Real-time overview of your pharmacy operations</p>
+      <div className="flex items-center gap-3">
+        {settings.logo && <img src={settings.logo} alt="logo" className="h-12 w-12 rounded-lg object-cover border bg-white" />}
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">{settings.name} — Real-time overview</p>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat icon={Wallet} label="Today's Sales" value={NGN(todayRevenue)} accent="primary" />
-        <Stat icon={TrendingUp} label="Today's Profit" value={NGN(todayProfit)} accent="success" />
-        <Stat icon={Receipt} label="Transactions" value={num(todaySales.length)} accent="info" />
-        <Stat icon={Activity} label="Daily Avg (30d)" value={NGN(dailyAvg)} accent="secondary" />
+        <Stat icon={Wallet} label="Today's Sales" value={NGN(todayRevenue)} accent="primary" tip="Total revenue collected today across all payment methods." />
+        <Stat icon={TrendingUp} label="Today's Profit" value={NGN(todayProfit)} accent="success" tip="Selling price minus cost price for items sold today." />
+        <Stat icon={Receipt} label="Transactions" value={num(todaySales.length)} accent="info" tip="Number of completed sales today." />
+        <Stat icon={Activity} label="Daily Avg Sales (30 days)" value={NGN(dailyAvg)} accent="secondary" tip="Average daily revenue over the last 30 days." />
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat icon={Pill} label="Total Products" value={num(products.length)} accent="primary" />
-        <Stat icon={Boxes} label="Stock Value (Cost)" value={NGN(stockCostValue)} accent="info" />
-        <Stat icon={Banknote} label="Stock Value (Retail)" value={NGN(stockSellValue)} accent="success" />
-        <Stat icon={TrendingUp} label="Potential Margin" value={NGN(stockSellValue - stockCostValue)} accent="secondary" />
+        <Stat icon={Pill} label="Total Products" value={num(products.length)} accent="primary" tip="Distinct SKUs currently in inventory." />
+        <Stat icon={Boxes} label="Stock Value (Cost)" value={NGN(stockCostValue)} accent="info" tip="Quantity × cost price for every product in stock." />
+        <Stat icon={Banknote} label="Stock Value (Retail)" value={NGN(stockSellValue)} accent="success" tip="Quantity × selling price — what stock is worth at retail." />
+        <Stat icon={TrendingUp} label="Potential Margin" value={NGN(stockSellValue - stockCostValue)} accent="secondary" tip="Retail value minus cost value — profit if all stock sells." />
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <AlertCard icon={PackageX} label="Low stock" count={lowStock.length} tone="warning" link="/inventory?filter=low" hint="At or below reorder level" />
+        <AlertCard icon={PackageX} label="Low Stock" count={lowStock.length} tone="warning" link="/inventory?filter=low" hint="At or below reorder level" />
         <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length} tone="destructive" link="/inventory?filter=near" hint="Urgent action needed" />
-        <AlertCard icon={AlertTriangle} label="Expired items" count={expiredCount} tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
+        <AlertCard icon={AlertTriangle} label="Expired Items" count={expiredCount} tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
       </div>
+
+      <Card className="shadow-card border-success/30">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-base"><Flame className="h-4 w-4 text-success" /> Fast Moving Products (Top 8 — last 30 days)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {fastMovers.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted-foreground">No sales recorded yet</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {fastMovers.slice(0, 8).map((x, i) => (
+                <Link key={x.p.id} to="/inventory" className="flex items-center justify-between rounded-md border bg-success/5 p-2 hover:bg-success/10">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 text-sm font-medium truncate"><span className="text-success">#{i + 1}</span> {x.p.name}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">{x.p.generic}</div>
+                  </div>
+                  <Badge variant="outline" className="border-success bg-success/10 text-success ml-2 shrink-0">{x.units} sold</Badge>
+                </Link>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="shadow-card">
