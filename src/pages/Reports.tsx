@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { useStore } from "@/lib/store";
 import { NGN, expiryStatus, daysUntil } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
-import { FileDown, FileText } from "lucide-react";
+import { FileDown, FileText, ShieldCheck } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
