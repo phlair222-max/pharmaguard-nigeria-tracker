@@ -158,9 +158,14 @@ export default function Reports() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Reports & Compliance</h1>
-        <p className="text-sm text-muted-foreground">Generate sales, stock and expiry reports</p>
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Reports & Compliance</h1>
+          <p className="text-sm text-muted-foreground">Generate sales, stock, expiry, movement and statutory inspection reports</p>
+        </div>
+        <Button onClick={inspectionReadyPdf} className="bg-primary hover:bg-primary/90">
+          <ShieldCheck className="mr-2 h-4 w-4" />Inspection Ready PDF
+        </Button>
       </div>
 
       <Card className="shadow-card">
@@ -176,11 +181,12 @@ export default function Reports() {
       </Card>
 
       <Tabs defaultValue="sales">
-        <TabsList>
+        <TabsList className="flex flex-wrap h-auto">
           <TabsTrigger value="sales">Sales</TabsTrigger>
-          <TabsTrigger value="profit">Profit by Product</TabsTrigger>
+          <TabsTrigger value="profit">Profit</TabsTrigger>
           <TabsTrigger value="stock">Stock</TabsTrigger>
           <TabsTrigger value="expiry">Expiry</TabsTrigger>
+          <TabsTrigger value="movement">Stock Movement</TabsTrigger>
         </TabsList>
 
         <TabsContent value="sales">
