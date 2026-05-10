@@ -359,6 +359,48 @@ export default function Reports() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="movement">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Stock movement ({from} → {to})</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Stock-Movement", movementRows.map((r) => ({
+                  Product: r.name, Batch: r.batch, OpeningStock: r.opening, UnitsSold: r.sold, ClosingStock: r.closing, Revenue: r.revenue,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Stock Movement",
+                  ["Product","Batch","Opening","Sold","Closing","Revenue"],
+                  movementRows.map((r) => [r.name, r.batch, r.opening, r.sold, r.closing, r.revenue.toFixed(2)])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Product</TableHead><TableHead>Batch</TableHead>
+                    <TableHead className="text-right">Opening</TableHead>
+                    <TableHead className="text-right">Sold</TableHead>
+                    <TableHead className="text-right">Closing</TableHead>
+                    <TableHead className="text-right">Revenue</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {movementRows.map((r) => (
+                      <TableRow key={r.id}>
+                        <TableCell className="font-medium">{r.name}</TableCell>
+                        <TableCell className="text-xs">{r.batch}</TableCell>
+                        <TableCell className="text-right">{r.opening}</TableCell>
+                        <TableCell className="text-right font-medium">{r.sold}</TableCell>
+                        <TableCell className="text-right">{r.closing}</TableCell>
+                        <TableCell className="text-right">{NGN(r.revenue)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
     </div>
   );
