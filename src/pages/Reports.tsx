@@ -49,6 +49,97 @@ export default function Reports() {
   }
   const profitRows = [...profitMap.values()].sort((a, b) => b.profit - a.profit);
 
+  // Stock Movement: units sold per product within range
+  const movementMap = new Map<string, { name: string; sold: number; revenue: number }>();
+  for (const s of inRange) {
+    for (const it of s.items) {
+      const cur = movementMap.get(it.productId) || { name: it.name, sold: 0, revenue: 0 };
+      cur.sold += it.qty; cur.revenue += it.qty * it.price;
+      movementMap.set(it.productId, cur);
+    }
+  }
+  const movementRows = products.map((p) => {
+    const m = movementMap.get(p.id);
+    return { id: p.id, name: p.name, batch: p.batch, opening: p.quantity + (m?.sold || 0), sold: m?.sold || 0, closing: p.quantity, revenue: m?.revenue || 0 };
+  }).sort((a, b) => b.sold - a.sold);
+
+  const inspectionReadyPdf = () => {
+    const doc = new jsPDF();
+    const pageW = doc.internal.pageSize.getWidth();
+    doc.setFontSize(16); doc.setFont("helvetica", "bold");
+    doc.text(settings.name, pageW / 2, 16, { align: "center" });
+    doc.setFontSize(10); doc.setFont("helvetica", "normal");
+    doc.text(settings.address, pageW / 2, 22, { align: "center" });
+    doc.text(`Tel: ${settings.phone}  ·  PCN License: ${settings.premiseLicense || "—"}`, pageW / 2, 27, { align: "center" });
+    doc.setFontSize(13); doc.setFont("helvetica", "bold");
+    doc.text("INSPECTION-READY COMPLIANCE REPORT", pageW / 2, 36, { align: "center" });
+    doc.setFontSize(9); doc.setFont("helvetica", "normal");
+    doc.text(`Period: ${from} to ${to}  ·  Generated: ${format(new Date(), "dd MMM yyyy HH:mm")}`, pageW / 2, 41, { align: "center" });
+
+    let y = 48;
+    const section = (title: string) => {
+      doc.setFontSize(11); doc.setFont("helvetica", "bold");
+      doc.text(title, 14, y); y += 3;
+    };
+
+    section("1. Sales Summary");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [22, 160, 110] },
+      head: [["Metric", "Value"]],
+      body: [["Transactions", String(totals.count)], ["Revenue", NGN(totals.rev)], ["Profit", NGN(totals.profit)]],
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    section("2. Stock On Hand");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 160, 110] },
+      head: [["Drug", "NAFDAC", "Batch", "Expiry", "Qty", "Value (cost)"]],
+      body: products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, NGN(p.quantity * p.costPrice)]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    if (y > 240) { doc.addPage(); y = 20; }
+    section("3. Expiry Watch (sorted by days left)");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [200, 60, 60] },
+      head: [["Drug", "Batch", "Expiry", "Days", "Status", "Qty"]],
+      body: expiryRows.slice(0, 50).map((p) => [p.name, p.batch, p.expiry, String(p.days), p.status, String(p.quantity)]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    if (y > 220) { doc.addPage(); y = 20; }
+    section("4. Controlled Substances Register");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [180, 50, 50] },
+      head: [["Date", "Drug", "Batch", "Qty", "Patient", "Prescriber", "Rx Ref"]],
+      body: dispenses.map((d) => [
+        format(new Date(d.at), "dd-MM-yyyy"), d.productName, d.batch, String(d.quantity),
+        d.patientName, `${d.prescriber}${d.prescriberRegNo ? " / "+d.prescriberRegNo : ""}`, d.prescriptionRef,
+      ]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    if (y > 240) { doc.addPage(); y = 20; }
+    section("5. Audit Trail (recent 50 entries)");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 100, 160] },
+      head: [["When", "User", "Action", "Target", "Detail"]],
+      body: audit.slice(0, 50).map((a) => [
+        format(new Date(a.at), "dd-MM HH:mm"), a.user, a.action, a.target, a.detail || "",
+      ]),
+    });
+
+    const pages = doc.getNumberOfPages();
+    for (let i = 1; i <= pages; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(`${settings.name} — Inspection Report — Page ${i} of ${pages}`, pageW / 2, doc.internal.pageSize.getHeight() - 8, { align: "center" });
+    }
+
+    doc.save(`inspection-ready-${format(new Date(), "yyyy-MM-dd")}.pdf`);
+  };
+
+
 
   const exportPDF = (title: string, head: string[], body: any[][]) => {
     const doc = new jsPDF();
