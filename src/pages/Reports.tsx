@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { useStore } from "@/lib/store";
 import { NGN, expiryStatus, daysUntil } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
-import { FileDown, FileText } from "lucide-react";
+import { FileDown, FileText, ShieldCheck } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
@@ -17,6 +17,9 @@ import * as XLSX from "xlsx";
 export default function Reports() {
   const sales = useStore((s) => s.sales);
   const products = useStore((s) => s.products);
+  const settings = useStore((s) => s.settings);
+  const dispenses = useStore((s) => s.controlledDispense);
+  const audit = useStore((s) => s.audit);
   const [from, setFrom] = useState(format(new Date(Date.now() - 6 * 86400000), "yyyy-MM-dd"));
   const [to, setTo] = useState(format(new Date(), "yyyy-MM-dd"));
 
@@ -46,6 +49,97 @@ export default function Reports() {
   }
   const profitRows = [...profitMap.values()].sort((a, b) => b.profit - a.profit);
 
+  // Stock Movement: units sold per product within range
+  const movementMap = new Map<string, { name: string; sold: number; revenue: number }>();
+  for (const s of inRange) {
+    for (const it of s.items) {
+      const cur = movementMap.get(it.productId) || { name: it.name, sold: 0, revenue: 0 };
+      cur.sold += it.qty; cur.revenue += it.qty * it.price;
+      movementMap.set(it.productId, cur);
+    }
+  }
+  const movementRows = products.map((p) => {
+    const m = movementMap.get(p.id);
+    return { id: p.id, name: p.name, batch: p.batch, opening: p.quantity + (m?.sold || 0), sold: m?.sold || 0, closing: p.quantity, revenue: m?.revenue || 0 };
+  }).sort((a, b) => b.sold - a.sold);
+
+  const inspectionReadyPdf = () => {
+    const doc = new jsPDF();
+    const pageW = doc.internal.pageSize.getWidth();
+    doc.setFontSize(16); doc.setFont("helvetica", "bold");
+    doc.text(settings.name, pageW / 2, 16, { align: "center" });
+    doc.setFontSize(10); doc.setFont("helvetica", "normal");
+    doc.text(settings.address, pageW / 2, 22, { align: "center" });
+    doc.text(`Tel: ${settings.phone}  ·  PCN License: ${settings.premiseLicense || "—"}`, pageW / 2, 27, { align: "center" });
+    doc.setFontSize(13); doc.setFont("helvetica", "bold");
+    doc.text("INSPECTION-READY COMPLIANCE REPORT", pageW / 2, 36, { align: "center" });
+    doc.setFontSize(9); doc.setFont("helvetica", "normal");
+    doc.text(`Period: ${from} to ${to}  ·  Generated: ${format(new Date(), "dd MMM yyyy HH:mm")}`, pageW / 2, 41, { align: "center" });
+
+    let y = 48;
+    const section = (title: string) => {
+      doc.setFontSize(11); doc.setFont("helvetica", "bold");
+      doc.text(title, 14, y); y += 3;
+    };
+
+    section("1. Sales Summary");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [22, 160, 110] },
+      head: [["Metric", "Value"]],
+      body: [["Transactions", String(totals.count)], ["Revenue", NGN(totals.rev)], ["Profit", NGN(totals.profit)]],
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    section("2. Stock On Hand");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 160, 110] },
+      head: [["Drug", "NAFDAC", "Batch", "Expiry", "Qty", "Value (cost)"]],
+      body: products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, NGN(p.quantity * p.costPrice)]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    if (y > 240) { doc.addPage(); y = 20; }
+    section("3. Expiry Watch (sorted by days left)");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [200, 60, 60] },
+      head: [["Drug", "Batch", "Expiry", "Days", "Status", "Qty"]],
+      body: expiryRows.slice(0, 50).map((p) => [p.name, p.batch, p.expiry, String(p.days), p.status, String(p.quantity)]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    if (y > 220) { doc.addPage(); y = 20; }
+    section("4. Controlled Substances Register");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [180, 50, 50] },
+      head: [["Date", "Drug", "Batch", "Qty", "Patient", "Prescriber", "Rx Ref"]],
+      body: dispenses.map((d) => [
+        format(new Date(d.at), "dd-MM-yyyy"), d.productName, d.batch, String(d.quantity),
+        d.patientName, `${d.prescriber}${d.prescriberRegNo ? " / "+d.prescriberRegNo : ""}`, d.prescriptionRef,
+      ]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    if (y > 240) { doc.addPage(); y = 20; }
+    section("5. Audit Trail (recent 50 entries)");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 100, 160] },
+      head: [["When", "User", "Action", "Target", "Detail"]],
+      body: audit.slice(0, 50).map((a) => [
+        format(new Date(a.at), "dd-MM HH:mm"), a.user, a.action, a.target, a.detail || "",
+      ]),
+    });
+
+    const pages = doc.getNumberOfPages();
+    for (let i = 1; i <= pages; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(`${settings.name} — Inspection Report — Page ${i} of ${pages}`, pageW / 2, doc.internal.pageSize.getHeight() - 8, { align: "center" });
+    }
+
+    doc.save(`inspection-ready-${format(new Date(), "yyyy-MM-dd")}.pdf`);
+  };
+
+
 
   const exportPDF = (title: string, head: string[], body: any[][]) => {
     const doc = new jsPDF();
@@ -64,9 +158,14 @@ export default function Reports() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Reports & Compliance</h1>
-        <p className="text-sm text-muted-foreground">Generate sales, stock and expiry reports</p>
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Reports & Compliance</h1>
+          <p className="text-sm text-muted-foreground">Generate sales, stock, expiry, movement and statutory inspection reports</p>
+        </div>
+        <Button onClick={inspectionReadyPdf} className="bg-primary hover:bg-primary/90">
+          <ShieldCheck className="mr-2 h-4 w-4" />Inspection Ready PDF
+        </Button>
       </div>
 
       <Card className="shadow-card">
@@ -82,11 +181,12 @@ export default function Reports() {
       </Card>
 
       <Tabs defaultValue="sales">
-        <TabsList>
+        <TabsList className="flex flex-wrap h-auto">
           <TabsTrigger value="sales">Sales</TabsTrigger>
-          <TabsTrigger value="profit">Profit by Product</TabsTrigger>
+          <TabsTrigger value="profit">Profit</TabsTrigger>
           <TabsTrigger value="stock">Stock</TabsTrigger>
           <TabsTrigger value="expiry">Expiry</TabsTrigger>
+          <TabsTrigger value="movement">Stock Movement</TabsTrigger>
         </TabsList>
 
         <TabsContent value="sales">
@@ -251,6 +351,48 @@ export default function Reports() {
                           }>{p.status}</Badge>
                         </TableCell>
                         <TableCell className="text-right">{p.quantity}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="movement">
+          <Card className="shadow-card">
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base">Stock movement ({from} → {to})</CardTitle>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => exportXLSX("Stock-Movement", movementRows.map((r) => ({
+                  Product: r.name, Batch: r.batch, OpeningStock: r.opening, UnitsSold: r.sold, ClosingStock: r.closing, Revenue: r.revenue,
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                <Button size="sm" variant="outline" onClick={() => exportPDF("Stock Movement",
+                  ["Product","Batch","Opening","Sold","Closing","Revenue"],
+                  movementRows.map((r) => [r.name, r.batch, r.opening, r.sold, r.closing, r.revenue.toFixed(2)])
+                )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Product</TableHead><TableHead>Batch</TableHead>
+                    <TableHead className="text-right">Opening</TableHead>
+                    <TableHead className="text-right">Sold</TableHead>
+                    <TableHead className="text-right">Closing</TableHead>
+                    <TableHead className="text-right">Revenue</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {movementRows.map((r) => (
+                      <TableRow key={r.id}>
+                        <TableCell className="font-medium">{r.name}</TableCell>
+                        <TableCell className="text-xs">{r.batch}</TableCell>
+                        <TableCell className="text-right">{r.opening}</TableCell>
+                        <TableCell className="text-right font-medium">{r.sold}</TableCell>
+                        <TableCell className="text-right">{r.closing}</TableCell>
+                        <TableCell className="text-right">{NGN(r.revenue)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
