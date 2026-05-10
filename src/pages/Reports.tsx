@@ -17,6 +17,9 @@ import * as XLSX from "xlsx";
 export default function Reports() {
   const sales = useStore((s) => s.sales);
   const products = useStore((s) => s.products);
+  const settings = useStore((s) => s.settings);
+  const dispenses = useStore((s) => s.controlledDispense);
+  const audit = useStore((s) => s.audit);
   const [from, setFrom] = useState(format(new Date(Date.now() - 6 * 86400000), "yyyy-MM-dd"));
   const [to, setTo] = useState(format(new Date(), "yyyy-MM-dd"));
 
