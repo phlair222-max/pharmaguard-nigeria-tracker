@@ -100,6 +100,9 @@ type DB = {
   user: User | null;
   suppliers: Supplier[];
   settings: PharmacySettings;
+  controlledDispense: ControlledDispense[];
+  loginActivity: LoginActivity[];
+  credentials: Credential[];
 };
 
 const KEY = "pharmaguard_db_v2";
