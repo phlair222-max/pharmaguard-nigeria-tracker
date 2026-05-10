@@ -181,11 +181,36 @@ function makeSeed(): DB {
       });
     }
   }
-  return { products, sales, audit: [], user: null, suppliers, settings: defaultSettings };
+  return {
+    products, sales, audit: [], user: null, suppliers, settings: defaultSettings,
+    controlledDispense: [], loginActivity: [],
+    credentials: [
+      { username: "admin", passwordHash: hashPwd("admin") },
+      { username: "pharma", passwordHash: hashPwd("pharma") },
+    ],
+  };
+}
+
+function emptyDb(): DB {
+  return {
+    products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings,
+    controlledDispense: [], loginActivity: [],
+    credentials: [
+      { username: "admin", passwordHash: hashPwd("admin") },
+      { username: "pharma", passwordHash: hashPwd("pharma") },
+    ],
+  };
+}
+
+function hashPwd(p: string): string {
+  // Lightweight non-cryptographic hash. Local-only app; acceptable for offline POS.
+  let h = 5381;
+  for (let i = 0; i < p.length; i++) h = ((h << 5) + h) ^ p.charCodeAt(i);
+  return "h_" + (h >>> 0).toString(16);
 }
 
 function load(): DB {
-  if (typeof window === "undefined") return { products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings };
+  if (typeof window === "undefined") return emptyDb();
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) {
@@ -196,9 +221,15 @@ function load(): DB {
     const parsed = JSON.parse(raw) as DB;
     parsed.suppliers = parsed.suppliers || [];
     parsed.settings = parsed.settings || defaultSettings;
+    parsed.controlledDispense = parsed.controlledDispense || [];
+    parsed.loginActivity = parsed.loginActivity || [];
+    parsed.credentials = parsed.credentials || [
+      { username: "admin", passwordHash: hashPwd("admin") },
+      { username: "pharma", passwordHash: hashPwd("pharma") },
+    ];
     return parsed;
   } catch {
-    return { products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings };
+    return emptyDb();
   }
 }
 
