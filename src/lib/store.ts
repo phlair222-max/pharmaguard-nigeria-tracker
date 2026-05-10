@@ -46,6 +46,32 @@ export type AuditEntry = {
 
 export type User = { username: string; role: "Admin" | "Pharmacist" };
 
+export type ControlledDispense = {
+  id: string;
+  productId: string;
+  productName: string;
+  batch: string;
+  quantity: number;
+  amount: number;
+  patientName: string;
+  patientPhone?: string;
+  prescriber: string;
+  prescriberRegNo?: string;
+  prescriptionRef: string;
+  cashier: string;
+  at: string;
+};
+
+export type LoginActivity = {
+  id: string;
+  username: string;
+  at: string;
+  device: string;
+  status: "success" | "failed";
+};
+
+export type Credential = { username: string; passwordHash: string };
+
 export type Supplier = {
   id: string;
   name: string;
@@ -74,6 +100,9 @@ type DB = {
   user: User | null;
   suppliers: Supplier[];
   settings: PharmacySettings;
+  controlledDispense: ControlledDispense[];
+  loginActivity: LoginActivity[];
+  credentials: Credential[];
 };
 
 const KEY = "pharmaguard_db_v2";
@@ -152,11 +181,36 @@ function makeSeed(): DB {
       });
     }
   }
-  return { products, sales, audit: [], user: null, suppliers, settings: defaultSettings };
+  return {
+    products, sales, audit: [], user: null, suppliers, settings: defaultSettings,
+    controlledDispense: [], loginActivity: [],
+    credentials: [
+      { username: "admin", passwordHash: hashPwd("admin") },
+      { username: "pharma", passwordHash: hashPwd("pharma") },
+    ],
+  };
+}
+
+function emptyDb(): DB {
+  return {
+    products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings,
+    controlledDispense: [], loginActivity: [],
+    credentials: [
+      { username: "admin", passwordHash: hashPwd("admin") },
+      { username: "pharma", passwordHash: hashPwd("pharma") },
+    ],
+  };
+}
+
+function hashPwd(p: string): string {
+  // Lightweight non-cryptographic hash. Local-only app; acceptable for offline POS.
+  let h = 5381;
+  for (let i = 0; i < p.length; i++) h = ((h << 5) + h) ^ p.charCodeAt(i);
+  return "h_" + (h >>> 0).toString(16);
 }
 
 function load(): DB {
-  if (typeof window === "undefined") return { products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings };
+  if (typeof window === "undefined") return emptyDb();
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) {
@@ -167,9 +221,15 @@ function load(): DB {
     const parsed = JSON.parse(raw) as DB;
     parsed.suppliers = parsed.suppliers || [];
     parsed.settings = parsed.settings || defaultSettings;
+    parsed.controlledDispense = parsed.controlledDispense || [];
+    parsed.loginActivity = parsed.loginActivity || [];
+    parsed.credentials = parsed.credentials || [
+      { username: "admin", passwordHash: hashPwd("admin") },
+      { username: "pharma", passwordHash: hashPwd("pharma") },
+    ];
     return parsed;
   } catch {
-    return { products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings };
+    return emptyDb();
   }
 }
 
@@ -254,11 +314,17 @@ export const store = {
     if (db.audit.length > 500) db.audit.length = 500;
   },
   login(username: string, password: string) {
-    const role: "Admin" | "Pharmacist" =
-      username === "admin" && password === "admin" ? "Admin" :
-      username === "pharma" && password === "pharma" ? "Pharmacist" :
-      null as any;
-    if (!role) return false;
+    const cred = db.credentials.find((c) => c.username === username);
+    const ok = cred && cred.passwordHash === hashPwd(password);
+    const role: "Admin" | "Pharmacist" | null =
+      username === "admin" ? "Admin" : username === "pharma" ? "Pharmacist" : null;
+    const device = typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 80) : "Unknown";
+    db.loginActivity.unshift({
+      id: crypto.randomUUID(), username, at: new Date().toISOString(),
+      device, status: ok && role ? "success" : "failed",
+    });
+    if (db.loginActivity.length > 100) db.loginActivity.length = 100;
+    if (!ok || !role) { persist(); return false; }
     db.user = { username, role };
     this.audit("Login", username);
     persist(); return true;
@@ -266,6 +332,37 @@ export const store = {
   logout() {
     if (db.user) this.audit("Logout", db.user.username);
     db.user = null; persist();
+  },
+  changePassword(username: string, oldPwd: string, newPwd: string): { ok: boolean; error?: string } {
+    const cred = db.credentials.find((c) => c.username === username);
+    if (!cred) return { ok: false, error: "User not found" };
+    if (cred.passwordHash !== hashPwd(oldPwd)) return { ok: false, error: "Current password is incorrect" };
+    cred.passwordHash = hashPwd(newPwd);
+    this.audit("Password changed", username);
+    persist();
+    return { ok: true };
+  },
+  clearLoginActivity(keepCurrent = true) {
+    const currentUser = db.user?.username;
+    if (keepCurrent && currentUser) {
+      const latest = db.loginActivity.find((l) => l.username === currentUser && l.status === "success");
+      db.loginActivity = latest ? [latest] : [];
+    } else {
+      db.loginActivity = [];
+    }
+    this.audit("Cleared other sessions", currentUser ?? "system");
+    persist();
+  },
+  recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier">) {
+    const entry: ControlledDispense = {
+      ...d, id: crypto.randomUUID(), at: new Date().toISOString(), cashier: db.user?.username ?? "system",
+    };
+    db.controlledDispense.unshift(entry);
+    const p = db.products.find((p) => p.id === d.productId);
+    if (p) p.quantity = Math.max(0, p.quantity - d.quantity);
+    this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
+    persist();
+    return entry;
   },
   importProducts(rows: Omit<Product, "id">[]) {
     rows.forEach((r) => db.products.push({ ...r, id: crypto.randomUUID() }));
