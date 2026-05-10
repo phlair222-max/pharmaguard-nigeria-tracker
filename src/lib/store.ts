@@ -314,11 +314,17 @@ export const store = {
     if (db.audit.length > 500) db.audit.length = 500;
   },
   login(username: string, password: string) {
-    const role: "Admin" | "Pharmacist" =
-      username === "admin" && password === "admin" ? "Admin" :
-      username === "pharma" && password === "pharma" ? "Pharmacist" :
-      null as any;
-    if (!role) return false;
+    const cred = db.credentials.find((c) => c.username === username);
+    const ok = cred && cred.passwordHash === hashPwd(password);
+    const role: "Admin" | "Pharmacist" | null =
+      username === "admin" ? "Admin" : username === "pharma" ? "Pharmacist" : null;
+    const device = typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 80) : "Unknown";
+    db.loginActivity.unshift({
+      id: crypto.randomUUID(), username, at: new Date().toISOString(),
+      device, status: ok && role ? "success" : "failed",
+    });
+    if (db.loginActivity.length > 100) db.loginActivity.length = 100;
+    if (!ok || !role) { persist(); return false; }
     db.user = { username, role };
     this.audit("Login", username);
     persist(); return true;
@@ -326,6 +332,37 @@ export const store = {
   logout() {
     if (db.user) this.audit("Logout", db.user.username);
     db.user = null; persist();
+  },
+  changePassword(username: string, oldPwd: string, newPwd: string): { ok: boolean; error?: string } {
+    const cred = db.credentials.find((c) => c.username === username);
+    if (!cred) return { ok: false, error: "User not found" };
+    if (cred.passwordHash !== hashPwd(oldPwd)) return { ok: false, error: "Current password is incorrect" };
+    cred.passwordHash = hashPwd(newPwd);
+    this.audit("Password changed", username);
+    persist();
+    return { ok: true };
+  },
+  clearLoginActivity(keepCurrent = true) {
+    const currentUser = db.user?.username;
+    if (keepCurrent && currentUser) {
+      const latest = db.loginActivity.find((l) => l.username === currentUser && l.status === "success");
+      db.loginActivity = latest ? [latest] : [];
+    } else {
+      db.loginActivity = [];
+    }
+    this.audit("Cleared other sessions", currentUser ?? "system");
+    persist();
+  },
+  recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier">) {
+    const entry: ControlledDispense = {
+      ...d, id: crypto.randomUUID(), at: new Date().toISOString(), cashier: db.user?.username ?? "system",
+    };
+    db.controlledDispense.unshift(entry);
+    const p = db.products.find((p) => p.id === d.productId);
+    if (p) p.quantity = Math.max(0, p.quantity - d.quantity);
+    this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
+    persist();
+    return entry;
   },
   importProducts(rows: Omit<Product, "id">[]) {
     rows.forEach((r) => db.products.push({ ...r, id: crypto.randomUUID() }));
