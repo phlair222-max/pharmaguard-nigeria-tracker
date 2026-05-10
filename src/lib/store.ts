@@ -46,6 +46,32 @@ export type AuditEntry = {
 
 export type User = { username: string; role: "Admin" | "Pharmacist" };
 
+export type ControlledDispense = {
+  id: string;
+  productId: string;
+  productName: string;
+  batch: string;
+  quantity: number;
+  amount: number;
+  patientName: string;
+  patientPhone?: string;
+  prescriber: string;
+  prescriberRegNo?: string;
+  prescriptionRef: string;
+  cashier: string;
+  at: string;
+};
+
+export type LoginActivity = {
+  id: string;
+  username: string;
+  at: string;
+  device: string;
+  status: "success" | "failed";
+};
+
+export type Credential = { username: string; passwordHash: string };
+
 export type Supplier = {
   id: string;
   name: string;
