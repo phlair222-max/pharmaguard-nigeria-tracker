@@ -91,7 +91,12 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
       <Button
         variant="ghost" size="icon"
         className="h-8 w-8 text-sidebar-foreground hover:bg-sidebar-accent"
-        onClick={() => { store.logout(); navigate("/login"); }}
+        onClick={async () => {
+          const { supabase } = await import("@/integrations/supabase/client");
+          await supabase.auth.signOut();
+          store.logout();
+          navigate("/login");
+        }}
       >
         <LogOut className="h-4 w-4" />
       </Button>
