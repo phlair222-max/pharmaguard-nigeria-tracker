@@ -1,28 +1,62 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Pill } from "lucide-react";
-import { store, useStore } from "@/lib/store";
-import { useNavigate, Navigate } from "react-router-dom";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Pill, Loader2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { lovable } from "@/integrations/lovable";
 
 export default function Login() {
-  const user = useStore((s) => s.user);
   const navigate = useNavigate();
-  const [u, setU] = useState("admin");
-  const [p, setP] = useState("admin");
-  if (user) return <Navigate to="/" replace />;
-  const submit = (e: React.FormEvent) => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [pharmacyName, setPharmacyName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) navigate("/", { replace: true });
+    });
+  }, [navigate]);
+
+  const signIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (store.login(u, p)) {
-      toast.success(`Welcome back, ${u}`);
-      navigate("/");
-    } else {
-      toast.error("Invalid credentials");
-    }
+    setBusy(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Welcome back");
+    navigate("/", { replace: true });
   };
+
+  const signUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    const { error } = await supabase.auth.signUp({
+      email, password,
+      options: {
+        emailRedirectTo: window.location.origin,
+        data: { pharmacy_name: pharmacyName },
+      },
+    });
+    setBusy(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Account created — signing you in");
+    navigate("/", { replace: true });
+  };
+
+  const google = async () => {
+    setBusy(true);
+    const result = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
+    if (result.error) { setBusy(false); toast.error("Google sign-in failed"); return; }
+    if (result.redirected) return;
+    navigate("/", { replace: true });
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center gradient-subtle p-4">
       <Card className="w-full max-w-md shadow-elevated">
@@ -31,25 +65,57 @@ export default function Login() {
             <Pill className="h-7 w-7" />
           </div>
           <CardTitle className="text-2xl">PharmaGuard NG</CardTitle>
-          <CardDescription>Nigeria Pharma Tracker — sign in to continue</CardDescription>
+          <CardDescription>Each pharmacy has its own private inventory and sales</CardDescription>
         </CardHeader>
         <CardContent>
-          <form className="space-y-4" onSubmit={submit}>
-            <div className="space-y-2">
-              <Label htmlFor="u">Username</Label>
-              <Input id="u" value={u} onChange={(e) => setU(e.target.value)} autoComplete="username" />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="p">Password</Label>
-              <Input id="p" type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" />
-            </div>
-            <Button type="submit" className="w-full">Sign In</Button>
-            <div className="rounded-md border bg-muted/50 p-3 text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">Demo accounts</div>
-              <div>Admin — <code>admin</code> / <code>admin</code></div>
-              <div>Pharmacist — <code>pharma</code> / <code>pharma</code></div>
-            </div>
-          </form>
+          <Tabs defaultValue="signin">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="signin">Sign In</TabsTrigger>
+              <TabsTrigger value="signup">Create Account</TabsTrigger>
+            </TabsList>
+            <TabsContent value="signin">
+              <form className="space-y-4 pt-4" onSubmit={signIn}>
+                <div className="space-y-2">
+                  <Label htmlFor="e1">Email</Label>
+                  <Input id="e1" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="p1">Password</Label>
+                  <Input id="p1" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+                </div>
+                <Button type="submit" className="w-full" disabled={busy}>
+                  {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Sign In
+                </Button>
+              </form>
+            </TabsContent>
+            <TabsContent value="signup">
+              <form className="space-y-4 pt-4" onSubmit={signUp}>
+                <div className="space-y-2">
+                  <Label htmlFor="ph">Pharmacy Name</Label>
+                  <Input id="ph" required value={pharmacyName} onChange={(e) => setPharmacyName(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="e2">Email</Label>
+                  <Input id="e2" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="p2">Password</Label>
+                  <Input id="p2" type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+                </div>
+                <Button type="submit" className="w-full" disabled={busy}>
+                  {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Create Account
+                </Button>
+              </form>
+            </TabsContent>
+          </Tabs>
+
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+            <div className="relative flex justify-center text-xs"><span className="bg-card px-2 text-muted-foreground">OR</span></div>
+          </div>
+          <Button type="button" variant="outline" className="w-full" onClick={google} disabled={busy}>
+            Continue with Google
+          </Button>
         </CardContent>
       </Card>
     </div>
