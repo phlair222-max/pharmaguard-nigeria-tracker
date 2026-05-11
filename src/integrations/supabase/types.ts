@@ -14,7 +14,179 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      products: {
+        Row: {
+          barcode: string | null
+          batch: string
+          category: string
+          controlled: boolean
+          cost_price: number
+          created_at: string
+          description: string | null
+          expiry: string | null
+          generic: string
+          id: string
+          image: string | null
+          last_restocked: string | null
+          nafdac: string
+          name: string
+          pack_size: string
+          quantity: number
+          reorder_level: number
+          reorder_quantity: number
+          selling_price: number
+          supplier: string
+          supplier_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          barcode?: string | null
+          batch?: string
+          category?: string
+          controlled?: boolean
+          cost_price?: number
+          created_at?: string
+          description?: string | null
+          expiry?: string | null
+          generic?: string
+          id?: string
+          image?: string | null
+          last_restocked?: string | null
+          nafdac?: string
+          name: string
+          pack_size?: string
+          quantity?: number
+          reorder_level?: number
+          reorder_quantity?: number
+          selling_price?: number
+          supplier?: string
+          supplier_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          barcode?: string | null
+          batch?: string
+          category?: string
+          controlled?: boolean
+          cost_price?: number
+          created_at?: string
+          description?: string | null
+          expiry?: string | null
+          generic?: string
+          id?: string
+          image?: string | null
+          last_restocked?: string | null
+          nafdac?: string
+          name?: string
+          pack_size?: string
+          quantity?: number
+          reorder_level?: number
+          reorder_quantity?: number
+          selling_price?: number
+          supplier?: string
+          supplier_id?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          full_name: string | null
+          id: string
+          pharmacy_name: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          full_name?: string | null
+          id: string
+          pharmacy_name?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          pharmacy_name?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      sale_items: {
+        Row: {
+          cost: number
+          id: string
+          name: string
+          price: number
+          product_id: string | null
+          qty: number
+          sale_id: string
+        }
+        Insert: {
+          cost?: number
+          id?: string
+          name: string
+          price?: number
+          product_id?: string | null
+          qty?: number
+          sale_id: string
+        }
+        Update: {
+          cost?: number
+          id?: string
+          name?: string
+          price?: number
+          product_id?: string | null
+          qty?: number
+          sale_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sale_items_sale_id_fkey"
+            columns: ["sale_id"]
+            isOneToOne: false
+            referencedRelation: "sales"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sales: {
+        Row: {
+          cashier: string
+          created_at: string
+          customer: string | null
+          id: string
+          payment: string
+          profit: number
+          total: number
+          user_id: string
+        }
+        Insert: {
+          cashier?: string
+          created_at?: string
+          customer?: string | null
+          id?: string
+          payment?: string
+          profit?: number
+          total?: number
+          user_id: string
+        }
+        Update: {
+          cashier?: string
+          created_at?: string
+          customer?: string | null
+          id?: string
+          payment?: string
+          profit?: number
+          total?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
