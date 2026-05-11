@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ThemeProvider } from "next-themes";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
@@ -16,13 +17,44 @@ import Suppliers from "@/pages/Suppliers";
 import SalesHistory from "@/pages/SalesHistory";
 import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
-import { useStore } from "@/lib/store";
+import { store } from "@/lib/store";
+import { supabase } from "@/integrations/supabase/client";
+import type { Session } from "@supabase/supabase-js";
+import { Loader2 } from "lucide-react";
 
 const queryClient = new QueryClient();
 
-const Protected = ({ children }: { children: JSX.Element }) => {
-  const user = useStore((s) => s.user);
-  if (!user) return <Navigate to="/login" replace />;
+const SessionGate = ({ children }: { children: JSX.Element }) => {
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
+
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      if (s?.user) {
+        store.setAuthUser({ id: s.user.id, email: s.user.email || "user" });
+        void store.hydrateFromSupabase();
+      } else {
+        store.setAuthUser(null);
+      }
+    });
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (data.session?.user) {
+        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+        void store.hydrateFromSupabase();
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (session === undefined) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (!session) return <Navigate to="/login" replace />;
   return children;
 };
 
@@ -35,7 +67,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route element={<Protected><AppLayout /></Protected>}>
+            <Route element={<SessionGate><AppLayout /></SessionGate>}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/pos" element={<POS />} />
