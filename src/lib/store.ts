@@ -375,9 +375,137 @@ export const store = {
     return entry;
   },
   importProducts(rows: Omit<Product, "id">[]) {
-    rows.forEach((r) => db.products.push({ ...r, id: crypto.randomUUID() }));
+    const newRows = rows.map((r) => ({ ...r, id: crypto.randomUUID() }));
+    newRows.forEach((r) => db.products.push(r));
     this.audit("CSV import", `${rows.length} products`);
     persist();
+    void supabasePush.insertProducts(newRows);
+  },
+  // Supabase auth bridge — sets the active user from a Supabase session
+  setAuthUser(u: { id: string; email: string } | null) {
+    if (!u) {
+      db.user = null;
+      db.products = [];
+      db.sales = [];
+      persist();
+      return;
+    }
+    const role: "Admin" | "Pharmacist" = "Admin";
+    db.user = { username: u.email, role };
+    persist();
+  },
+  async hydrateFromSupabase() {
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) return;
+    const [{ data: prods, error: pe }, { data: sales, error: se }] = await Promise.all([
+      supabase.from("products").select("*").eq("user_id", auth.user.id),
+      supabase.from("sales").select("*, sale_items(*)").eq("user_id", auth.user.id).order("created_at", { ascending: false }),
+    ]);
+    if (pe) { console.error(pe); toast.error("Failed to load products"); }
+    if (se) { console.error(se); toast.error("Failed to load sales"); }
+    db.products = (prods || []).map(rowToProduct);
+    db.sales = (sales || []).map(rowToSale);
+    persist();
+  },
+};
+
+// ---- Supabase row mappers ----
+function productToRow(p: Product, userId: string) {
+  return {
+    id: p.id, user_id: userId, name: p.name, generic: p.generic, nafdac: p.nafdac, batch: p.batch,
+    expiry: p.expiry || null, quantity: p.quantity, reorder_level: p.reorderLevel,
+    reorder_quantity: p.reorderQuantity, pack_size: p.packSize, last_restocked: p.lastRestocked || null,
+    cost_price: p.costPrice, selling_price: p.sellingPrice, supplier: p.supplier,
+    supplier_id: p.supplierId || null, category: p.category, description: p.description || null,
+    controlled: !!p.controlled, barcode: p.barcode || null, image: p.image || null,
+  };
+}
+function rowToProduct(r: any): Product {
+  return {
+    id: r.id, name: r.name, generic: r.generic || "", nafdac: r.nafdac || "", batch: r.batch || "",
+    expiry: r.expiry || "", quantity: r.quantity || 0, reorderLevel: r.reorder_level || 0,
+    reorderQuantity: r.reorder_quantity || 0, packSize: r.pack_size || "",
+    lastRestocked: r.last_restocked || undefined, costPrice: Number(r.cost_price) || 0,
+    sellingPrice: Number(r.selling_price) || 0, supplier: r.supplier || "",
+    supplierId: r.supplier_id || undefined, category: r.category || "", description: r.description || "",
+    controlled: !!r.controlled, barcode: r.barcode || undefined, image: r.image || undefined,
+  };
+}
+function productPatchToRow(patch: Partial<Product>) {
+  const out: any = {};
+  const map: Record<string, string> = {
+    name: "name", generic: "generic", nafdac: "nafdac", batch: "batch", expiry: "expiry",
+    quantity: "quantity", reorderLevel: "reorder_level", reorderQuantity: "reorder_quantity",
+    packSize: "pack_size", lastRestocked: "last_restocked", costPrice: "cost_price",
+    sellingPrice: "selling_price", supplier: "supplier", supplierId: "supplier_id",
+    category: "category", description: "description", controlled: "controlled",
+    barcode: "barcode", image: "image",
+  };
+  for (const [k, v] of Object.entries(patch)) {
+    if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
+  }
+  return out;
+}
+function rowToSale(r: any): Sale {
+  return {
+    id: r.id, total: Number(r.total) || 0, profit: Number(r.profit) || 0,
+    payment: r.payment, cashier: r.cashier || "", customer: r.customer || undefined,
+    createdAt: r.created_at,
+    items: (r.sale_items || []).map((it: any) => ({
+      productId: it.product_id, name: it.name, qty: it.qty,
+      price: Number(it.price), cost: Number(it.cost),
+    })),
+  };
+}
+
+const supabasePush = {
+  async _uid() {
+    const { data } = await supabase.auth.getUser();
+    return data.user?.id || null;
+  },
+  async insertProduct(p: Product) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await supabase.from("products").insert(productToRow(p, uid));
+    if (error) { console.error(error); toast.error("Could not sync product to cloud"); }
+  },
+  async insertProducts(rows: Product[]) {
+    const uid = await this._uid(); if (!uid || !rows.length) return;
+    const { error } = await supabase.from("products").insert(rows.map((r) => productToRow(r, uid)));
+    if (error) { console.error(error); toast.error("Could not sync imported products"); }
+  },
+  async updateProduct(id: string, patch: Partial<Product>) {
+    const uid = await this._uid(); if (!uid) return;
+    const row = productPatchToRow(patch);
+    if (!Object.keys(row).length) return;
+    const { error } = await supabase.from("products").update(row).eq("id", id).eq("user_id", uid);
+    if (error) { console.error(error); toast.error("Could not sync product update"); }
+  },
+  async deleteProduct(id: string) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await supabase.from("products").delete().eq("id", id).eq("user_id", uid);
+    if (error) { console.error(error); toast.error("Could not delete product in cloud"); }
+  },
+  async insertSale(s: Sale) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error: e1 } = await supabase.from("sales").insert({
+      id: s.id, user_id: uid, total: s.total, profit: s.profit, payment: s.payment,
+      cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
+    });
+    if (e1) { console.error(e1); toast.error("Could not sync sale"); return; }
+    if (s.items.length) {
+      const { error: e2 } = await supabase.from("sale_items").insert(
+        s.items.map((it) => ({
+          sale_id: s.id, product_id: it.productId || null, name: it.name,
+          qty: it.qty, price: it.price, cost: it.cost ?? 0,
+        })),
+      );
+      if (e2) { console.error(e2); toast.error("Could not sync sale items"); }
+    }
+    // also sync stock decrements
+    for (const it of s.items) {
+      const p = db.products.find((p) => p.id === it.productId);
+      if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
+    }
   },
 };
 
