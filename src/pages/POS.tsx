@@ -76,7 +76,18 @@ export default function POS() {
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Sales Counter</h1>
           <p className="text-sm text-muted-foreground">Fast point-of-sale for the pharmacy counter</p>
         </div>
-        <Button variant={quickMode ? "default" : "outline"} size="sm" onClick={() => setQuickMode((v) => !v)}>
+        <Button
+          size="sm"
+          onClick={() => {
+            setQuickMode((v) => {
+              const next = !v;
+              if (next) { setPayment("Cash"); setCustomer(""); setTendered(0); }
+              return next;
+            });
+          }}
+          className={quickMode ? "bg-success text-success-foreground hover:bg-success/90" : ""}
+          variant={quickMode ? "default" : "outline"}
+        >
           <Zap className="mr-2 h-4 w-4" /> Quick Sale {quickMode ? "ON" : "OFF"}
         </Button>
       </div>
@@ -166,17 +177,19 @@ export default function POS() {
                   </SelectContent>
                 </Select>
               </div>
-              {payment === "Cash" && (
+              {!quickMode && payment === "Cash" && (
                 <div>
                   <Label className="text-xs">Cash tendered</Label>
                   <Input type="number" value={tendered} onChange={(e) => setTendered(+e.target.value)} />
                   {tendered > 0 && <div className="mt-1 text-xs text-muted-foreground">Change: <span className="font-semibold text-success">{NGN(change)}</span></div>}
                 </div>
               )}
-              <div>
-                <Label className="text-xs">Customer (optional)</Label>
-                <Input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Walk-in" />
-              </div>
+              {!quickMode && (
+                <div>
+                  <Label className="text-xs">Customer (optional)</Label>
+                  <Input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Walk-in" />
+                </div>
+              )}
             </div>
 
             <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
