@@ -76,7 +76,18 @@ export default function POS() {
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Sales Counter</h1>
           <p className="text-sm text-muted-foreground">Fast point-of-sale for the pharmacy counter</p>
         </div>
-        <Button variant={quickMode ? "default" : "outline"} size="sm" onClick={() => setQuickMode((v) => !v)}>
+        <Button
+          size="sm"
+          onClick={() => {
+            setQuickMode((v) => {
+              const next = !v;
+              if (next) { setPayment("Cash"); setCustomer(""); setTendered(0); }
+              return next;
+            });
+          }}
+          className={quickMode ? "bg-success text-success-foreground hover:bg-success/90" : ""}
+          variant={quickMode ? "default" : "outline"}
+        >
           <Zap className="mr-2 h-4 w-4" /> Quick Sale {quickMode ? "ON" : "OFF"}
         </Button>
       </div>
