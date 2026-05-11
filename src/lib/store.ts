@@ -252,19 +252,23 @@ export const store = {
     const np = { ...p, id: crypto.randomUUID() };
     db.products.push(np);
     this.audit("Added product", np.name);
-    persist(); return np;
+    persist();
+    void supabasePush.insertProduct(np);
+    return np;
   },
   updateProduct(id: string, patch: Partial<Product>) {
-    db.products = db.products.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    db.products = db.products.map((p) => (p ? p.id === id ? { ...p, ...patch } : p : p));
     const p = db.products.find((p) => p.id === id);
     if (p) this.audit("Updated product", p.name);
     persist();
+    void supabasePush.updateProduct(id, patch);
   },
   deleteProduct(id: string) {
     const p = db.products.find((p) => p.id === id);
     db.products = db.products.filter((p) => p.id !== id);
     if (p) this.audit("Deleted product", p.name);
     persist();
+    void supabasePush.deleteProduct(id);
   },
   receiveStock(id: string, qty: number) {
     const p = db.products.find((p) => p.id === id);
@@ -273,6 +277,7 @@ export const store = {
     p.lastRestocked = new Date().toISOString().slice(0, 10);
     this.audit("Received stock", p.name, `+${qty}`);
     persist();
+    void supabasePush.updateProduct(id, { quantity: p.quantity, lastRestocked: p.lastRestocked });
   },
   adjustStock(id: string, qty: number, reason: string) {
     const p = db.products.find((p) => p.id === id);
@@ -280,6 +285,7 @@ export const store = {
     p.quantity = Math.max(0, p.quantity + qty);
     this.audit("Stock adjustment", p.name, `${qty >= 0 ? "+" : ""}${qty} (${reason})`);
     persist();
+    void supabasePush.updateProduct(id, { quantity: p.quantity });
   },
   recordSale(sale: Omit<Sale, "id" | "createdAt">) {
     const ns: Sale = { ...sale, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
@@ -289,7 +295,9 @@ export const store = {
       if (p) p.quantity = Math.max(0, p.quantity - it.qty);
     }
     this.audit("Sale completed", `₦${ns.total.toFixed(2)}`, ns.payment);
-    persist(); return ns;
+    persist();
+    void supabasePush.insertSale(ns);
+    return ns;
   },
   // suppliers
   addSupplier(s: Omit<Supplier, "id">) {
