@@ -177,17 +177,19 @@ export default function POS() {
                   </SelectContent>
                 </Select>
               </div>
-              {payment === "Cash" && (
+              {!quickMode && payment === "Cash" && (
                 <div>
                   <Label className="text-xs">Cash tendered</Label>
                   <Input type="number" value={tendered} onChange={(e) => setTendered(+e.target.value)} />
                   {tendered > 0 && <div className="mt-1 text-xs text-muted-foreground">Change: <span className="font-semibold text-success">{NGN(change)}</span></div>}
                 </div>
               )}
-              <div>
-                <Label className="text-xs">Customer (optional)</Label>
-                <Input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Walk-in" />
-              </div>
+              {!quickMode && (
+                <div>
+                  <Label className="text-xs">Customer (optional)</Label>
+                  <Input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Walk-in" />
+                </div>
+              )}
             </div>
 
             <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
