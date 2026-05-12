@@ -397,8 +397,8 @@ export const store = {
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
       db.user = null;
-      db.products = [];
-      db.sales = [];
+      db.products = []; db.sales = []; db.suppliers = [];
+      db.controlledDispense = []; db.audit = [];
       persist();
       return;
     }
