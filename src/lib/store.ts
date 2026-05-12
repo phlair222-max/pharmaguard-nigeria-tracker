@@ -304,24 +304,34 @@ export const store = {
     const ns = { ...s, id: crypto.randomUUID() };
     db.suppliers.push(ns);
     this.audit("Added supplier", ns.name);
-    persist(); return ns;
+    persist();
+    void supabasePush.insertSupplier(ns);
+    return ns;
   },
   updateSupplier(id: string, patch: Partial<Supplier>) {
     db.suppliers = db.suppliers.map((s) => s.id === id ? { ...s, ...patch } : s);
     persist();
+    void supabasePush.updateSupplier(id, patch);
   },
   deleteSupplier(id: string) {
     const s = db.suppliers.find((x) => x.id === id);
     db.suppliers = db.suppliers.filter((x) => x.id !== id);
     if (s) this.audit("Deleted supplier", s.name);
     persist();
+    void supabasePush.deleteSupplier(id);
   },
   // settings
-  updateSettings(p: Partial<PharmacySettings>) { db.settings = { ...db.settings, ...p }; persist(); },
+  updateSettings(p: Partial<PharmacySettings>) {
+    db.settings = { ...db.settings, ...p };
+    persist();
+    void supabasePush.updateProfile(p);
+  },
 
   audit(action: string, target: string, detail?: string) {
-    db.audit.unshift({ id: crypto.randomUUID(), user: db.user?.username ?? "system", action, target, detail, at: new Date().toISOString() });
+    const entry = { id: crypto.randomUUID(), user: db.user?.username ?? "system", action, target, detail, at: new Date().toISOString() };
+    db.audit.unshift(entry);
     if (db.audit.length > 500) db.audit.length = 500;
+    void supabasePush.insertAudit(entry);
   },
   login(username: string, password: string) {
     const cred = db.credentials.find((c) => c.username === username);
@@ -372,6 +382,8 @@ export const store = {
     if (p) p.quantity = Math.max(0, p.quantity - d.quantity);
     this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
     persist();
+    void supabasePush.insertControlled(entry);
+    if (p) void supabasePush.updateProduct(p.id, { quantity: p.quantity });
     return entry;
   },
   importProducts(rows: Omit<Product, "id">[]) {
@@ -385,8 +397,8 @@ export const store = {
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
       db.user = null;
-      db.products = [];
-      db.sales = [];
+      db.products = []; db.sales = []; db.suppliers = [];
+      db.controlledDispense = []; db.audit = [];
       persist();
       return;
     }
@@ -397,14 +409,23 @@ export const store = {
   async hydrateFromSupabase() {
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return;
-    const [{ data: prods, error: pe }, { data: sales, error: se }] = await Promise.all([
-      supabase.from("products").select("*").eq("user_id", auth.user.id),
-      supabase.from("sales").select("*, sale_items(*)").eq("user_id", auth.user.id).order("created_at", { ascending: false }),
+    const uid = auth.user.id;
+    const [prodsR, salesR, supR, contR, audR, profR] = await Promise.all([
+      supabase.from("products").select("*").eq("user_id", uid),
+      supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
+      supabase.from("suppliers").select("*").eq("user_id", uid).order("name"),
+      (supabase.from as any)("controlled_dispense").select("*").eq("user_id", uid).order("at", { ascending: false }),
+      (supabase.from as any)("audit_logs").select("*").eq("user_id", uid).order("at", { ascending: false }).limit(500),
+      supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
     ]);
-    if (pe) { console.error(pe); toast.error("Failed to load products"); }
-    if (se) { console.error(se); toast.error("Failed to load sales"); }
-    db.products = (prods || []).map(rowToProduct);
-    db.sales = (sales || []).map(rowToSale);
+    if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
+    if (salesR.error) { console.error(salesR.error); toast.error("Failed to load sales"); }
+    db.products = (prodsR.data || []).map(rowToProduct);
+    db.sales = (salesR.data || []).map(rowToSale);
+    db.suppliers = (supR.data || []).map(rowToSupplier);
+    db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
+    db.audit = ((audR as any).data || []).map(rowToAudit);
+    if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
     persist();
   },
 };
@@ -458,6 +479,55 @@ function rowToSale(r: any): Sale {
   };
 }
 
+function rowToSupplier(r: any): Supplier {
+  return {
+    id: r.id, name: r.name, contactPerson: r.contact_person || "", phone: r.phone || "",
+    email: r.email || "", address: r.address || "", notes: r.notes || "",
+  };
+}
+function supplierToRow(s: Supplier, uid: string) {
+  return {
+    id: s.id, user_id: uid, name: s.name, contact_person: s.contactPerson || null,
+    phone: s.phone || null, email: s.email || null, address: s.address || null, notes: s.notes || null,
+  };
+}
+function supplierPatchToRow(patch: Partial<Supplier>) {
+  const out: any = {};
+  const map: Record<string, string> = { name: "name", contactPerson: "contact_person", phone: "phone", email: "email", address: "address", notes: "notes" };
+  for (const [k, v] of Object.entries(patch)) if (k in map) out[map[k]] = v || null;
+  return out;
+}
+function rowToControlled(r: any): ControlledDispense {
+  return {
+    id: r.id, productId: r.product_id || "", productName: r.product_name, batch: r.batch || "",
+    quantity: r.quantity || 0, amount: Number(r.amount) || 0, patientName: r.patient_name,
+    patientPhone: r.patient_phone || "", prescriber: r.prescriber, prescriberRegNo: r.prescriber_reg_no || "",
+    prescriptionRef: r.prescription_ref, cashier: r.cashier || "", at: r.at,
+  };
+}
+function rowToAudit(r: any): AuditEntry {
+  return { id: r.id, user: r.username || "", action: r.action, target: r.target || "", detail: r.detail || undefined, at: r.at };
+}
+function rowToSettings(r: any): Partial<PharmacySettings> {
+  return {
+    name: r.pharmacy_name || undefined, address: r.address || undefined, phone: r.phone || undefined,
+    email: r.email || undefined, premiseLicense: r.premise_license || undefined,
+    logo: r.logo || undefined, ownerPhoto: r.owner_photo || undefined, ownerName: r.owner_name || undefined,
+  };
+}
+function settingsPatchToRow(p: Partial<PharmacySettings>) {
+  const out: any = {};
+  if (p.name !== undefined) out.pharmacy_name = p.name;
+  if (p.address !== undefined) out.address = p.address;
+  if (p.phone !== undefined) out.phone = p.phone;
+  if (p.email !== undefined) out.email = p.email;
+  if (p.premiseLicense !== undefined) out.premise_license = p.premiseLicense;
+  if (p.logo !== undefined) out.logo = p.logo;
+  if (p.ownerPhoto !== undefined) out.owner_photo = p.ownerPhoto;
+  if (p.ownerName !== undefined) out.owner_name = p.ownerName;
+  return out;
+}
+
 const supabasePush = {
   async _uid() {
     const { data } = await supabase.auth.getUser();
@@ -506,6 +576,49 @@ const supabasePush = {
       const p = db.products.find((p) => p.id === it.productId);
       if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
     }
+  },
+  async insertSupplier(s: Supplier) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await supabase.from("suppliers").insert(supplierToRow(s, uid));
+    if (error) { console.error(error); toast.error("Could not sync supplier"); }
+  },
+  async updateSupplier(id: string, patch: Partial<Supplier>) {
+    const uid = await this._uid(); if (!uid) return;
+    const row = supplierPatchToRow(patch);
+    if (!Object.keys(row).length) return;
+    const { error } = await supabase.from("suppliers").update(row).eq("id", id).eq("user_id", uid);
+    if (error) { console.error(error); toast.error("Could not sync supplier update"); }
+  },
+  async deleteSupplier(id: string) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("user_id", uid);
+    if (error) { console.error(error); toast.error("Could not delete supplier"); }
+  },
+  async insertControlled(d: ControlledDispense) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await (supabase.from as any)("controlled_dispense").insert({
+      id: d.id, user_id: uid, product_id: d.productId || null, product_name: d.productName,
+      batch: d.batch, quantity: d.quantity, amount: d.amount, patient_name: d.patientName,
+      patient_phone: d.patientPhone || null, prescriber: d.prescriber,
+      prescriber_reg_no: d.prescriberRegNo || null, prescription_ref: d.prescriptionRef,
+      cashier: d.cashier, at: d.at,
+    });
+    if (error) { console.error(error); toast.error("Could not sync controlled dispense"); }
+  },
+  async insertAudit(a: AuditEntry) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await (supabase.from as any)("audit_logs").insert({
+      id: a.id, user_id: uid, username: a.user, action: a.action,
+      target: a.target, detail: a.detail || null, at: a.at,
+    });
+    if (error) console.error(error);
+  },
+  async updateProfile(p: Partial<PharmacySettings>) {
+    const uid = await this._uid(); if (!uid) return;
+    const row = settingsPatchToRow(p);
+    if (!Object.keys(row).length) return;
+    const { error } = await supabase.from("profiles").update(row).eq("id", uid);
+    if (error) { console.error(error); toast.error("Could not save pharmacy settings"); }
   },
 };
 
