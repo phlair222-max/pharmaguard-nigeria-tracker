@@ -577,6 +577,49 @@ const supabasePush = {
       if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
     }
   },
+  async insertSupplier(s: Supplier) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await supabase.from("suppliers").insert(supplierToRow(s, uid));
+    if (error) { console.error(error); toast.error("Could not sync supplier"); }
+  },
+  async updateSupplier(id: string, patch: Partial<Supplier>) {
+    const uid = await this._uid(); if (!uid) return;
+    const row = supplierPatchToRow(patch);
+    if (!Object.keys(row).length) return;
+    const { error } = await supabase.from("suppliers").update(row).eq("id", id).eq("user_id", uid);
+    if (error) { console.error(error); toast.error("Could not sync supplier update"); }
+  },
+  async deleteSupplier(id: string) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("user_id", uid);
+    if (error) { console.error(error); toast.error("Could not delete supplier"); }
+  },
+  async insertControlled(d: ControlledDispense) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await (supabase.from as any)("controlled_dispense").insert({
+      id: d.id, user_id: uid, product_id: d.productId || null, product_name: d.productName,
+      batch: d.batch, quantity: d.quantity, amount: d.amount, patient_name: d.patientName,
+      patient_phone: d.patientPhone || null, prescriber: d.prescriber,
+      prescriber_reg_no: d.prescriberRegNo || null, prescription_ref: d.prescriptionRef,
+      cashier: d.cashier, at: d.at,
+    });
+    if (error) { console.error(error); toast.error("Could not sync controlled dispense"); }
+  },
+  async insertAudit(a: AuditEntry) {
+    const uid = await this._uid(); if (!uid) return;
+    const { error } = await (supabase.from as any)("audit_logs").insert({
+      id: a.id, user_id: uid, username: a.user, action: a.action,
+      target: a.target, detail: a.detail || null, at: a.at,
+    });
+    if (error) console.error(error);
+  },
+  async updateProfile(p: Partial<PharmacySettings>) {
+    const uid = await this._uid(); if (!uid) return;
+    const row = settingsPatchToRow(p);
+    if (!Object.keys(row).length) return;
+    const { error } = await supabase.from("profiles").update(row).eq("id", uid);
+    if (error) { console.error(error); toast.error("Could not save pharmacy settings"); }
+  },
 };
 
 export function useStore<T>(selector: (db: DB) => T): T {
