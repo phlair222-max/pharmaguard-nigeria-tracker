@@ -479,6 +479,55 @@ function rowToSale(r: any): Sale {
   };
 }
 
+function rowToSupplier(r: any): Supplier {
+  return {
+    id: r.id, name: r.name, contactPerson: r.contact_person || "", phone: r.phone || "",
+    email: r.email || "", address: r.address || "", notes: r.notes || "",
+  };
+}
+function supplierToRow(s: Supplier, uid: string) {
+  return {
+    id: s.id, user_id: uid, name: s.name, contact_person: s.contactPerson || null,
+    phone: s.phone || null, email: s.email || null, address: s.address || null, notes: s.notes || null,
+  };
+}
+function supplierPatchToRow(patch: Partial<Supplier>) {
+  const out: any = {};
+  const map: Record<string, string> = { name: "name", contactPerson: "contact_person", phone: "phone", email: "email", address: "address", notes: "notes" };
+  for (const [k, v] of Object.entries(patch)) if (k in map) out[map[k]] = v || null;
+  return out;
+}
+function rowToControlled(r: any): ControlledDispense {
+  return {
+    id: r.id, productId: r.product_id || "", productName: r.product_name, batch: r.batch || "",
+    quantity: r.quantity || 0, amount: Number(r.amount) || 0, patientName: r.patient_name,
+    patientPhone: r.patient_phone || "", prescriber: r.prescriber, prescriberRegNo: r.prescriber_reg_no || "",
+    prescriptionRef: r.prescription_ref, cashier: r.cashier || "", at: r.at,
+  };
+}
+function rowToAudit(r: any): AuditEntry {
+  return { id: r.id, user: r.username || "", action: r.action, target: r.target || "", detail: r.detail || undefined, at: r.at };
+}
+function rowToSettings(r: any): Partial<PharmacySettings> {
+  return {
+    name: r.pharmacy_name || undefined, address: r.address || undefined, phone: r.phone || undefined,
+    email: r.email || undefined, premiseLicense: r.premise_license || undefined,
+    logo: r.logo || undefined, ownerPhoto: r.owner_photo || undefined, ownerName: r.owner_name || undefined,
+  };
+}
+function settingsPatchToRow(p: Partial<PharmacySettings>) {
+  const out: any = {};
+  if (p.name !== undefined) out.pharmacy_name = p.name;
+  if (p.address !== undefined) out.address = p.address;
+  if (p.phone !== undefined) out.phone = p.phone;
+  if (p.email !== undefined) out.email = p.email;
+  if (p.premiseLicense !== undefined) out.premise_license = p.premiseLicense;
+  if (p.logo !== undefined) out.logo = p.logo;
+  if (p.ownerPhoto !== undefined) out.owner_photo = p.ownerPhoto;
+  if (p.ownerName !== undefined) out.owner_name = p.ownerName;
+  return out;
+}
+
 const supabasePush = {
   async _uid() {
     const { data } = await supabase.auth.getUser();
