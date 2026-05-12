@@ -14,6 +14,87 @@ export type Database = {
   }
   public: {
     Tables: {
+      audit_logs: {
+        Row: {
+          action: string
+          at: string
+          detail: string | null
+          id: string
+          target: string
+          user_id: string
+          username: string
+        }
+        Insert: {
+          action: string
+          at?: string
+          detail?: string | null
+          id?: string
+          target?: string
+          user_id: string
+          username?: string
+        }
+        Update: {
+          action?: string
+          at?: string
+          detail?: string | null
+          id?: string
+          target?: string
+          user_id?: string
+          username?: string
+        }
+        Relationships: []
+      }
+      controlled_dispense: {
+        Row: {
+          amount: number
+          at: string
+          batch: string
+          cashier: string
+          id: string
+          patient_name: string
+          patient_phone: string | null
+          prescriber: string
+          prescriber_reg_no: string | null
+          prescription_ref: string
+          product_id: string | null
+          product_name: string
+          quantity: number
+          user_id: string
+        }
+        Insert: {
+          amount?: number
+          at?: string
+          batch?: string
+          cashier?: string
+          id?: string
+          patient_name: string
+          patient_phone?: string | null
+          prescriber: string
+          prescriber_reg_no?: string | null
+          prescription_ref: string
+          product_id?: string | null
+          product_name: string
+          quantity?: number
+          user_id: string
+        }
+        Update: {
+          amount?: number
+          at?: string
+          batch?: string
+          cashier?: string
+          id?: string
+          patient_name?: string
+          patient_phone?: string | null
+          prescriber?: string
+          prescriber_reg_no?: string | null
+          prescription_ref?: string
+          product_id?: string | null
+          product_name?: string
+          quantity?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       products: {
         Row: {
           barcode: string | null
@@ -94,24 +175,45 @@ export type Database = {
       }
       profiles: {
         Row: {
+          address: string | null
           created_at: string
+          email: string | null
           full_name: string | null
           id: string
+          logo: string | null
+          owner_name: string | null
+          owner_photo: string | null
           pharmacy_name: string | null
+          phone: string | null
+          premise_license: string | null
           updated_at: string
         }
         Insert: {
+          address?: string | null
           created_at?: string
+          email?: string | null
           full_name?: string | null
           id: string
+          logo?: string | null
+          owner_name?: string | null
+          owner_photo?: string | null
           pharmacy_name?: string | null
+          phone?: string | null
+          premise_license?: string | null
           updated_at?: string
         }
         Update: {
+          address?: string | null
           created_at?: string
+          email?: string | null
           full_name?: string | null
           id?: string
+          logo?: string | null
+          owner_name?: string | null
+          owner_photo?: string | null
           pharmacy_name?: string | null
+          phone?: string | null
+          premise_license?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -183,6 +285,45 @@ export type Database = {
           payment?: string
           profit?: number
           total?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
+      suppliers: {
+        Row: {
+          address: string | null
+          contact_person: string | null
+          created_at: string
+          email: string | null
+          id: string
+          name: string
+          notes: string | null
+          phone: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          address?: string | null
+          contact_person?: string | null
+          created_at?: string
+          email?: string | null
+          id?: string
+          name: string
+          notes?: string | null
+          phone?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          address?: string | null
+          contact_person?: string | null
+          created_at?: string
+          email?: string | null
+          id?: string
+          name?: string
+          notes?: string | null
+          phone?: string | null
+          updated_at?: string
           user_id?: string
         }
         Relationships: []
