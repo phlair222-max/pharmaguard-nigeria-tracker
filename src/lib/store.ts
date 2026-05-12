@@ -304,24 +304,34 @@ export const store = {
     const ns = { ...s, id: crypto.randomUUID() };
     db.suppliers.push(ns);
     this.audit("Added supplier", ns.name);
-    persist(); return ns;
+    persist();
+    void supabasePush.insertSupplier(ns);
+    return ns;
   },
   updateSupplier(id: string, patch: Partial<Supplier>) {
     db.suppliers = db.suppliers.map((s) => s.id === id ? { ...s, ...patch } : s);
     persist();
+    void supabasePush.updateSupplier(id, patch);
   },
   deleteSupplier(id: string) {
     const s = db.suppliers.find((x) => x.id === id);
     db.suppliers = db.suppliers.filter((x) => x.id !== id);
     if (s) this.audit("Deleted supplier", s.name);
     persist();
+    void supabasePush.deleteSupplier(id);
   },
   // settings
-  updateSettings(p: Partial<PharmacySettings>) { db.settings = { ...db.settings, ...p }; persist(); },
+  updateSettings(p: Partial<PharmacySettings>) {
+    db.settings = { ...db.settings, ...p };
+    persist();
+    void supabasePush.updateProfile(p);
+  },
 
   audit(action: string, target: string, detail?: string) {
-    db.audit.unshift({ id: crypto.randomUUID(), user: db.user?.username ?? "system", action, target, detail, at: new Date().toISOString() });
+    const entry = { id: crypto.randomUUID(), user: db.user?.username ?? "system", action, target, detail, at: new Date().toISOString() };
+    db.audit.unshift(entry);
     if (db.audit.length > 500) db.audit.length = 500;
+    void supabasePush.insertAudit(entry);
   },
   login(username: string, password: string) {
     const cred = db.credentials.find((c) => c.username === username);
