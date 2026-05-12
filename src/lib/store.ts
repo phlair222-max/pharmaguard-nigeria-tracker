@@ -382,6 +382,8 @@ export const store = {
     if (p) p.quantity = Math.max(0, p.quantity - d.quantity);
     this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
     persist();
+    void supabasePush.insertControlled(entry);
+    if (p) void supabasePush.updateProduct(p.id, { quantity: p.quantity });
     return entry;
   },
   importProducts(rows: Omit<Product, "id">[]) {
