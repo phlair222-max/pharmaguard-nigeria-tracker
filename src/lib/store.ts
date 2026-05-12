@@ -409,14 +409,23 @@ export const store = {
   async hydrateFromSupabase() {
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return;
-    const [{ data: prods, error: pe }, { data: sales, error: se }] = await Promise.all([
-      supabase.from("products").select("*").eq("user_id", auth.user.id),
-      supabase.from("sales").select("*, sale_items(*)").eq("user_id", auth.user.id).order("created_at", { ascending: false }),
+    const uid = auth.user.id;
+    const [prodsR, salesR, supR, contR, audR, profR] = await Promise.all([
+      supabase.from("products").select("*").eq("user_id", uid),
+      supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
+      supabase.from("suppliers").select("*").eq("user_id", uid).order("name"),
+      (supabase.from as any)("controlled_dispense").select("*").eq("user_id", uid).order("at", { ascending: false }),
+      (supabase.from as any)("audit_logs").select("*").eq("user_id", uid).order("at", { ascending: false }).limit(500),
+      supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
     ]);
-    if (pe) { console.error(pe); toast.error("Failed to load products"); }
-    if (se) { console.error(se); toast.error("Failed to load sales"); }
-    db.products = (prods || []).map(rowToProduct);
-    db.sales = (sales || []).map(rowToSale);
+    if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
+    if (salesR.error) { console.error(salesR.error); toast.error("Failed to load sales"); }
+    db.products = (prodsR.data || []).map(rowToProduct);
+    db.sales = (salesR.data || []).map(rowToSale);
+    db.suppliers = (supR.data || []).map(rowToSupplier);
+    db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
+    db.audit = ((audR as any).data || []).map(rowToAudit);
+    if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
     persist();
   },
 };
