@@ -410,6 +410,7 @@ export const store = {
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return;
     const uid = auth.user.id;
+    const email = auth.user.email || "";
     const [prodsR, salesR, supR, contR, audR, profR] = await Promise.all([
       supabase.from("products").select("*").eq("user_id", uid),
       supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
@@ -427,6 +428,26 @@ export const store = {
     db.audit = ((audR as any).data || []).map(rowToAudit);
     if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
     persist();
+
+    // Admin gets the demo data, seeded once into their cloud account.
+    if (
+      email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
+      db.products.length === 0 &&
+      db.sales.length === 0
+    ) {
+      await seedAdminDemoData(uid);
+      // Re-fetch after seeding so the UI shows the demo dataset.
+      const [p2, s2, sup2] = await Promise.all([
+        supabase.from("products").select("*").eq("user_id", uid),
+        supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
+        supabase.from("suppliers").select("*").eq("user_id", uid).order("name"),
+      ]);
+      db.products = (p2.data || []).map(rowToProduct);
+      db.sales = (s2.data || []).map(rowToSale);
+      db.suppliers = (sup2.data || []).map(rowToSupplier);
+      persist();
+      toast.success("Demo data loaded into your admin pharmacy");
+    }
   },
 };
 
