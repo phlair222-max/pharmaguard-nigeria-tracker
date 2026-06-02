@@ -107,7 +107,8 @@ type DB = {
   credentials: Credential[];
 };
 
-const KEY = "pharmaguard_db_v2";
+const KEY = "pharmaguard_db_v3";
+const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const seedProducts: Array<[string, string, string, string, number, number, number, number, string, string, string]> = [
   ["Paracetamol 500mg", "Paracetamol", "A4-1234", "PCM-2024-001", 240, 60, 8, 15, "Emzor", "Analgesics", "Tablet"],
