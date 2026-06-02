@@ -107,7 +107,8 @@ type DB = {
   credentials: Credential[];
 };
 
-const KEY = "pharmaguard_db_v2";
+const KEY = "pharmaguard_db_v3";
+const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const seedProducts: Array<[string, string, string, string, number, number, number, number, string, string, string]> = [
   ["Paracetamol 500mg", "Paracetamol", "A4-1234", "PCM-2024-001", 240, 60, 8, 15, "Emzor", "Analgesics", "Tablet"],
@@ -216,19 +217,18 @@ function load(): DB {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) {
-      const seed = makeSeed();
-      localStorage.setItem(KEY, JSON.stringify(seed));
-      return seed;
+      // New users (and the app at first launch) start with a completely empty
+      // pharmacy. Demo data only lives in the admin's cloud account.
+      const empty = emptyDb();
+      localStorage.setItem(KEY, JSON.stringify(empty));
+      return empty;
     }
     const parsed = JSON.parse(raw) as DB;
     parsed.suppliers = parsed.suppliers || [];
     parsed.settings = parsed.settings || defaultSettings;
     parsed.controlledDispense = parsed.controlledDispense || [];
     parsed.loginActivity = parsed.loginActivity || [];
-    parsed.credentials = parsed.credentials || [
-      { username: "admin", passwordHash: hashPwd("admin") },
-      { username: "pharma", passwordHash: hashPwd("pharma") },
-    ];
+    parsed.credentials = parsed.credentials || [];
     return parsed;
   } catch {
     return emptyDb();
@@ -410,6 +410,7 @@ export const store = {
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return;
     const uid = auth.user.id;
+    const email = auth.user.email || "";
     const [prodsR, salesR, supR, contR, audR, profR] = await Promise.all([
       supabase.from("products").select("*").eq("user_id", uid),
       supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
@@ -427,6 +428,26 @@ export const store = {
     db.audit = ((audR as any).data || []).map(rowToAudit);
     if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
     persist();
+
+    // Admin gets the demo data, seeded once into their cloud account.
+    if (
+      email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
+      db.products.length === 0 &&
+      db.sales.length === 0
+    ) {
+      await seedAdminDemoData(uid);
+      // Re-fetch after seeding so the UI shows the demo dataset.
+      const [p2, s2, sup2] = await Promise.all([
+        supabase.from("products").select("*").eq("user_id", uid),
+        supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
+        supabase.from("suppliers").select("*").eq("user_id", uid).order("name"),
+      ]);
+      db.products = (p2.data || []).map(rowToProduct);
+      db.sales = (s2.data || []).map(rowToSale);
+      db.suppliers = (sup2.data || []).map(rowToSupplier);
+      persist();
+      toast.success("Demo data loaded into your admin pharmacy");
+    }
   },
 };
 
@@ -621,6 +642,38 @@ const supabasePush = {
     if (error) { console.error(error); toast.error("Could not save pharmacy settings"); }
   },
 };
+
+async function seedAdminDemoData(uid: string) {
+  const seed = makeSeed();
+  // Suppliers first (products reference supplier names)
+  const supRows = seed.suppliers.map((s) => supplierToRow(s, uid));
+  if (supRows.length) {
+    const { error } = await supabase.from("suppliers").insert(supRows);
+    if (error) { console.error(error); }
+  }
+  const prodRows = seed.products.map((p) => productToRow(p, uid));
+  if (prodRows.length) {
+    const { error } = await supabase.from("products").insert(prodRows);
+    if (error) { console.error(error); toast.error("Failed to seed demo products"); return; }
+  }
+  // Sales + sale_items
+  for (const s of seed.sales) {
+    const { error: e1 } = await supabase.from("sales").insert({
+      id: s.id, user_id: uid, total: s.total, profit: s.profit, payment: s.payment,
+      cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
+    });
+    if (e1) { console.error(e1); continue; }
+    if (s.items.length) {
+      const { error: e2 } = await supabase.from("sale_items").insert(
+        s.items.map((it) => ({
+          sale_id: s.id, product_id: it.productId || null, name: it.name,
+          qty: it.qty, price: it.price, cost: it.cost ?? 0,
+        })),
+      );
+      if (e2) console.error(e2);
+    }
+  }
+}
 
 export function useStore<T>(selector: (db: DB) => T): T {
   return useSyncExternalStore(
