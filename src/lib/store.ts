@@ -643,6 +643,38 @@ const supabasePush = {
   },
 };
 
+async function seedAdminDemoData(uid: string) {
+  const seed = makeSeed();
+  // Suppliers first (products reference supplier names)
+  const supRows = seed.suppliers.map((s) => supplierToRow(s, uid));
+  if (supRows.length) {
+    const { error } = await supabase.from("suppliers").insert(supRows);
+    if (error) { console.error(error); }
+  }
+  const prodRows = seed.products.map((p) => productToRow(p, uid));
+  if (prodRows.length) {
+    const { error } = await supabase.from("products").insert(prodRows);
+    if (error) { console.error(error); toast.error("Failed to seed demo products"); return; }
+  }
+  // Sales + sale_items
+  for (const s of seed.sales) {
+    const { error: e1 } = await supabase.from("sales").insert({
+      id: s.id, user_id: uid, total: s.total, profit: s.profit, payment: s.payment,
+      cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
+    });
+    if (e1) { console.error(e1); continue; }
+    if (s.items.length) {
+      const { error: e2 } = await supabase.from("sale_items").insert(
+        s.items.map((it) => ({
+          sale_id: s.id, product_id: it.productId || null, name: it.name,
+          qty: it.qty, price: it.price, cost: it.cost ?? 0,
+        })),
+      );
+      if (e2) console.error(e2);
+    }
+  }
+}
+
 export function useStore<T>(selector: (db: DB) => T): T {
   return useSyncExternalStore(
     (cb) => store.subscribe(cb),
