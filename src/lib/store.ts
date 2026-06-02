@@ -217,19 +217,18 @@ function load(): DB {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) {
-      const seed = makeSeed();
-      localStorage.setItem(KEY, JSON.stringify(seed));
-      return seed;
+      // New users (and the app at first launch) start with a completely empty
+      // pharmacy. Demo data only lives in the admin's cloud account.
+      const empty = emptyDb();
+      localStorage.setItem(KEY, JSON.stringify(empty));
+      return empty;
     }
     const parsed = JSON.parse(raw) as DB;
     parsed.suppliers = parsed.suppliers || [];
     parsed.settings = parsed.settings || defaultSettings;
     parsed.controlledDispense = parsed.controlledDispense || [];
     parsed.loginActivity = parsed.loginActivity || [];
-    parsed.credentials = parsed.credentials || [
-      { username: "admin", passwordHash: hashPwd("admin") },
-      { username: "pharma", passwordHash: hashPwd("pharma") },
-    ];
+    parsed.credentials = parsed.credentials || [];
     return parsed;
   } catch {
     return emptyDb();
