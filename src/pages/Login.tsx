@@ -14,13 +14,15 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pharmacyName, setPharmacyName] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  const [signingUp, setSigningUp] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   useEffect(() => {
     // Clean error fragments from URL
     if (window.location.hash.includes("error")) {
       window.history.replaceState(null, "", window.location.pathname);
-      setBusy(false);
+      setGoogleBusy(false);
       toast.error("Google sign-in failed. Please try again.");
       return;
     }
@@ -36,18 +38,29 @@ export default function Login() {
         navigate("/", { replace: true });
       }
       if (event === "SIGNED_OUT") {
-        setBusy(false);
+        setGoogleBusy(false);
+        setSigningIn(false);
+        setSigningUp(false);
       }
     });
 
     return () => sub.subscription.unsubscribe();
   }, [navigate]);
 
+  // Reset google spinner if user comes back via browser back button
+  useEffect(() => {
+    const handleFocus = () => {
+      setTimeout(() => setGoogleBusy(false), 1000);
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, []);
+
   const signIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
+    setSigningIn(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
+    setSigningIn(false);
     if (error) { toast.error(error.message); return; }
     toast.success("Welcome back");
     navigate("/", { replace: true });
@@ -55,7 +68,7 @@ export default function Login() {
 
   const signUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
+    setSigningUp(true);
     const { error } = await supabase.auth.signUp({
       email, password,
       options: {
@@ -63,14 +76,14 @@ export default function Login() {
         data: { pharmacy_name: pharmacyName },
       },
     });
-    setBusy(false);
+    setSigningUp(false);
     if (error) { toast.error(error.message); return; }
     toast.success("Account created — check your email to confirm");
   };
 
   const google = async () => {
     window.history.replaceState(null, "", window.location.pathname);
-    setBusy(true);
+    setGoogleBusy(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -78,21 +91,10 @@ export default function Login() {
       },
     });
     if (error) {
-      setBusy(false);
+      setGoogleBusy(false);
       toast.error("Google sign-in failed");
     }
-    // Note: busy stays true intentionally while redirect happens
-    // It resets automatically if user comes back via browser back button
   };
-
-  // Reset busy state if user navigates back from Google
-  useEffect(() => {
-    const handleFocus = () => {
-      setTimeout(() => setBusy(false), 1000);
-    };
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, []);
 
   return (
     <div className="flex min-h-screen items-center justify-center gradient-subtle p-4">
@@ -120,8 +122,9 @@ export default function Login() {
                   <Label htmlFor="p1">Password</Label>
                   <Input id="p1" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
                 </div>
-                <Button type="submit" className="w-full" disabled={busy}>
-                  {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Sign In
+                <Button type="submit" className="w-full" disabled={signingIn || googleBusy}>
+                  {signingIn && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Sign In
                 </Button>
               </form>
             </TabsContent>
@@ -139,8 +142,9 @@ export default function Login() {
                   <Label htmlFor="p2">Password</Label>
                   <Input id="p2" type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
                 </div>
-                <Button type="submit" className="w-full" disabled={busy}>
-                  {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Create Account
+                <Button type="submit" className="w-full" disabled={signingUp || googleBusy}>
+                  {signingUp && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Create Account
                 </Button>
               </form>
             </TabsContent>
@@ -149,8 +153,14 @@ export default function Login() {
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
             <div className="relative flex justify-center text-xs"><span className="bg-card px-2 text-muted-foreground">OR</span></div>
           </div>
-          <Button type="button" variant="outline" className="w-full" onClick={google} disabled={busy}>
-            {busy ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={google}
+            disabled={googleBusy || signingIn || signingUp}
+          >
+            {googleBusy ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
               <svg className="mr-2 h-4 w-4" viewBox="0 0 48 48" aria-hidden="true">
