@@ -4,11 +4,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2 } from "lucide-react";
+import { Pill, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { store, useStore } from "@/lib/store";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -18,7 +17,6 @@ export default function Login() {
   const [signingIn, setSigningIn] = useState(false);
   const [signingUp, setSigningUp] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
-  const settings = useStore((s) => s.settings);
 
   useEffect(() => {
     if (window.location.hash.includes("error")) {
@@ -95,44 +93,12 @@ export default function Login() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center gradient-subtle p-4">
-
-      {/* Top left — owner photo */}
-      <div className="absolute top-4 left-4">
-        {settings.ownerPhoto ? (
-          <img
-            src={settings.ownerPhoto}
-            alt="Owner"
-            className="h-12 w-12 rounded-full object-cover border-2 border-white shadow-md"
-          />
-        ) : (
-          <div className="h-12 w-12 rounded-full bg-muted border-2 border-white shadow-md flex items-center justify-center text-xs text-muted-foreground">
-            You
-          </div>
-        )}
-      </div>
-
-      {/* Top right — pharmacy logo */}
-      <div className="absolute top-4 right-4">
-        {settings.logo ? (
-          <img
-            src={settings.logo}
-            alt="Logo"
-            className="h-12 w-12 rounded-xl object-cover border bg-white shadow-md"
-          />
-        ) : (
-          <div className="h-12 w-12 rounded-xl bg-[#16a36e] flex items-center justify-center shadow-md">
-            <svg viewBox="0 0 100 100" className="h-7 w-7">
-              <rect x="38" y="15" width="24" height="70" rx="6" fill="white"/>
-              <rect x="15" y="38" width="70" height="24" rx="6" fill="white"/>
-            </svg>
-          </div>
-        )}
-      </div>
-
-      {/* Login Card */}
+    <div className="flex min-h-screen items-center justify-center gradient-subtle p-4">
       <Card className="w-full max-w-md shadow-elevated">
         <CardHeader className="items-center text-center pb-2">
+          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl gradient-primary text-primary-foreground shadow-elevated">
+            <Pill className="h-7 w-7" />
+          </div>
           <CardTitle className="text-2xl">PharmaGuard NG</CardTitle>
         </CardHeader>
         <CardContent>
