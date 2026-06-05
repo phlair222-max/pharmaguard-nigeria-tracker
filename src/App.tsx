@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ThemeProvider } from "next-themes";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate, useNavigate } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -28,6 +28,11 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
   useEffect(() => {
+    // Clean up any OAuth error fragments from URL
+    if (window.location.hash.includes("error")) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
       if (s?.user) {
@@ -37,6 +42,7 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
         store.setAuthUser(null);
       }
     });
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       if (data.session?.user) {
@@ -44,6 +50,7 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
         void store.hydrateFromSupabase();
       }
     });
+
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -54,6 +61,7 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
       </div>
     );
   }
+
   if (!session) return <Navigate to="/login" replace />;
   return children;
 };
