@@ -17,6 +17,11 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    // Clean up any OAuth error fragments from URL on load
+    if (window.location.hash.includes("error")) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) navigate("/", { replace: true });
     });
@@ -49,6 +54,8 @@ export default function Login() {
   };
 
   const google = async () => {
+    // Clear any previous OAuth errors from URL
+    window.history.replaceState(null, "", window.location.pathname);
     setBusy(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
