@@ -8,7 +8,6 @@ import { Pill, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -51,10 +50,13 @@ export default function Login() {
 
   const google = async () => {
     setBusy(true);
-    const result = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
-    if (result.error) { setBusy(false); toast.error("Google sign-in failed"); return; }
-    if (result.redirected) return;
-    navigate("/", { replace: true });
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: "https://pharmaguardng.netlify.app",
+      },
+    });
+    if (error) { setBusy(false); toast.error("Google sign-in failed"); return; }
   };
 
   return (
@@ -108,7 +110,6 @@ export default function Login() {
               </form>
             </TabsContent>
           </Tabs>
-
           <div className="relative my-4">
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
             <div className="relative flex justify-center text-xs"><span className="bg-card px-2 text-muted-foreground">OR</span></div>
