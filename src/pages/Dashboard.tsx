@@ -49,10 +49,38 @@ export default function Dashboard() {
   return (
     <TooltipProvider delayDuration={150}>
     <div className="space-y-6">
+
+      {/* Header — owner photo left, title centre-left, pharmacy logo right */}
       <div className="flex items-center gap-3">
-        {/* Pharmacy logo — green cross as default */}
+
+        {/* Owner / Pharmacist-in-Charge photo */}
+        {settings.ownerPhoto ? (
+          <img
+            src={settings.ownerPhoto}
+            alt="Pharmacist"
+            className="h-12 w-12 rounded-full object-cover border shadow-sm shrink-0"
+          />
+        ) : (
+          <div className="h-12 w-12 rounded-full bg-muted border flex items-center justify-center shrink-0">
+            <svg viewBox="0 0 24 24" className="h-6 w-6 text-muted-foreground" fill="currentColor">
+              <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
+            </svg>
+          </div>
+        )}
+
+        {/* Title */}
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">{settings.name} — Real-time overview</p>
+        </div>
+
+        {/* Pharmacy logo — far right of header row */}
         {settings.logo ? (
-          <img src={settings.logo} alt="logo" className="h-12 w-12 rounded-lg object-cover border bg-white" />
+          <img
+            src={settings.logo}
+            alt="Pharmacy Logo"
+            className="h-12 w-12 rounded-lg object-cover border bg-white shadow-sm shrink-0"
+          />
         ) : (
           <div className="h-12 w-12 rounded-lg bg-[#16a36e] flex items-center justify-center shadow-sm shrink-0">
             <svg viewBox="0 0 100 100" className="h-7 w-7">
@@ -61,10 +89,7 @@ export default function Dashboard() {
             </svg>
           </div>
         )}
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">{settings.name} — Real-time overview</p>
-        </div>
+
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
