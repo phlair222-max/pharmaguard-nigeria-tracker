@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useStore, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
-import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame } from "lucide-react";
+import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 export default function Dashboard() {
   const products = useStore((s) => s.products);
   const sales = useStore((s) => s.sales);
+  const settings = useStore((s) => s.settings);
 
   const todayStart = startOfDay(new Date()).getTime();
   const todaySales = sales.filter((s) => new Date(s.createdAt).getTime() >= todayStart);
@@ -44,16 +45,13 @@ export default function Dashboard() {
     .sort((a, b) => b.units - a.units)
     .slice(0, 10);
 
-  const settings = useStore((s) => s.settings);
-
   return (
     <TooltipProvider delayDuration={150}>
     <div className="space-y-6">
 
-      {/* Header — owner photo left, title centre-left, pharmacy logo right */}
+      {/* Dashboard header — owner photo LEFT, title, nothing right */}
       <div className="flex items-center gap-3">
-
-        {/* Owner / Pharmacist-in-Charge photo */}
+        {/* Owner/Pharmacist photo — left of title */}
         {settings.ownerPhoto ? (
           <img
             src={settings.ownerPhoto}
@@ -62,34 +60,13 @@ export default function Dashboard() {
           />
         ) : (
           <div className="h-12 w-12 rounded-full bg-muted border flex items-center justify-center shrink-0">
-            <svg viewBox="0 0 24 24" className="h-6 w-6 text-muted-foreground" fill="currentColor">
-              <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
-            </svg>
+            <User className="h-6 w-6 text-muted-foreground" />
           </div>
         )}
-
-        {/* Title */}
-        <div className="flex-1">
+        <div>
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Dashboard</h1>
           <p className="text-sm text-muted-foreground">{settings.name} — Real-time overview</p>
         </div>
-
-        {/* Pharmacy logo — far right of header row */}
-        {settings.logo ? (
-          <img
-            src={settings.logo}
-            alt="Pharmacy Logo"
-            className="h-12 w-12 rounded-lg object-cover border bg-white shadow-sm shrink-0"
-          />
-        ) : (
-          <div className="h-12 w-12 rounded-lg bg-[#16a36e] flex items-center justify-center shadow-sm shrink-0">
-            <svg viewBox="0 0 100 100" className="h-7 w-7">
-              <rect x="38" y="15" width="24" height="70" rx="6" fill="white"/>
-              <rect x="15" y="38" width="70" height="24" rx="6" fill="white"/>
-            </svg>
-          </div>
-        )}
-
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
