@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,24 +42,73 @@ type CompliancePrefs = {
 };
 const PREF_KEY = "pharmaguard_prefs";
 const loadPrefs = (): CompliancePrefs => {
-  try { return { expiryAlertDays: 30, lowStockAlerts: true, controlledRequirePrescriber: true, receiptFooter: "Thank you for your patronage. Goods sold are not returnable except defective.", ...(JSON.parse(localStorage.getItem(PREF_KEY) || "{}")) }; }
-  catch { return { expiryAlertDays: 30, lowStockAlerts: true, controlledRequirePrescriber: true, receiptFooter: "Thank you for your patronage." }; }
+  try {
+    return {
+      expiryAlertDays: 30,
+      lowStockAlerts: true,
+      controlledRequirePrescriber: true,
+      receiptFooter: "Thank you for your patronage. Goods sold are not returnable except defective.",
+      ...(JSON.parse(localStorage.getItem(PREF_KEY) || "{}")),
+    };
+  } catch {
+    return { expiryAlertDays: 30, lowStockAlerts: true, controlledRequirePrescriber: true, receiptFooter: "Thank you for your patronage." };
+  }
 };
 
 export default function Settings() {
   const settings = useStore((s) => s.settings);
   const user = useStore((s) => s.user);
   const loginActivity = useStore((s) => s.loginActivity);
-  const [draft, setDraft] = useState(settings);
+  // Normalize settings so draft fields are never undefined — prevents a
+  // stale undefined field from clobbering a freshly-uploaded image on save.
+  const normalize = (s: typeof settings) => ({
+    ...s,
+    logo: s.logo ?? "",
+    ownerPhoto: s.ownerPhoto ?? "",
+    ownerName: s.ownerName ?? "",
+    email: s.email ?? "",
+    premiseLicense: s.premiseLicense ?? "",
+  });
+
+  const [draft, setDraft] = useState(() => normalize(settings));
   const [prefs, setPrefs] = useState<CompliancePrefs>(loadPrefs());
   const logoRef = useRef<HTMLInputElement>(null);
   const ownerRef = useRef<HTMLInputElement>(null);
 
-  const upload = async (file: File | undefined, key: "logo" | "ownerPhoto") => {
+  // Resync draft when Supabase hydration lands (settings reference changes)
+  useEffect(() => {
+    setDraft(normalize(settings));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
+
+  // ── Upload handler: "logo" → draft.logo | "ownerPhoto" → draft.ownerPhoto ──
+  const uploadLogo = async (file: File | undefined) => {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
     const url = await fileToDataUrl(file, 400);
-    setDraft((d) => ({ ...d, [key]: url }));
+    setDraft((d) => ({ ...d, logo: url }));
+  };
+
+  const uploadOwnerPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
+    const url = await fileToDataUrl(file, 400);
+    setDraft((d) => ({ ...d, ownerPhoto: url }));
+  };
+
+  // ── Save branding — explicitly passes both fields to updateSettings ──
+  const saveBranding = () => {
+    const payload = {
+      ...draft,
+      logo: draft.logo ?? "",
+      ownerPhoto: draft.ownerPhoto ?? "",
+    };
+    console.debug("[Settings] saveBranding payload →", {
+      logo: payload.logo ? payload.logo.slice(0, 40) + "…" : "(empty)",
+      ownerPhoto: payload.ownerPhoto ? payload.ownerPhoto.slice(0, 40) + "…" : "(empty)",
+    });
+    store.updateSettings(payload);
+    toast.success("Branding saved");
   };
 
   const savePrefs = () => { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); toast.success("Preferences saved"); };
@@ -79,7 +128,7 @@ export default function Settings() {
           <TabsTrigger value="compliance"><FileCheck2 className="mr-1.5 h-4 w-4" />Reports & Compliance</TabsTrigger>
         </TabsList>
 
-        {/* PHARMACY DETAILS */}
+        {/* ── PHARMACY DETAILS ── */}
         <TabsContent value="details">
           <Card className="shadow-card">
             <CardContent className="space-y-3 p-4">
@@ -98,54 +147,99 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
-        {/* BRANDING */}
+        {/* ── BRANDING ── */}
         <TabsContent value="branding">
           <div className="grid gap-4 md:grid-cols-2">
+
+            {/* Pharmacy Logo → saves to settings.logo */}
             <Card className="shadow-card">
               <CardContent className="space-y-3 p-4">
-                <div className="flex items-center gap-2 pb-1 text-sm font-medium"><ImageIcon className="h-4 w-4 text-primary" /> Pharmacy Logo</div>
-                <p className="text-xs text-muted-foreground">Square image. Shown in sidebar, dashboard header, and printed receipts.</p>
+                <div className="flex items-center gap-2 pb-1 text-sm font-medium">
+                  <ImageIcon className="h-4 w-4 text-primary" /> Pharmacy Logo
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Square image. Shown in sidebar, dashboard header, and printed receipts.
+                </p>
                 <div className="flex items-center gap-4">
-                  {draft.logo ? <img src={draft.logo} alt="logo" className="h-24 w-24 rounded-lg object-cover border bg-white" /> :
-                    <div className="flex h-24 w-24 items-center justify-center rounded-lg border bg-muted text-muted-foreground"><ImageIcon className="h-8 w-8" /></div>}
+                  {draft.logo
+                    ? <img src={draft.logo} alt="logo" className="h-24 w-24 rounded-lg object-cover border bg-white" />
+                    : <div className="flex h-24 w-24 items-center justify-center rounded-lg border bg-muted text-muted-foreground"><ImageIcon className="h-8 w-8" /></div>
+                  }
                   <div className="space-y-2">
-                    <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={(e) => upload(e.target.files?.[0] || undefined, "logo")} />
-                    <Button type="button" size="sm" variant="outline" onClick={() => logoRef.current?.click()}><Upload className="mr-1.5 h-3.5 w-3.5" />Upload logo</Button>
-                    {draft.logo && <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, logo: "" })}>Remove</Button>}
+                    <input
+                      ref={logoRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => uploadLogo(e.target.files?.[0])}
+                    />
+                    <Button type="button" size="sm" variant="outline" onClick={() => logoRef.current?.click()}>
+                      <Upload className="mr-1.5 h-3.5 w-3.5" />Upload logo
+                    </Button>
+                    {draft.logo && (
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, logo: "" })}>
+                        Remove
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
             </Card>
+
+            {/* Owner Photo → saves to settings.ownerPhoto */}
             <Card className="shadow-card">
               <CardContent className="space-y-3 p-4">
-                <div className="flex items-center gap-2 pb-1 text-sm font-medium"><User className="h-4 w-4 text-primary" /> Pharmacist-in-Charge</div>
-                <p className="text-xs text-muted-foreground">Photo of the pharmacy owner / superintendent pharmacist.</p>
+                <div className="flex items-center gap-2 pb-1 text-sm font-medium">
+                  <User className="h-4 w-4 text-primary" /> Pharmacist-in-Charge
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Photo of the pharmacy owner / superintendent pharmacist. Appears top-right of the app header.
+                </p>
                 <div className="flex items-center gap-4">
-                  {draft.ownerPhoto ? <img src={draft.ownerPhoto} alt="owner" className="h-24 w-24 rounded-full object-cover border" /> :
-                    <div className="flex h-24 w-24 items-center justify-center rounded-full border bg-muted text-muted-foreground"><User className="h-8 w-8" /></div>}
+                  {draft.ownerPhoto
+                    ? <img src={draft.ownerPhoto} alt="owner" className="h-24 w-24 rounded-full object-cover border" />
+                    : <div className="flex h-24 w-24 items-center justify-center rounded-full border bg-muted text-muted-foreground"><User className="h-8 w-8" /></div>
+                  }
                   <div className="space-y-2 flex-1">
-                    <Input placeholder="Pharmacist name" value={draft.ownerName || ""} onChange={(e) => setDraft({ ...draft, ownerName: e.target.value })} />
-                    <input ref={ownerRef} type="file" accept="image/*" className="hidden" onChange={(e) => upload(e.target.files?.[0] || undefined, "ownerPhoto")} />
+                    <Input
+                      placeholder="Pharmacist name"
+                      value={draft.ownerName || ""}
+                      onChange={(e) => setDraft({ ...draft, ownerName: e.target.value })}
+                    />
+                    <input
+                      ref={ownerRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => uploadOwnerPhoto(e.target.files?.[0])}
+                    />
                     <div className="flex gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => ownerRef.current?.click()}><Upload className="mr-1.5 h-3.5 w-3.5" />Upload photo</Button>
-                      {draft.ownerPhoto && <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, ownerPhoto: "" })}>Remove</Button>}
+                      <Button type="button" size="sm" variant="outline" onClick={() => ownerRef.current?.click()}>
+                        <Upload className="mr-1.5 h-3.5 w-3.5" />Upload photo
+                      </Button>
+                      {draft.ownerPhoto && (
+                        <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, ownerPhoto: "" })}>
+                          Remove
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>
               </CardContent>
             </Card>
+
           </div>
           <div className="mt-3 flex justify-end">
-            <Button onClick={() => { store.updateSettings(draft); toast.success("Branding saved"); }}>Save branding</Button>
+            <Button onClick={saveBranding}>Save branding</Button>
           </div>
         </TabsContent>
 
-        {/* SECURITY */}
+        {/* ── SECURITY ── */}
         <TabsContent value="security">
           <SecurityTab username={user?.username ?? ""} loginActivity={loginActivity} />
         </TabsContent>
 
-        {/* COMPLIANCE */}
+        {/* ── COMPLIANCE ── */}
         <TabsContent value="compliance">
           <Card className="shadow-card">
             <CardContent className="space-y-4 p-4">
@@ -275,7 +369,9 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
                 <TableHead className="text-xs">Status</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {(loginActivity as any[]).length === 0 && <TableRow><TableCell colSpan={4} className="py-6 text-center text-xs text-muted-foreground">No login activity yet</TableCell></TableRow>}
+                {(loginActivity as any[]).length === 0 && (
+                  <TableRow><TableCell colSpan={4} className="py-6 text-center text-xs text-muted-foreground">No login activity yet</TableCell></TableRow>
+                )}
                 {(loginActivity as any[]).slice(0, 15).map((l) => (
                   <TableRow key={l.id}>
                     <TableCell className="text-xs">{format(new Date(l.at), "dd MMM HH:mm")}</TableCell>
