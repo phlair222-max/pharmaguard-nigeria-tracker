@@ -116,7 +116,6 @@ function ThemeToggle() {
 
 export default function AppLayout() {
   const settings = useStore((s) => s.settings);
-  const user = useStore((s) => s.user);
 
   return (
     <SidebarProvider>
@@ -125,41 +124,27 @@ export default function AppLayout() {
         <div className="flex flex-1 flex-col">
           <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-card/80 px-4 backdrop-blur">
 
-            {/* Left — sidebar trigger + owner photo */}
+            {/* Left — sidebar trigger + label only */}
             <div className="flex items-center gap-3">
               <SidebarTrigger />
-              {user && (
-                settings.ownerPhoto ? (
-                  <img
-                    src={settings.ownerPhoto}
-                    alt="Owner"
-                    className="h-8 w-8 rounded-full object-cover border shadow-sm"
-                  />
-                ) : (
-                  <div className="h-8 w-8 rounded-full bg-muted border flex items-center justify-center text-xs font-medium text-muted-foreground">
-                    {user.username?.charAt(0).toUpperCase() || "U"}
-                  </div>
-                )
-              )}
               <div className="hidden text-sm text-muted-foreground sm:block">
                 Retail Pharmacy Operations
               </div>
             </div>
 
-            {/* Right — theme toggle + pharmacy logo */}
+            {/* Right — theme toggle + owner photo */}
             <div className="flex items-center gap-3">
               <ThemeToggle />
-              {settings.logo ? (
+              {settings.ownerPhoto ? (
                 <img
-                  src={settings.logo}
-                  alt="Pharmacy Logo"
-                  className="h-8 w-8 rounded-lg object-cover border bg-white shadow-sm"
+                  src={settings.ownerPhoto}
+                  alt="Pharmacist"
+                  className="h-8 w-8 rounded-full object-cover border shadow-sm"
                 />
               ) : (
-                <div className="h-8 w-8 rounded-lg bg-[#16a36e] flex items-center justify-center shadow-sm">
-                  <svg viewBox="0 0 100 100" className="h-5 w-5">
-                    <rect x="38" y="15" width="24" height="70" rx="6" fill="white"/>
-                    <rect x="15" y="38" width="70" height="24" rx="6" fill="white"/>
+                <div className="h-8 w-8 rounded-full bg-[#16a36e] flex items-center justify-center shadow-sm">
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="white">
+                    <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
                   </svg>
                 </div>
               )}
