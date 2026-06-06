@@ -4,7 +4,7 @@ import {
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
   SidebarHeader, SidebarFooter, useSidebar,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon } from "lucide-react";
+import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { store, useStore } from "@/lib/store";
 import { useTheme } from "next-themes";
@@ -29,11 +29,15 @@ function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 px-2 py-3">
+          {/* Pharmacy logo in sidebar — green cross default */}
           {settings.logo ? (
             <img src={settings.logo} alt="logo" className="h-9 w-9 rounded-lg object-cover border bg-white shadow-elevated" />
           ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-elevated">
-              <Pill className="h-5 w-5" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#16a36e] shadow-elevated">
+              <svg viewBox="0 0 100 100" className="h-5 w-5">
+                <rect x="38" y="15" width="24" height="70" rx="6" fill="white"/>
+                <rect x="15" y="38" width="70" height="24" rx="6" fill="white"/>
+              </svg>
             </div>
           )}
           {!collapsed && (
@@ -115,41 +119,23 @@ function ThemeToggle() {
 }
 
 export default function AppLayout() {
-  const settings = useStore((s) => s.settings);
-
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full bg-background">
         <AppSidebar />
         <div className="flex flex-1 flex-col">
           <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-card/80 px-4 backdrop-blur">
-
-            {/* Left — sidebar trigger + label only */}
+            {/* Left — sidebar trigger + label */}
             <div className="flex items-center gap-3">
               <SidebarTrigger />
               <div className="hidden text-sm text-muted-foreground sm:block">
                 Retail Pharmacy Operations
               </div>
             </div>
-
-            {/* Right — theme toggle + owner photo */}
+            {/* Right — theme toggle only, no photo */}
             <div className="flex items-center gap-3">
               <ThemeToggle />
-              {settings.ownerPhoto ? (
-                <img
-                  src={settings.ownerPhoto}
-                  alt="Pharmacist"
-                  className="h-8 w-8 rounded-full object-cover border shadow-sm"
-                />
-              ) : (
-                <div className="h-8 w-8 rounded-full bg-[#16a36e] flex items-center justify-center shadow-sm">
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="white">
-                    <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
-                  </svg>
-                </div>
-              )}
             </div>
-
           </header>
           <main className="flex-1 p-4 md:p-6">
             <Outlet />
