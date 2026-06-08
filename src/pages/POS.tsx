@@ -5,13 +5,30 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Plus, Minus, Trash2, ShoppingCart, Printer, Zap } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Search, Plus, Minus, Trash2, ShoppingCart, Printer, Zap, ShieldAlert } from "lucide-react";
 import { store, useStore, SaleItem } from "@/lib/store";
 import { NGN, expiryStatus } from "@/lib/format";
 import { toast } from "sonner";
 import { format } from "date-fns";
 
-type CartLine = SaleItem & { stock: number; cost: number };
+type CartLine = SaleItem & { stock: number; cost: number; controlled?: boolean };
+
+type RxForm = {
+  patientName: string;
+  patientPhone: string;
+  prescriber: string;
+  prescriberRegNo: string;
+  prescriptionRef: string;
+};
+
+const emptyRx: RxForm = {
+  patientName: "",
+  patientPhone: "",
+  prescriber: "",
+  prescriberRegNo: "",
+  prescriptionRef: "",
+};
 
 export default function POS() {
   const products = useStore((s) => s.products);
@@ -24,6 +41,11 @@ export default function POS() {
   const [lastReceipt, setLastReceipt] = useState<any>(null);
   const [quickMode, setQuickMode] = useState(false);
   const settings = useStore((s) => s.settings);
+
+  // ── Controlled drug prescription modal state ──
+  const [rxOpen, setRxOpen] = useState(false);
+  const [rx, setRx] = useState<RxForm>(emptyRx);
+  const [rxSubmitting, setRxSubmitting] = useState(false);
 
   const results = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -46,27 +68,86 @@ export default function POS() {
         if (ex.qty + 1 > p.quantity) { toast.error("Insufficient stock"); return c; }
         return c.map((l) => l.productId === id ? { ...l, qty: l.qty + 1 } : l);
       }
-      return [...c, { productId: id, name: p.name, qty: 1, price: p.sellingPrice, stock: p.quantity, cost: p.costPrice }];
+      return [...c, {
+        productId: id,
+        name: p.name,
+        qty: 1,
+        price: p.sellingPrice,
+        stock: p.quantity,
+        cost: p.costPrice,
+        controlled: p.controlled,
+      }];
     });
     if (quickMode) setQ("");
   };
-  const setQty = (id: string, qty: number) => setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
+
+  const setQty = (id: string, qty: number) =>
+    setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
   const remove = (id: string) => setCart((c) => c.filter((l) => l.productId !== id));
 
   const total = cart.reduce((a, l) => a + l.qty * l.price, 0);
   const profit = cart.reduce((a, l) => a + l.qty * (l.price - l.cost), 0);
   const change = payment === "Cash" ? Math.max(0, tendered - total) : 0;
 
-  const checkout = () => {
-    if (cart.length === 0) return;
+  const controlledItems = cart.filter((l) => l.controlled);
+  const hasControlled = controlledItems.length > 0;
+
+  // ── Called after prescription is confirmed (or immediately if no controlled items) ──
+  const completeSale = (rxData?: RxForm) => {
     const sale = store.recordSale({
       items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
-      total, profit, payment, cashier: user?.username || "user", customer: customer || undefined,
+      total, profit, payment,
+      cashier: user?.username || "user",
+      customer: customer || undefined,
     });
+
+    // Record each controlled item in the Poisons Register
+    if (rxData) {
+      controlledItems.forEach((item) => {
+        const product = products.find((p) => p.id === item.productId);
+        store.recordControlledDispense({
+          productId: item.productId,
+          productName: item.name,
+          batch: product?.batch || "",
+          quantity: item.qty,
+          amount: item.qty * item.price,
+          patientName: rxData.patientName,
+          patientPhone: rxData.patientPhone,
+          prescriber: rxData.prescriber,
+          prescriberRegNo: rxData.prescriberRegNo,
+          prescriptionRef: rxData.prescriptionRef,
+        });
+      });
+    }
+
     setLastReceipt({ ...sale, customer, tendered, change });
-    setCart([]); setCustomer(""); setTendered(0);
+    setCart([]);
+    setCustomer("");
+    setTendered(0);
+    setRx(emptyRx);
     toast.success("Sale recorded");
     setTimeout(() => window.print(), 200);
+  };
+
+  const checkout = () => {
+    if (cart.length === 0) return;
+
+    if (hasControlled) {
+      // Open prescription modal first
+      setRxOpen(true);
+    } else {
+      completeSale();
+    }
+  };
+
+  const submitRx = () => {
+    if (!rx.patientName.trim()) { toast.error("Patient name is required"); return; }
+    if (!rx.prescriber.trim()) { toast.error("Prescriber name is required"); return; }
+    if (!rx.prescriptionRef.trim()) { toast.error("Prescription reference is required"); return; }
+    setRxSubmitting(true);
+    completeSale(rx);
+    setRxOpen(false);
+    setRxSubmitting(false);
   };
 
   return (
@@ -113,10 +194,19 @@ export default function POS() {
                 {results.map((p) => {
                   const s = expiryStatus(p.expiry);
                   return (
-                    <button key={p.id} onClick={() => add(p.id)} disabled={p.quantity <= 0 || s === "expired"}
+                    <button key={p.id} onClick={() => add(p.id)}
+                      disabled={p.quantity <= 0 || s === "expired"}
                       className="rounded-lg border bg-card p-3 text-left transition hover:border-primary hover:shadow-card disabled:opacity-50">
-                      <div className="line-clamp-1 text-sm font-medium">{p.name}</div>
+                      <div className="flex items-center gap-1 mb-0.5">
+                        {p.controlled && (
+                          <ShieldAlert className="h-3 w-3 text-destructive shrink-0" />
+                        )}
+                        <div className="line-clamp-1 text-sm font-medium">{p.name}</div>
+                      </div>
                       <div className="text-[11px] text-muted-foreground">{p.generic}</div>
+                      {p.controlled && (
+                        <div className="text-[10px] text-destructive font-medium mt-0.5">Rx Required</div>
+                      )}
                       <div className="mt-1 flex items-center justify-between">
                         <span className="text-sm font-semibold text-primary">{NGN(p.sellingPrice)}</span>
                         <Badge variant="outline" className={
@@ -136,15 +226,20 @@ export default function POS() {
 
         <Card className="lg:col-span-2 shadow-card">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><ShoppingCart className="h-4 w-4" /> Cart ({cart.length})</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShoppingCart className="h-4 w-4" /> Cart ({cart.length})
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="max-h-[280px] space-y-2 overflow-auto">
               {cart.length === 0 && <div className="py-8 text-center text-sm text-muted-foreground">No items yet</div>}
               {cart.map((l) => (
-                <div key={l.productId} className="flex items-center gap-2 rounded-md border p-2">
+                <div key={l.productId} className={`flex items-center gap-2 rounded-md border p-2 ${l.controlled ? "border-destructive/40 bg-destructive/5" : ""}`}>
                   <div className="flex-1">
-                    <div className="line-clamp-1 text-sm font-medium">{l.name}</div>
+                    <div className="flex items-center gap-1">
+                      {l.controlled && <ShieldAlert className="h-3 w-3 text-destructive shrink-0" />}
+                      <div className="line-clamp-1 text-sm font-medium">{l.name}</div>
+                    </div>
                     <div className="text-[11px] text-muted-foreground">{NGN(l.price)} × {l.qty}</div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -156,6 +251,18 @@ export default function POS() {
                 </div>
               ))}
             </div>
+
+            {/* Controlled drug warning */}
+            {hasControlled && (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5">
+                <ShieldAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                <div className="text-xs text-destructive">
+                  <span className="font-semibold">Prescription required.</span> Cart contains{" "}
+                  {controlledItems.length} controlled drug{controlledItems.length > 1 ? "s" : ""}.
+                  You will be prompted to enter prescription details before completing this sale.
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2 border-t pt-3">
               <div className="flex justify-between text-sm"><span>Subtotal</span><span>{NGN(total)}</span></div>
@@ -193,6 +300,7 @@ export default function POS() {
             </div>
 
             <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
+              {hasControlled && <ShieldAlert className="mr-2 h-4 w-4" />}
               Complete Sale · {NGN(total)}
             </Button>
             {lastReceipt && (
@@ -205,6 +313,83 @@ export default function POS() {
       </div>
 
       {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
+
+      {/* ── PRESCRIPTION MODAL ── */}
+      <Dialog open={rxOpen} onOpenChange={setRxOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5 text-destructive" />
+              Prescription Required
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive mb-2">
+            <strong>PCN Compliance:</strong> This sale includes{" "}
+            <strong>{controlledItems.map((i) => i.name).join(", ")}</strong>.
+            Prescription details must be recorded in the Poisons Register before dispensing.
+          </div>
+
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <Label className="text-xs">Patient Full Name <span className="text-destructive">*</span></Label>
+                <Input
+                  placeholder="e.g. Emeka Johnson"
+                  value={rx.patientName}
+                  onChange={(e) => setRx({ ...rx, patientName: e.target.value })}
+                />
+              </div>
+              <div className="col-span-2">
+                <Label className="text-xs">Patient Phone</Label>
+                <Input
+                  placeholder="e.g. 08012345678"
+                  value={rx.patientPhone}
+                  onChange={(e) => setRx({ ...rx, patientPhone: e.target.value })}
+                />
+              </div>
+              <div className="col-span-2">
+                <Label className="text-xs">Prescriber Name <span className="text-destructive">*</span></Label>
+                <Input
+                  placeholder="e.g. Dr. Adewale Okafor"
+                  value={rx.prescriber}
+                  onChange={(e) => setRx({ ...rx, prescriber: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Prescriber MDCN Reg No.</Label>
+                <Input
+                  placeholder="e.g. MDCN/12345"
+                  value={rx.prescriberRegNo}
+                  onChange={(e) => setRx({ ...rx, prescriberRegNo: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Prescription Ref <span className="text-destructive">*</span></Label>
+                <Input
+                  placeholder="e.g. RX-2024-001"
+                  value={rx.prescriptionRef}
+                  onChange={(e) => setRx({ ...rx, prescriptionRef: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setRxOpen(false)}>
+              Cancel Sale
+            </Button>
+            <Button
+              onClick={submitRx}
+              disabled={rxSubmitting}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              <ShieldAlert className="mr-2 h-4 w-4" />
+              Confirm & Dispense
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
