@@ -47,16 +47,25 @@ export default function POS() {
   const [rx, setRx] = useState<RxForm>(emptyRx);
   const [rxSubmitting, setRxSubmitting] = useState(false);
 
+  // ── Product filter tabs ──
+  const [tab, setTab] = useState<"all" | "controlled" | "lowstock">("all");
+
+  const controlledCount = useMemo(() => products.filter((p) => p.controlled).length, [products]);
+  const lowStockCount = useMemo(() => products.filter((p) => p.quantity <= p.reorderLevel && p.quantity > 0).length, [products]);
+
   const results = useMemo(() => {
     const term = q.trim().toLowerCase();
-    if (!term) return products.slice(0, 8);
-    return products.filter((p) =>
+    let pool = products;
+    if (tab === "controlled") pool = products.filter((p) => p.controlled);
+    else if (tab === "lowstock") pool = products.filter((p) => p.quantity <= p.reorderLevel && p.quantity > 0);
+    if (!term) return pool.slice(0, tab === "all" ? 8 : 50);
+    return pool.filter((p) =>
       p.name.toLowerCase().includes(term) ||
       p.generic.toLowerCase().includes(term) ||
       p.barcode === term ||
       p.nafdac.toLowerCase().includes(term)
     ).slice(0, 12);
-  }, [q, products]);
+  }, [q, products, tab]);
 
   const add = (id: string) => {
     const p = products.find((x) => x.id === id);
@@ -187,6 +196,50 @@ export default function POS() {
                   onChange={(e) => setQ(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && results[0]) add(results[0].id); }}
                 />
+              </div>
+              {/* Filter tabs */}
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={() => setTab("all")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition ${
+                    tab === "all"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  All Products
+                </button>
+                <button
+                  onClick={() => setTab("controlled")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition ${
+                    tab === "controlled"
+                      ? "bg-destructive text-destructive-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  <ShieldAlert className="h-3 w-3" />
+                  Controlled
+                  {controlledCount > 0 && (
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                      tab === "controlled" ? "bg-white/20" : "bg-destructive/20 text-destructive"
+                    }`}>{controlledCount}</span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setTab("lowstock")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition ${
+                    tab === "lowstock"
+                      ? "bg-warning text-warning-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  Low Stock
+                  {lowStockCount > 0 && (
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                      tab === "lowstock" ? "bg-white/20" : "bg-warning/20 text-warning"
+                    }`}>{lowStockCount}</span>
+                  )}
+                </button>
               </div>
             </CardHeader>
             <CardContent>
