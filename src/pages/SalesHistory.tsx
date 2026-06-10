@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -64,44 +63,75 @@ export default function SalesHistory() {
 
       <Card className="shadow-card">
         <CardHeader className="pb-3">
-          <div className="grid gap-2 md:grid-cols-5">
-            <div className="relative md:col-span-2">
+          {/* All filters on one aligned row */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="Receipt, customer, cashier, item..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+              <Input
+                placeholder="Receipt, customer, cashier, item..."
+                className="pl-8"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
             </div>
-            <div><Label className="text-xs">From</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-            <div><Label className="text-xs">To</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-            <div>
-              <Label className="text-xs">Payment</Label>
-              <Select value={pay} onValueChange={setPay}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="Cash">Cash</SelectItem>
-                  <SelectItem value="POS">POS</SelectItem>
-                  <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
-                  <SelectItem value="Mobile Money">Mobile Money</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground whitespace-nowrap">
+              <span>From</span>
+              <Input
+                type="date"
+                className="w-[140px]"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+              />
             </div>
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground whitespace-nowrap">
+              <span>To</span>
+              <Input
+                type="date"
+                className="w-[140px]"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+              />
+            </div>
+            <Select value={pay} onValueChange={setPay}>
+              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Payment" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All payments</SelectItem>
+                <SelectItem value="Cash">Cash</SelectItem>
+                <SelectItem value="POS">POS</SelectItem>
+                <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
+                <SelectItem value="Mobile Money">Mobile Money</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
+
+          {/* Summary badges */}
           <div className="mt-3 flex gap-3 text-sm">
             <Badge variant="outline" className="border-success text-success">Revenue: {NGN(totals.rev)}</Badge>
             <Badge variant="outline" className="border-info text-info">Profit: {NGN(totals.profit)}</Badge>
             <Badge variant="outline">{list.length} sales</Badge>
           </div>
         </CardHeader>
+
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
-              <TableHeader><TableRow>
-                <TableHead>Date</TableHead><TableHead>Receipt</TableHead><TableHead>Customer</TableHead>
-                <TableHead>Cashier</TableHead><TableHead>Items</TableHead>
-                <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Profit</TableHead>
-                <TableHead>Payment</TableHead><TableHead></TableHead>
-              </TableRow></TableHeader>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Receipt</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Cashier</TableHead>
+                  <TableHead>Items</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead className="text-right">Profit</TableHead>
+                  <TableHead>Payment</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
               <TableBody>
-                {list.length === 0 && <TableRow><TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No sales</TableCell></TableRow>}
+                {list.length === 0 && (
+                  <TableRow><TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No sales</TableCell></TableRow>
+                )}
                 {list.map((s) => (
                   <TableRow key={s.id}>
                     <TableCell className="text-xs">{format(new Date(s.createdAt), "dd MMM yyyy HH:mm")}</TableCell>
@@ -112,7 +142,11 @@ export default function SalesHistory() {
                     <TableCell className="text-right font-medium">{NGN(s.total)}</TableCell>
                     <TableCell className="text-right text-success">{NGN(s.profit)}</TableCell>
                     <TableCell><Badge variant="outline">{s.payment}</Badge></TableCell>
-                    <TableCell><Button size="icon" variant="ghost" onClick={() => setView(s)}><Eye className="h-4 w-4" /></Button></TableCell>
+                    <TableCell>
+                      <Button size="icon" variant="ghost" onClick={() => setView(s)}>
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -130,7 +164,14 @@ export default function SalesHistory() {
                 {format(new Date(view.createdAt), "dd MMM yyyy HH:mm")} · {view.payment} · Cashier: {view.cashier}
               </div>
               <Table>
-                <TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Price</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Item</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Price</TableHead>
+                    <TableHead className="text-right">Subtotal</TableHead>
+                  </TableRow>
+                </TableHeader>
                 <TableBody>
                   {view.items.map((it: any, i: number) => (
                     <TableRow key={i}>
@@ -142,8 +183,12 @@ export default function SalesHistory() {
                   ))}
                 </TableBody>
               </Table>
-              <div className="flex justify-between border-t pt-2 font-semibold"><span>Total</span><span>{NGN(view.total)}</span></div>
-              <div className="flex justify-between text-sm text-success"><span>Profit</span><span>{NGN(view.profit)}</span></div>
+              <div className="flex justify-between border-t pt-2 font-semibold">
+                <span>Total</span><span>{NGN(view.total)}</span>
+              </div>
+              <div className="flex justify-between text-sm text-success">
+                <span>Profit</span><span>{NGN(view.profit)}</span>
+              </div>
             </div>
           )}
         </DialogContent>
