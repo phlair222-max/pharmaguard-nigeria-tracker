@@ -20,8 +20,21 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 
-const CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances","Other"];
-const PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
+const BASE_CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances","Other"];
+const BASE_PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
+
+const CUSTOM_CATEGORIES_KEY = "pg_custom_categories";
+const CUSTOM_PACK_SIZES_KEY = "pg_custom_pack_sizes";
+
+function loadCustom(key: string): string[] {
+  try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; }
+}
+function saveCustom(key: string, val: string) {
+  const existing = loadCustom(key);
+  if (!existing.includes(val)) {
+    localStorage.setItem(key, JSON.stringify([...existing, val]));
+  }
+}
 
 const empty: Omit<Product, "id"> = {
   name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
@@ -37,7 +50,6 @@ async function fileToDataUrl(file: File, max = 400): Promise<string> {
     r.onerror = rej;
     r.readAsDataURL(file);
   });
-  // resize via canvas
   return await new Promise<string>((res) => {
     const img = new Image();
     img.onload = () => {
@@ -69,7 +81,21 @@ export default function Inventory() {
   const [receiveFor, setReceiveFor] = useState<Product | null>(null);
   const [receiveQty, setReceiveQty] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<Product | null>(null);
+  const [pendingSave, setPendingSave] = useState(false);
+
+  // "Others" state for Pack Size and Category
+  const [customPackSizes, setCustomPackSizes] = useState<string[]>(() => loadCustom(CUSTOM_PACK_SIZES_KEY));
+  const [customCategories, setCustomCategories] = useState<string[]>(() => loadCustom(CUSTOM_CATEGORIES_KEY));
+  const [packSizeOtherInput, setPackSizeOtherInput] = useState("");
+  const [categoryOtherInput, setCategoryOtherInput] = useState("");
+  const [showPackSizeOther, setShowPackSizeOther] = useState(false);
+  const [showCategoryOther, setShowCategoryOther] = useState(false);
+
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const allPackSizes = [...BASE_PACK_SIZES, ...customPackSizes];
+  const allCategories = [...BASE_CATEGORIES, ...customCategories];
 
   const velocity = useMemo(() => salesVelocityMap(sales, 30), [sales]);
 
@@ -94,10 +120,29 @@ export default function Inventory() {
     });
   }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity]);
 
-  const openNew = () => { setEditing(null); setDraft(empty); setOpen(true); };
-  const openEdit = (p: Product) => { setEditing(p); setDraft({ ...p }); setOpen(true); };
-  const save = () => {
-    if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+  const openNew = () => {
+    setEditing(null);
+    setDraft(empty);
+    setShowPackSizeOther(false);
+    setShowCategoryOther(false);
+    setPackSizeOtherInput("");
+    setCategoryOtherInput("");
+    setOpen(true);
+  };
+  const openEdit = (p: Product) => {
+    setEditing(p);
+    setDraft({ ...p });
+    // If existing product has a custom pack size or category, show the other input pre-filled
+    const isCustomPack = !BASE_PACK_SIZES.includes(p.packSize) && p.packSize;
+    const isCustomCat = !BASE_CATEGORIES.includes(p.category) && p.category;
+    setShowPackSizeOther(!!isCustomPack);
+    setPackSizeOtherInput(isCustomPack ? p.packSize : "");
+    setShowCategoryOther(!!isCustomCat);
+    setCategoryOtherInput(isCustomCat ? p.category : "");
+    setOpen(true);
+  };
+
+  const commitSave = () => {
     const final = { ...draft };
     if (final.supplierId) {
       const s = suppliers.find((x) => x.id === final.supplierId);
@@ -106,6 +151,85 @@ export default function Inventory() {
     if (editing) { store.updateProduct(editing.id, final); toast.success("Product updated"); }
     else { store.addProduct(final); toast.success("Product added"); }
     setOpen(false);
+    setDuplicateWarning(null);
+    setPendingSave(false);
+  };
+
+  const save = () => {
+    if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+
+    // Confirm custom "Others" fields are applied before saving
+    if (showPackSizeOther && packSizeOtherInput.trim() && draft.packSize !== packSizeOtherInput.trim()) {
+      toast.error("Click 'Add' to confirm your custom Pack Size before saving");
+      return;
+    }
+    if (showCategoryOther && categoryOtherInput.trim() && draft.category !== categoryOtherInput.trim()) {
+      toast.error("Click 'Add' to confirm your custom Category before saving");
+      return;
+    }
+
+    // Duplicate detection (only for new products)
+    if (!editing) {
+      const duplicate = products.find(
+        (p) => p.name.trim().toLowerCase() === draft.name.trim().toLowerCase()
+      );
+      if (duplicate) {
+        setDuplicateWarning(duplicate);
+        setPendingSave(true);
+        return;
+      }
+    }
+
+    commitSave();
+  };
+
+  const handlePackSizeChange = (v: string) => {
+    if (v === "__others__") {
+      setShowPackSizeOther(true);
+      setPackSizeOtherInput("");
+      // Don't change draft.packSize yet
+    } else {
+      setShowPackSizeOther(false);
+      setPackSizeOtherInput("");
+      setDraft((d) => ({ ...d, packSize: v }));
+    }
+  };
+
+  const commitCustomPackSize = () => {
+    const val = packSizeOtherInput.trim();
+    if (!val) return;
+    if (!allPackSizes.includes(val)) {
+      saveCustom(CUSTOM_PACK_SIZES_KEY, val);
+      setCustomPackSizes((prev) => [...prev, val]);
+    }
+    setDraft((d) => ({ ...d, packSize: val }));
+    setShowPackSizeOther(false);
+    setPackSizeOtherInput("");
+    toast.success(`Pack size "${val}" saved`);
+  };
+
+  const handleCategoryChange = (v: string) => {
+    if (v === "__others__") {
+      setShowCategoryOther(true);
+      setCategoryOtherInput("");
+    } else {
+      setShowCategoryOther(false);
+      setCategoryOtherInput("");
+      setDraft((d) => ({ ...d, category: v, controlled: v === "Controlled Substances" }));
+    }
+  };
+
+  const commitCustomCategory = () => {
+    const val = categoryOtherInput.trim();
+    if (!val) return;
+    if (!allCategories.includes(val)) {
+      saveCustom(CUSTOM_CATEGORIES_KEY, val);
+      setCustomCategories((prev) => [...prev, val]);
+    }
+    setDraft((d) => ({ ...d, category: val, controlled: false }));
+    setShowCategoryOther(false);
+    setCategoryOtherInput("");
+    toast.success(`Category "${val}" saved`);
   };
 
   const onImageChange = async (file?: File | null) => {
@@ -123,6 +247,7 @@ export default function Inventory() {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = `inventory-${format(new Date(), "yyyy-MM-dd")}.csv`; a.click();
   };
+
   const importCSV = (file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -141,6 +266,10 @@ export default function Inventory() {
     };
     reader.readAsText(file);
   };
+
+  // Determine display value for Pack Size select (show "__others__" when custom input is open)
+  const packSizeSelectValue = showPackSizeOther ? "__others__" : (allPackSizes.includes(draft.packSize) ? draft.packSize : "__others__");
+  const categorySelectValue = showCategoryOther ? "__others__" : (allCategories.includes(draft.category) ? draft.category : "__others__");
 
   return (
     <div className="space-y-4">
@@ -170,7 +299,7 @@ export default function Inventory() {
               <SelectTrigger className="w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Categories</SelectItem>
-                {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                {allCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
               </SelectContent>
             </Select>
             <Select value={supFilter} onValueChange={setSupFilter}>
@@ -243,6 +372,8 @@ export default function Inventory() {
                   const sold30 = velocity.get(p.id) || 0;
                   const speed = movementSpeed(sold30);
                   const tierLabel = tier === "red" ? (days < 0 ? "Expired" : "Critical") : tier === "yellow" ? "Warning" : "Safe";
+                  // Determine if packSize is custom (not in base list)
+                  const isCustomPack = !BASE_PACK_SIZES.includes(p.packSize);
                   return (
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10")}>
                       <TableCell>
@@ -257,7 +388,15 @@ export default function Inventory() {
                           {p.name}
                           {low && <AlertTriangle className="h-3.5 w-3.5 text-destructive" />}
                         </div>
-                        <div className="text-xs text-muted-foreground">{p.category}</div>
+                        {/* Show custom category under product name */}
+                        <div className="text-xs text-muted-foreground">
+                          {p.category}
+                          {isCustomPack && (
+                            <span className="ml-1 text-[10px] font-medium text-primary/70 bg-primary/10 rounded px-1 py-0.5">
+                              {p.packSize}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-xs">{p.generic}</TableCell>
                       <TableCell className="text-xs">{p.nafdac}</TableCell>
@@ -302,6 +441,7 @@ export default function Inventory() {
         </CardContent>
       </Card>
 
+      {/* Add/Edit Product Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Edit Product" : "Add Product"}</DialogTitle></DialogHeader>
@@ -332,20 +472,59 @@ export default function Inventory() {
             <Field label="Batch / Lot No." v={draft.batch} on={(v) => setDraft({ ...draft, batch: v })} />
             <Field label="Expiry date *" type="date" v={draft.expiry} on={(v) => setDraft({ ...draft, expiry: v })} />
             <Field label="Last restocked" type="date" v={draft.lastRestocked || ""} on={(v) => setDraft({ ...draft, lastRestocked: v })} />
+
+            {/* Therapeutic Category */}
             <div>
               <Label>Therapeutic Category</Label>
-              <Select value={draft.category} onValueChange={(v) => setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" })}>
+              <Select value={categorySelectValue} onValueChange={handleCategoryChange}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <SelectContent>
+                  {allCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  <SelectItem value="__others__">Others…</SelectItem>
+                </SelectContent>
               </Select>
+              {showCategoryOther && (
+                <div className="mt-1.5 flex gap-1.5">
+                  <Input
+                    autoFocus
+                    placeholder="Type custom category"
+                    value={categoryOtherInput}
+                    onChange={(e) => setCategoryOtherInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitCustomCategory(); } }}
+                    className="h-8 text-sm"
+                  />
+                  <Button type="button" size="sm" onClick={commitCustomCategory} disabled={!categoryOtherInput.trim()}>Add</Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => { setShowCategoryOther(false); setCategoryOtherInput(""); }}>✕</Button>
+                </div>
+              )}
             </div>
+
+            {/* Pack Size / Unit */}
             <div>
               <Label>Pack Size / Unit</Label>
-              <Select value={draft.packSize} onValueChange={(v) => setDraft({ ...draft, packSize: v })}>
+              <Select value={packSizeSelectValue} onValueChange={handlePackSizeChange}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{PACK_SIZES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <SelectContent>
+                  {allPackSizes.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  <SelectItem value="__others__">Others…</SelectItem>
+                </SelectContent>
               </Select>
+              {showPackSizeOther && (
+                <div className="mt-1.5 flex gap-1.5">
+                  <Input
+                    autoFocus
+                    placeholder="Type custom unit"
+                    value={packSizeOtherInput}
+                    onChange={(e) => setPackSizeOtherInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitCustomPackSize(); } }}
+                    className="h-8 text-sm"
+                  />
+                  <Button type="button" size="sm" onClick={commitCustomPackSize} disabled={!packSizeOtherInput.trim()}>Add</Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => { setShowPackSizeOther(false); setPackSizeOtherInput(""); }}>✕</Button>
+                </div>
+              )}
             </div>
+
             <Field label="Quantity in stock" type="number" v={String(draft.quantity)} on={(v) => setDraft({ ...draft, quantity: +v })} />
             <Field label="Reorder Level" type="number" v={String(draft.reorderLevel)} on={(v) => setDraft({ ...draft, reorderLevel: +v })} />
             <Field label="Reorder Quantity" type="number" v={String(draft.reorderQuantity)} on={(v) => setDraft({ ...draft, reorderQuantity: +v })} />
@@ -374,6 +553,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* Receive Stock Dialog */}
       <Dialog open={!!receiveFor} onOpenChange={(o) => !o && setReceiveFor(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Receive stock — {receiveFor?.name}</DialogTitle></DialogHeader>
@@ -389,6 +569,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* Delete Confirmation */}
       <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -403,6 +584,37 @@ export default function Inventory() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => { if (confirmDelete) { store.deleteProduct(confirmDelete.id); toast.success("Product deleted"); setConfirmDelete(null); } }}
             >Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Duplicate Product Warning */}
+      <AlertDialog open={!!duplicateWarning} onOpenChange={(o) => { if (!o) { setDuplicateWarning(null); setPendingSave(false); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-warning" />
+              Duplicate product detected
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span>A product named <span className="font-semibold">"{duplicateWarning?.name}"</span> already exists in your inventory</span>
+              {duplicateWarning && (
+                <div className="mt-2 rounded-md border bg-muted/50 p-2 text-xs space-y-0.5">
+                  <div><span className="text-muted-foreground">Batch:</span> {duplicateWarning.batch || "—"}</div>
+                  <div><span className="text-muted-foreground">Expiry:</span> {duplicateWarning.expiry ? format(new Date(duplicateWarning.expiry), "dd MMM yyyy") : "—"}</div>
+                  <div><span className="text-muted-foreground">Stock:</span> {duplicateWarning.quantity} units</div>
+                </div>
+              )}
+              <span className="block pt-1">Do you still want to add this as a separate entry? Consider using <strong>Receive Stock</strong> instead to add to existing stock.</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { setDuplicateWarning(null); setPendingSave(false); }}>
+              Go back
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={commitSave}>
+              Add anyway
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
