@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Search, Plus, Minus, Trash2, ShoppingCart, Printer, Zap, ShieldAlert } from "lucide-react";
+import { Search, Plus, Minus, Trash2, ShoppingCart, Zap, ShieldAlert } from "lucide-react";
 import { store, useStore, SaleItem } from "@/lib/store";
 import { NGN, expiryStatus } from "@/lib/format";
 import { toast } from "sonner";
@@ -356,11 +356,6 @@ export default function POS() {
               {hasControlled && <ShieldAlert className="mr-2 h-4 w-4" />}
               Complete Sale · {NGN(total)}
             </Button>
-            {lastReceipt && (
-              <Button variant="outline" className="w-full" size="sm" onClick={() => window.print()}>
-                <Printer className="mr-2 h-4 w-4" /> Reprint last receipt
-              </Button>
-            )}
           </CardContent>
         </Card>
       </div>
