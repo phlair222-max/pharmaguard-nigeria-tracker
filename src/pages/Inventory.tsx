@@ -20,8 +20,12 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 
-const CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances","Other"];
-const PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
+const DEFAULT_CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances"];
+const DEFAULT_PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
+const CAT_KEY = "pg_custom_categories";
+const PACK_KEY = "pg_custom_pack_sizes";
+const loadCustom = (k: string): string[] => { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } };
+const saveCustom = (k: string, v: string[]) => localStorage.setItem(k, JSON.stringify(v));
 
 const empty: Omit<Product, "id"> = {
   name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
@@ -69,7 +73,14 @@ export default function Inventory() {
   const [receiveFor, setReceiveFor] = useState<Product | null>(null);
   const [receiveQty, setReceiveQty] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
+  const [dupWarn, setDupWarn] = useState<Product[] | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [customCats, setCustomCats] = useState<string[]>(() => loadCustom(CAT_KEY));
+  const [customPacks, setCustomPacks] = useState<string[]>(() => loadCustom(PACK_KEY));
+  const [newCat, setNewCat] = useState("");
+  const [newPack, setNewPack] = useState("");
+  const CATEGORIES = useMemo(() => [...DEFAULT_CATEGORIES, ...customCats, "Others"], [customCats]);
+  const PACK_SIZES = useMemo(() => [...DEFAULT_PACK_SIZES, ...customPacks, "Others"], [customPacks]);
 
   const velocity = useMemo(() => salesVelocityMap(sales, 30), [sales]);
 
@@ -96,8 +107,7 @@ export default function Inventory() {
 
   const openNew = () => { setEditing(null); setDraft(empty); setOpen(true); };
   const openEdit = (p: Product) => { setEditing(p); setDraft({ ...p }); setOpen(true); };
-  const save = () => {
-    if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+  const performSave = () => {
     const final = { ...draft };
     if (final.supplierId) {
       const s = suppliers.find((x) => x.id === final.supplierId);
@@ -106,6 +116,16 @@ export default function Inventory() {
     if (editing) { store.updateProduct(editing.id, final); toast.success("Product updated"); }
     else { store.addProduct(final); toast.success("Product added"); }
     setOpen(false);
+    setDupWarn(null);
+  };
+  const save = () => {
+    if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+    if (!editing) {
+      const name = draft.name.trim().toLowerCase();
+      const dups = products.filter((p) => p.name.trim().toLowerCase() === name);
+      if (dups.length > 0) { setDupWarn(dups); return; }
+    }
+    performSave();
   };
 
   const onImageChange = async (file?: File | null) => {
@@ -334,17 +354,57 @@ export default function Inventory() {
             <Field label="Last restocked" type="date" v={draft.lastRestocked || ""} on={(v) => setDraft({ ...draft, lastRestocked: v })} />
             <div>
               <Label>Therapeutic Category</Label>
-              <Select value={draft.category} onValueChange={(v) => setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" })}>
+              <Select
+                value={CATEGORIES.includes(draft.category) ? draft.category : "Others"}
+                onValueChange={(v) => {
+                  if (v === "Others") { setDraft({ ...draft, category: "" }); setNewCat(""); }
+                  else setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" });
+                }}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
+              {(!CATEGORIES.includes(draft.category) || (draft.category === "" )) && (
+                <div className="mt-2 flex gap-2">
+                  <Input placeholder="Enter custom category" value={newCat || draft.category} onChange={(e) => { setNewCat(e.target.value); setDraft({ ...draft, category: e.target.value }); }} />
+                  <Button type="button" size="sm" variant="outline" onClick={() => {
+                    const v = (newCat || draft.category).trim();
+                    if (!v) return;
+                    if (!customCats.includes(v) && !DEFAULT_CATEGORIES.includes(v)) {
+                      const next = [...customCats, v]; setCustomCats(next); saveCustom(CAT_KEY, next);
+                    }
+                    setDraft({ ...draft, category: v }); setNewCat("");
+                    toast.success("Category saved");
+                  }}>Save</Button>
+                </div>
+              )}
             </div>
             <div>
               <Label>Pack Size / Unit</Label>
-              <Select value={draft.packSize} onValueChange={(v) => setDraft({ ...draft, packSize: v })}>
+              <Select
+                value={PACK_SIZES.includes(draft.packSize) ? draft.packSize : "Others"}
+                onValueChange={(v) => {
+                  if (v === "Others") { setDraft({ ...draft, packSize: "" }); setNewPack(""); }
+                  else setDraft({ ...draft, packSize: v });
+                }}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>{PACK_SIZES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
+              {(!PACK_SIZES.includes(draft.packSize) || draft.packSize === "") && (
+                <div className="mt-2 flex gap-2">
+                  <Input placeholder="Enter custom pack size" value={newPack || draft.packSize} onChange={(e) => { setNewPack(e.target.value); setDraft({ ...draft, packSize: e.target.value }); }} />
+                  <Button type="button" size="sm" variant="outline" onClick={() => {
+                    const v = (newPack || draft.packSize).trim();
+                    if (!v) return;
+                    if (!customPacks.includes(v) && !DEFAULT_PACK_SIZES.includes(v)) {
+                      const next = [...customPacks, v]; setCustomPacks(next); saveCustom(PACK_KEY, next);
+                    }
+                    setDraft({ ...draft, packSize: v }); setNewPack("");
+                    toast.success("Pack size saved");
+                  }}>Save</Button>
+                </div>
+              )}
             </div>
             <Field label="Quantity in stock" type="number" v={String(draft.quantity)} on={(v) => setDraft({ ...draft, quantity: +v })} />
             <Field label="Reorder Level" type="number" v={String(draft.reorderLevel)} on={(v) => setDraft({ ...draft, reorderLevel: +v })} />
@@ -403,6 +463,33 @@ export default function Inventory() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => { if (confirmDelete) { store.deleteProduct(confirmDelete.id); toast.success("Product deleted"); setConfirmDelete(null); } }}
             >Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!dupWarn} onOpenChange={(o) => !o && setDupWarn(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-warning" />Possible duplicate product</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>A product named <span className="font-semibold">{draft.name}</span> already exists:</p>
+                <div className="rounded-md border bg-muted/40 p-2 text-xs space-y-1">
+                  {dupWarn?.map((p) => (
+                    <div key={p.id} className="flex flex-wrap gap-x-3">
+                      <span>Batch: <span className="font-medium">{p.batch || "—"}</span></span>
+                      <span>Expiry: <span className="font-medium">{p.expiry || "—"}</span></span>
+                      <span>Stock: <span className="font-medium">{p.quantity}</span></span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs">If this is the same drug, use <span className="font-medium">Receive Stock</span> instead of creating a new entry.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Go back</AlertDialogCancel>
+            <AlertDialogAction onClick={performSave}>Add anyway</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
