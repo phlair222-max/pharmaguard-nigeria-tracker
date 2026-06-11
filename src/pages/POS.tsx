@@ -1,491 +1,420 @@
-import { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Search, Plus, Minus, Trash2, ShoppingCart, Zap, ShieldAlert } from "lucide-react";
-import { store, useStore, SaleItem } from "@/lib/store";
-import { NGN, expiryStatus } from "@/lib/format";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle } from "lucide-react";
+import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
+import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import { cn } from "@/lib/utils";
 
-type CartLine = SaleItem & { stock: number; cost: number; controlled?: boolean };
+const CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances","Other"];
+const PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
 
-type RxForm = {
-  patientName: string;
-  patientPhone: string;
-  prescriber: string;
-  prescriberRegNo: string;
-  prescriptionRef: string;
+const empty: Omit<Product, "id"> = {
+  name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
+  reorderLevel: 10, reorderQuantity: 30, packSize: "10 Tablets",
+  costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
+  image: "",
 };
 
-const emptyRx: RxForm = {
-  patientName: "",
-  patientPhone: "",
-  prescriber: "",
-  prescriberRegNo: "",
-  prescriptionRef: "",
-};
+async function fileToDataUrl(file: File, max = 400): Promise<string> {
+  const dataUrl = await new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+  // resize via canvas
+  return await new Promise<string>((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      c.getContext("2d")!.drawImage(img, 0, 0, w, h);
+      res(c.toDataURL("image/jpeg", 0.8));
+    };
+    img.onerror = () => res(dataUrl);
+    img.src = dataUrl;
+  });
+}
 
-export default function POS() {
+export default function Inventory() {
   const products = useStore((s) => s.products);
-  const user = useStore((s) => s.user);
+  const sales = useStore((s) => s.sales);
+  const suppliers = useStore((s) => s.suppliers);
+  const [params, setParams] = useSearchParams();
+  const filter = params.get("filter") || "all";
   const [q, setQ] = useState("");
-  const [cart, setCart] = useState<CartLine[]>([]);
-  const [payment, setPayment] = useState<"Cash" | "POS" | "Bank Transfer" | "Mobile Money">("Cash");
-  const [customer, setCustomer] = useState("");
-  const [tendered, setTendered] = useState(0);
-  const [lastReceipt, setLastReceipt] = useState<any>(null);
-  const [quickMode, setQuickMode] = useState(false);
-  const settings = useStore((s) => s.settings);
+  const [cat, setCat] = useState("all");
+  const [supFilter, setSupFilter] = useState("all");
+  const [expFilter, setExpFilter] = useState("all");
+  const [moveFilter, setMoveFilter] = useState("all");
+  const [editing, setEditing] = useState<Product | null>(null);
+  const [draft, setDraft] = useState<Omit<Product, "id">>(empty);
+  const [open, setOpen] = useState(false);
+  const [receiveFor, setReceiveFor] = useState<Product | null>(null);
+  const [receiveQty, setReceiveQty] = useState(0);
+  const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  // ── Controlled drug prescription modal state ──
-  const [rxOpen, setRxOpen] = useState(false);
-  const [rx, setRx] = useState<RxForm>(emptyRx);
-  const [rxSubmitting, setRxSubmitting] = useState(false);
+  const velocity = useMemo(() => salesVelocityMap(sales, 30), [sales]);
 
-  // ── Product filter tabs ──
-  const [tab, setTab] = useState<"all" | "controlled" | "lowstock">("all");
-
-  const controlledCount = useMemo(() => products.filter((p) => p.controlled).length, [products]);
-  const lowStockCount = useMemo(() => products.filter((p) => p.quantity <= p.reorderLevel && p.quantity > 0).length, [products]);
-
-  const results = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    let pool = products;
-    if (tab === "controlled") pool = products.filter((p) => p.controlled);
-    else if (tab === "lowstock") pool = products.filter((p) => p.quantity <= p.reorderLevel && p.quantity > 0);
-    if (!term) return pool.slice(0, tab === "all" ? 8 : 50);
-    return pool.filter((p) =>
-      p.name.toLowerCase().includes(term) ||
-      p.generic.toLowerCase().includes(term) ||
-      p.barcode === term ||
-      p.nafdac.toLowerCase().includes(term)
-    ).slice(0, 12);
-  }, [q, products, tab]);
-
-  const add = (id: string) => {
-    const p = products.find((x) => x.id === id);
-    if (!p) return;
-    if (p.quantity <= 0) { toast.error("Out of stock"); return; }
-    setCart((c) => {
-      const ex = c.find((l) => l.productId === id);
-      if (ex) {
-        if (ex.qty + 1 > p.quantity) { toast.error("Insufficient stock"); return c; }
-        return c.map((l) => l.productId === id ? { ...l, qty: l.qty + 1 } : l);
-      }
-      return [...c, {
-        productId: id,
-        name: p.name,
-        qty: 1,
-        price: p.sellingPrice,
-        stock: p.quantity,
-        cost: p.costPrice,
-        controlled: p.controlled,
-      }];
+  const list = useMemo(() => {
+    return products.filter((p) => {
+      const t = expiryTier(p.expiry);
+      const sold30 = velocity.get(p.id) || 0;
+      const speed = movementSpeed(sold30);
+      if (filter === "low" && p.quantity > p.reorderLevel) return false;
+      if (filter === "near" && t !== "red" && t !== "yellow") return false;
+      if (filter === "expired" && daysUntil(p.expiry) >= 0) return false;
+      if (cat !== "all" && p.category !== cat) return false;
+      if (supFilter !== "all" && p.supplierId !== supFilter && p.supplier !== supFilter) return false;
+      if (expFilter !== "all" && t !== expFilter) return false;
+      if (moveFilter !== "all" && speed !== moveFilter) return false;
+      const term = q.trim().toLowerCase();
+      if (!term) return true;
+      return p.name.toLowerCase().includes(term)
+        || p.generic.toLowerCase().includes(term)
+        || p.nafdac.toLowerCase().includes(term)
+        || p.batch.toLowerCase().includes(term);
     });
-    if (quickMode) setQ("");
+  }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity]);
+
+  const openNew = () => { setEditing(null); setDraft(empty); setOpen(true); };
+  const openEdit = (p: Product) => { setEditing(p); setDraft({ ...p }); setOpen(true); };
+  const save = () => {
+    if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+    const final = { ...draft };
+    if (final.supplierId) {
+      const s = suppliers.find((x) => x.id === final.supplierId);
+      if (s) final.supplier = s.name;
+    }
+    if (editing) { store.updateProduct(editing.id, final); toast.success("Product updated"); }
+    else { store.addProduct(final); toast.success("Product added"); }
+    setOpen(false);
   };
 
-  const setQty = (id: string, qty: number) =>
-    setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
-  const remove = (id: string) => setCart((c) => c.filter((l) => l.productId !== id));
+  const onImageChange = async (file?: File | null) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
+    const url = await fileToDataUrl(file, 400);
+    setDraft((d) => ({ ...d, image: url }));
+  };
 
-  const total = cart.reduce((a, l) => a + l.qty * l.price, 0);
-  const profit = cart.reduce((a, l) => a + l.qty * (l.price - l.cost), 0);
-  const change = payment === "Cash" ? Math.max(0, tendered - total) : 0;
-
-  const controlledItems = cart.filter((l) => l.controlled);
-  const hasControlled = controlledItems.length > 0;
-
-  // ── Called after prescription is confirmed (or immediately if no controlled items) ──
-  const completeSale = (rxData?: RxForm) => {
-    const sale = store.recordSale({
-      items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
-      total, profit, payment,
-      cashier: user?.username || "user",
-      customer: customer || undefined,
-    });
-
-    // Record each controlled item in the Poisons Register
-    if (rxData) {
-      controlledItems.forEach((item) => {
-        const product = products.find((p) => p.id === item.productId);
-        store.recordControlledDispense({
-          productId: item.productId,
-          productName: item.name,
-          batch: product?.batch || "",
-          quantity: item.qty,
-          amount: item.qty * item.price,
-          patientName: rxData.patientName,
-          patientPhone: rxData.patientPhone,
-          prescriber: rxData.prescriber,
-          prescriberRegNo: rxData.prescriberRegNo,
-          prescriptionRef: rxData.prescriptionRef,
-        });
+  const exportCSV = () => {
+    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode"];
+    const rows = products.map((p) => headers.map((h) => JSON.stringify((p as any)[h] ?? "")).join(","));
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `inventory-${format(new Date(), "yyyy-MM-dd")}.csv`; a.click();
+  };
+  const importCSV = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const [head, ...lines] = text.split(/\r?\n/).filter(Boolean);
+      const headers = head.split(",").map((s) => s.replace(/(^"|"$)/g, ""));
+      const rows = lines.map((ln) => {
+        const cols = ln.match(/("([^"]|"")*"|[^,]*)(,|$)/g)?.map((c) => c.replace(/,$/,"").replace(/^"|"$/g,"").replace(/""/g,'"')) || [];
+        const obj: any = { ...empty };
+        headers.forEach((h, i) => obj[h] = cols[i] ?? "");
+        ["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"].forEach((k) => obj[k] = Number(obj[k]) || 0);
+        return obj as Omit<Product, "id">;
       });
-    }
-
-    setLastReceipt({ ...sale, customer, tendered, change });
-    setCart([]);
-    setCustomer("");
-    setTendered(0);
-    setRx(emptyRx);
-    toast.success("Sale recorded");
-    setTimeout(() => window.print(), 200);
-  };
-
-  const checkout = () => {
-    if (cart.length === 0) return;
-
-    if (hasControlled) {
-      // Open prescription modal first
-      setRxOpen(true);
-    } else {
-      completeSale();
-    }
-  };
-
-  const submitRx = () => {
-    if (!rx.patientName.trim()) { toast.error("Patient name is required"); return; }
-    if (!rx.prescriber.trim()) { toast.error("Prescriber name is required"); return; }
-    if (!rx.prescriptionRef.trim()) { toast.error("Prescription reference is required"); return; }
-    setRxSubmitting(true);
-    completeSale(rx);
-    setRxOpen(false);
-    setRxSubmitting(false);
+      store.importProducts(rows);
+      toast.success(`Imported ${rows.length} products`);
+    };
+    reader.readAsText(file);
   };
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Sales Counter</h1>
-          <p className="text-sm text-muted-foreground">Fast point-of-sale for the pharmacy counter</p>
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Inventory</h1>
+          <p className="text-sm text-muted-foreground">Manage products, batches, stock and expiry</p>
         </div>
-        <Button
-          size="sm"
-          onClick={() => {
-            setQuickMode((v) => {
-              const next = !v;
-              if (next) { setPayment("Cash"); setCustomer(""); setTendered(0); }
-              return next;
-            });
-          }}
-          className={quickMode ? "bg-success text-success-foreground hover:bg-success/90" : ""}
-          variant={quickMode ? "default" : "outline"}
-        >
-          <Zap className="mr-2 h-4 w-4" /> Quick Sale {quickMode ? "ON" : "OFF"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <label className="cursor-pointer">
+            <input type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files && importCSV(e.target.files[0])} />
+            <Button variant="outline" size="sm" asChild><span><Upload className="mr-2 h-4 w-4" />Import CSV</span></Button>
+          </label>
+          <Button variant="outline" size="sm" onClick={exportCSV}><Download className="mr-2 h-4 w-4" />Export CSV</Button>
+          <Button size="sm" onClick={openNew}><Plus className="mr-2 h-4 w-4" />Add Product</Button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
-        <div className="space-y-3 lg:col-span-3">
-          <Card className="shadow-card">
-            <CardHeader className="pb-3">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  autoFocus
-                  placeholder="Search product / scan barcode..."
-                  className="h-11 pl-9 text-base"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && results[0]) add(results[0].id); }}
-                />
-              </div>
-              {/* Filter tabs */}
-              <div className="flex gap-2 mt-3">
-                <button
-                  onClick={() => setTab("all")}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition ${
-                    tab === "all"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  }`}
-                >
-                  All Products
-                </button>
-                <button
-                  onClick={() => setTab("controlled")}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition ${
-                    tab === "controlled"
-                      ? "bg-destructive text-destructive-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  }`}
-                >
-                  <ShieldAlert className="h-3 w-3" />
-                  Controlled
-                  {controlledCount > 0 && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                      tab === "controlled" ? "bg-white/20" : "bg-destructive/20 text-destructive"
-                    }`}>{controlledCount}</span>
-                  )}
-                </button>
-                <button
-                  onClick={() => setTab("lowstock")}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition ${
-                    tab === "lowstock"
-                      ? "bg-warning text-warning-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  }`}
-                >
-                  Low Stock
-                  {lowStockCount > 0 && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                      tab === "lowstock" ? "bg-white/20" : "bg-warning/20 text-warning"
-                    }`}>{lowStockCount}</span>
-                  )}
-                </button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-                {results.map((p) => {
-                  const s = expiryStatus(p.expiry);
+      <Card className="shadow-card">
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[220px]">
+              <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input placeholder="Search by name, generic, NAFDAC, batch..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+            </div>
+            <Select value={cat} onValueChange={setCat}>
+              <SelectTrigger className="w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={supFilter} onValueChange={setSupFilter}>
+              <SelectTrigger className="w-[160px]"><SelectValue placeholder="Supplier" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Suppliers</SelectItem>
+                {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={expFilter} onValueChange={setExpFilter}>
+              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Expiry" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All expiry</SelectItem>
+                <SelectItem value="green">Safe (&gt;6mo)</SelectItem>
+                <SelectItem value="yellow">1–6 months</SelectItem>
+                <SelectItem value="red">≤30 days / Expired</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={moveFilter} onValueChange={setMoveFilter}>
+              <SelectTrigger className="w-[140px]"><SelectValue placeholder="Movement" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All movement</SelectItem>
+                <SelectItem value="Fast">Fast</SelectItem>
+                <SelectItem value="Medium">Medium</SelectItem>
+                <SelectItem value="Slow">Slow</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={filter} onValueChange={(v) => setParams(v === "all" ? {} : { filter: v })}>
+              <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All items</SelectItem>
+                <SelectItem value="low">Low stock</SelectItem>
+                <SelectItem value="near">Near expiry</SelectItem>
+                <SelectItem value="expired">Expired</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[60px]">Image</TableHead>
+                  <TableHead>Product</TableHead>
+                  <TableHead>Generic</TableHead>
+                  <TableHead>NAFDAC</TableHead>
+                  <TableHead>Pack</TableHead>
+                  <TableHead>Batch</TableHead>
+                  <TableHead>Expiry</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Stock</TableHead>
+                  <TableHead className="text-right">Reorder</TableHead>
+                  <TableHead className="text-right">Reorder Qty</TableHead>
+                  <TableHead>Movement</TableHead>
+                  <TableHead className="text-right">Cost</TableHead>
+                  <TableHead className="text-right">Price</TableHead>
+                  <TableHead>Supplier</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {list.length === 0 && (
+                  <TableRow><TableCell colSpan={16} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
+                )}
+                {list.map((p) => {
+                  const tier = expiryTier(p.expiry);
+                  const days = daysUntil(p.expiry);
+                  const low = p.quantity <= p.reorderLevel;
+                  const sold30 = velocity.get(p.id) || 0;
+                  const speed = movementSpeed(sold30);
+                  const tierLabel = tier === "red" ? (days < 0 ? "Expired" : "Critical") : tier === "yellow" ? "Warning" : "Safe";
                   return (
-                    <button key={p.id} onClick={() => add(p.id)}
-                      disabled={p.quantity <= 0 || s === "expired"}
-                      className="rounded-lg border bg-card p-3 text-left transition hover:border-primary hover:shadow-card disabled:opacity-50">
-                      <div className="flex items-center gap-1 mb-0.5">
-                        {p.controlled && (
-                          <ShieldAlert className="h-3 w-3 text-destructive shrink-0" />
+                    <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10")}>
+                      <TableCell>
+                        {p.image ? (
+                          <img src={p.image} alt={p.name} className="h-10 w-10 rounded-md object-cover border" />
+                        ) : (
+                          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-4 w-4" /></div>
                         )}
-                        <div className="line-clamp-1 text-sm font-medium">{p.name}</div>
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">{p.generic}</div>
-                      {p.controlled && (
-                        <div className="text-[10px] text-destructive font-medium mt-0.5">Rx Required</div>
-                      )}
-                      <div className="mt-1 flex items-center justify-between">
-                        <span className="text-sm font-semibold text-primary">{NGN(p.sellingPrice)}</span>
-                        <Badge variant="outline" className={
-                          s === "expired" ? "border-destructive text-destructive" :
-                          s === "critical" ? "border-destructive text-destructive" :
-                          s === "warning" ? "border-warning text-warning" :
-                          "border-success text-success"
-                        }>{p.quantity}</Badge>
-                      </div>
-                    </button>
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium flex items-center gap-1.5">
+                          {p.name}
+                          {low && <AlertTriangle className="h-3.5 w-3.5 text-destructive" />}
+                        </div>
+                        <div className="text-xs text-muted-foreground">{p.category}</div>
+                      </TableCell>
+                      <TableCell className="text-xs">{p.generic}</TableCell>
+                      <TableCell className="text-xs">{p.nafdac}</TableCell>
+                      <TableCell className="text-xs">{p.packSize}</TableCell>
+                      <TableCell className="text-xs">{p.batch}</TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">
+                        <div>{format(new Date(p.expiry), "dd MMM yyyy")}</div>
+                        <div className="text-[11px] text-muted-foreground">{days < 0 ? `${-days}d ago` : `${days}d left`}</div>
+                      </TableCell>
+                      <TableCell>
+                        <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold", expiryBadgeClass(tier))}>
+                          <span className={cn("h-2 w-2 rounded-full", tier === "red" ? "bg-destructive" : tier === "yellow" ? "bg-warning" : "bg-success")} />
+                          {tierLabel}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={cn("font-semibold", low && "text-destructive")}>{p.quantity}</span>
+                        {low && <div className="text-[10px] text-destructive">LOW STOCK</div>}
+                      </TableCell>
+                      <TableCell className="text-right text-xs">{p.reorderLevel}</TableCell>
+                      <TableCell className="text-right text-xs">{p.reorderQuantity}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={movementBadgeClass(speed)}>{speed}</Badge>
+                        <div className="text-[10px] text-muted-foreground">{sold30}/30d</div>
+                      </TableCell>
+                      <TableCell className="text-right text-xs">{NGN(p.costPrice)}</TableCell>
+                      <TableCell className="text-right font-medium">{NGN(p.sellingPrice)}</TableCell>
+                      <TableCell className="text-xs">{p.supplier}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button size="icon" variant="ghost" title="Receive stock" onClick={() => { setReceiveFor(p); setReceiveQty(p.reorderQuantity || 0); }}><PackagePlus className="h-4 w-4" /></Button>
+                          <Button size="icon" variant="ghost" title="Edit" onClick={() => openEdit(p)}><Pencil className="h-4 w-4" /></Button>
+                          <Button size="icon" variant="ghost" title="Delete" onClick={() => setConfirmDelete(p)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
 
-        <Card className="lg:col-span-2 shadow-card">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <ShoppingCart className="h-4 w-4" /> Cart ({cart.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="max-h-[280px] space-y-2 overflow-auto">
-              {cart.length === 0 && <div className="py-8 text-center text-sm text-muted-foreground">No items yet</div>}
-              {cart.map((l) => (
-                <div key={l.productId} className={`flex items-center gap-2 rounded-md border p-2 ${l.controlled ? "border-destructive/40 bg-destructive/5" : ""}`}>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-1">
-                      {l.controlled && <ShieldAlert className="h-3 w-3 text-destructive shrink-0" />}
-                      <div className="line-clamp-1 text-sm font-medium">{l.name}</div>
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">{NGN(l.price)} × {l.qty}</div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setQty(l.productId, l.qty - 1)}><Minus className="h-3 w-3" /></Button>
-                    <Input className="h-7 w-12 text-center" value={l.qty} onChange={(e) => setQty(l.productId, +e.target.value || 1)} />
-                    <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setQty(l.productId, l.qty + 1)}><Plus className="h-3 w-3" /></Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(l.productId)}><Trash2 className="h-3 w-3 text-destructive" /></Button>
-                  </div>
-                </div>
-              ))}
-            </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editing ? "Edit Product" : "Add Product"}</DialogTitle></DialogHeader>
 
-            {/* Controlled drug warning */}
-            {hasControlled && (
-              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5">
-                <ShieldAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-                <div className="text-xs text-destructive">
-                  <span className="font-semibold">Prescription required.</span> Cart contains{" "}
-                  {controlledItems.length} controlled drug{controlledItems.length > 1 ? "s" : ""}.
-                  You will be prompted to enter prescription details before completing this sale.
-                </div>
-              </div>
+          <div className="mb-3 flex items-center gap-4 rounded-lg border bg-muted/30 p-3">
+            {draft.image ? (
+              <img src={draft.image} alt="preview" className="h-20 w-20 rounded-md object-cover border" />
+            ) : (
+              <div className="flex h-20 w-20 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-6 w-6" /></div>
             )}
-
-            <div className="space-y-2 border-t pt-3">
-              <div className="flex justify-between text-sm"><span>Subtotal</span><span>{NGN(total)}</span></div>
-              <div className="flex items-center justify-between text-base font-semibold">
-                <span>Total</span><span className="text-primary">{NGN(total)}</span>
+            <div className="flex-1">
+              <Label className="text-xs">Product Image</Label>
+              <div className="flex gap-2 mt-1">
+                <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onImageChange(e.target.files?.[0])} />
+                <Button type="button" size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                  <Upload className="mr-1.5 h-3.5 w-3.5" />Upload image
+                </Button>
+                {draft.image && <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, image: "" })}>Remove</Button>}
               </div>
-            </div>
-
-            <div className="space-y-2">
-              <div>
-                <Label className="text-xs">Payment method</Label>
-                <Select value={payment} onValueChange={(v: any) => setPayment(v)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Cash">Cash</SelectItem>
-                    <SelectItem value="POS">POS (Card)</SelectItem>
-                    <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
-                    <SelectItem value="Mobile Money">Mobile Money</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {!quickMode && payment === "Cash" && (
-                <div>
-                  <Label className="text-xs">Cash tendered</Label>
-                  <Input type="number" value={tendered} onChange={(e) => setTendered(+e.target.value)} />
-                  {tendered > 0 && <div className="mt-1 text-xs text-muted-foreground">Change: <span className="font-semibold text-success">{NGN(change)}</span></div>}
-                </div>
-              )}
-              {!quickMode && (
-                <div>
-                  <Label className="text-xs">Customer (optional)</Label>
-                  <Input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Walk-in" />
-                </div>
-              )}
-            </div>
-
-            <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
-              {hasControlled && <ShieldAlert className="mr-2 h-4 w-4" />}
-              Complete Sale · {NGN(total)}
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
-      {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
-
-      {/* ── PRESCRIPTION MODAL ── */}
-      <Dialog open={rxOpen} onOpenChange={setRxOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <ShieldAlert className="h-5 w-5 text-destructive" />
-              Prescription Required
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive mb-2">
-            <strong>PCN Compliance:</strong> This sale includes{" "}
-            <strong>{controlledItems.map((i) => i.name).join(", ")}</strong>.
-            Prescription details must be recorded in the Poisons Register before dispensing.
-          </div>
-
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2">
-                <Label className="text-xs">Patient Full Name <span className="text-destructive">*</span></Label>
-                <Input
-                  placeholder="e.g. Emeka Johnson"
-                  value={rx.patientName}
-                  onChange={(e) => setRx({ ...rx, patientName: e.target.value })}
-                />
-              </div>
-              <div className="col-span-2">
-                <Label className="text-xs">Patient Phone</Label>
-                <Input
-                  placeholder="e.g. 08012345678"
-                  value={rx.patientPhone}
-                  onChange={(e) => setRx({ ...rx, patientPhone: e.target.value })}
-                />
-              </div>
-              <div className="col-span-2">
-                <Label className="text-xs">Prescriber Name <span className="text-destructive">*</span></Label>
-                <Input
-                  placeholder="e.g. Dr. Adewale Okafor"
-                  value={rx.prescriber}
-                  onChange={(e) => setRx({ ...rx, prescriber: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label className="text-xs">Prescriber MDCN Reg No.</Label>
-                <Input
-                  placeholder="e.g. MDCN/12345"
-                  value={rx.prescriberRegNo}
-                  onChange={(e) => setRx({ ...rx, prescriberRegNo: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label className="text-xs">Prescription Ref <span className="text-destructive">*</span></Label>
-                <Input
-                  placeholder="e.g. RX-2024-001"
-                  value={rx.prescriptionRef}
-                  onChange={(e) => setRx({ ...rx, prescriptionRef: e.target.value })}
-                />
-              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">JPG/PNG, under 5MB. Auto-resized.</p>
             </div>
           </div>
 
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setRxOpen(false)}>
-              Cancel Sale
-            </Button>
-            <Button
-              onClick={submitRx}
-              disabled={rxSubmitting}
-              className="bg-destructive hover:bg-destructive/90"
-            >
-              <ShieldAlert className="mr-2 h-4 w-4" />
-              Confirm & Dispense
-            </Button>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Product name *" v={draft.name} on={(v) => setDraft({ ...draft, name: v })} />
+            <Field label="Generic name" v={draft.generic} on={(v) => setDraft({ ...draft, generic: v })} />
+            <Field label="NAFDAC Registration No." v={draft.nafdac} on={(v) => setDraft({ ...draft, nafdac: v })} />
+            <Field label="Batch / Lot No." v={draft.batch} on={(v) => setDraft({ ...draft, batch: v })} />
+            <Field label="Expiry date *" type="date" v={draft.expiry} on={(v) => setDraft({ ...draft, expiry: v })} />
+            <Field label="Last restocked" type="date" v={draft.lastRestocked || ""} on={(v) => setDraft({ ...draft, lastRestocked: v })} />
+            <div>
+              <Label>Therapeutic Category</Label>
+              <Select value={draft.category} onValueChange={(v) => setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Pack Size / Unit</Label>
+              <Select value={draft.packSize} onValueChange={(v) => setDraft({ ...draft, packSize: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{PACK_SIZES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <Field label="Quantity in stock" type="number" v={String(draft.quantity)} on={(v) => setDraft({ ...draft, quantity: +v })} />
+            <Field label="Reorder Level" type="number" v={String(draft.reorderLevel)} on={(v) => setDraft({ ...draft, reorderLevel: +v })} />
+            <Field label="Reorder Quantity" type="number" v={String(draft.reorderQuantity)} on={(v) => setDraft({ ...draft, reorderQuantity: +v })} />
+            <Field label="Cost price (₦)" type="number" v={String(draft.costPrice)} on={(v) => setDraft({ ...draft, costPrice: +v })} />
+            <Field label="Selling price (₦)" type="number" v={String(draft.sellingPrice)} on={(v) => setDraft({ ...draft, sellingPrice: +v })} />
+            <div>
+              <Label>Supplier</Label>
+              <Select value={draft.supplierId || ""} onValueChange={(v) => setDraft({ ...draft, supplierId: v })}>
+                <SelectTrigger><SelectValue placeholder={draft.supplier || "Select supplier"} /></SelectTrigger>
+                <SelectContent>
+                  {suppliers.length === 0 && <div className="px-2 py-1 text-xs text-muted-foreground">Add suppliers first</div>}
+                  {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <Field label="Barcode (optional)" v={draft.barcode || ""} on={(v) => setDraft({ ...draft, barcode: v })} />
+            <div className="col-span-2">
+              <Label>Description</Label>
+              <Textarea rows={2} value={draft.description || ""} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button onClick={save}>{editing ? "Save changes" : "Add product"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!receiveFor} onOpenChange={(o) => !o && setReceiveFor(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Receive stock — {receiveFor?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            <Label>Quantity received</Label>
+            <Input type="number" value={receiveQty} onChange={(e) => setReceiveQty(+e.target.value)} />
+            <div className="text-xs text-muted-foreground">Current: {receiveFor?.quantity} · New total: {(receiveFor?.quantity || 0) + receiveQty}</div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiveFor(null)}>Cancel</Button>
+            <Button onClick={() => { if (receiveFor && receiveQty > 0) { store.receiveStock(receiveFor.id, receiveQty); toast.success("Stock received"); setReceiveFor(null); } }}>Confirm</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this product?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Permanently delete <span className="font-semibold">{confirmDelete?.name}</span> (Batch {confirmDelete?.batch})? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => { if (confirmDelete) { store.deleteProduct(confirmDelete.id); toast.success("Product deleted"); setConfirmDelete(null); } }}
+            >Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
-function Receipt({ sale, settings }: { sale: any; settings: any }) {
+function Field({ label, v, on, type = "text" }: { label: string; v: string; on: (v: string) => void; type?: string }) {
   return (
-    <div className="receipt-print" style={{ display: "none" }}>
-      <div style={{ textAlign: "center", marginBottom: 6 }}>
-        {settings.logo && (
-          <div style={{ marginBottom: 4 }}>
-            <img src={settings.logo} alt="logo" style={{ height: 50, width: 50, objectFit: "contain", display: "inline-block" }} />
-          </div>
-        )}
-        <div style={{ fontWeight: 700, fontSize: 14, textTransform: "uppercase" }}>{settings.name}</div>
-        <div style={{ fontSize: 10 }}>{settings.address}</div>
-        <div style={{ fontSize: 10 }}>Tel: {settings.phone}</div>
-        {settings.email && <div style={{ fontSize: 10 }}>{settings.email}</div>}
-        {settings.premiseLicense && <div style={{ fontSize: 10 }}>Lic: {settings.premiseLicense}</div>}
-      </div>
-      <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "4px 0", fontSize: 11 }}>
-        <div>Receipt: {sale.id.slice(0, 8).toUpperCase()}</div>
-        <div>Date: {format(new Date(sale.createdAt), "dd MMM yyyy HH:mm")}</div>
-        <div>Cashier: {sale.cashier}</div>
-        {sale.customer && <div>Customer: {sale.customer}</div>}
-      </div>
-      <table style={{ width: "100%", fontSize: 11, marginTop: 4 }}>
-        <thead><tr><th style={{ textAlign: "left" }}>Item</th><th>Qty</th><th style={{ textAlign: "right" }}>Amt</th></tr></thead>
-        <tbody>
-          {sale.items.map((it: SaleItem, i: number) => (
-            <tr key={i}>
-              <td>{it.name}</td>
-              <td style={{ textAlign: "center" }}>{it.qty}</td>
-              <td style={{ textAlign: "right" }}>{(it.qty * it.price).toFixed(2)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div style={{ borderTop: "1px dashed #000", marginTop: 4, paddingTop: 4, fontSize: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}><span>TOTAL</span><span>NGN {sale.total.toFixed(2)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between" }}><span>Payment</span><span>{sale.payment}</span></div>
-        {sale.payment === "Cash" && (<>
-          <div style={{ display: "flex", justifyContent: "space-between" }}><span>Tendered</span><span>{Number(sale.tendered).toFixed(2)}</span></div>
-          <div style={{ display: "flex", justifyContent: "space-between" }}><span>Change</span><span>{Number(sale.change).toFixed(2)}</span></div>
-        </>)}
-      </div>
-      <div style={{ textAlign: "center", marginTop: 8, fontSize: 10 }}>
-        Thank you for your patronage<br />Goods sold are not returnable
-      </div>
+    <div>
+      <Label>{label}</Label>
+      <Input type={type} value={v} onChange={(e) => on(e.target.value)} />
     </div>
   );
 }
