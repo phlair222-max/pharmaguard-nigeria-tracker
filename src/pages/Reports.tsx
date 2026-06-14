@@ -9,23 +9,10 @@ import { Label } from "@/components/ui/label";
 import { useStore } from "@/lib/store";
 import { NGN, expiryStatus, daysUntil } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
-import { FileDown, FileText, ShieldCheck, Loader2 } from "lucide-react";
+import { FileDown, FileText, ShieldCheck } from "lucide-react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-
-// ── Safe jsPDF + autoTable loader ──────────────────────────────────────────
-// We import jsPDF and autoTable dynamically to avoid SSR issues and to
-// guarantee the autoTable plugin is registered on the jsPDF instance before use.
-async function makePdf() {
-  const { default: jsPDF } = await import("jspdf");
-  const { default: autoTable } = await import("jspdf-autotable");
-  const doc = new jsPDF();
-  // Register the plugin on this instance
-  (doc as any).__autoTable = autoTable;
-  return { doc, autoTable: (head: string[][], body: any[][], opts: any) => {
-    autoTable(doc, { head, body, ...opts });
-    return (doc as any).lastAutoTable?.finalY ?? opts.startY + 20;
-  }};
-}
 
 export default function Reports() {
   const sales = useStore((s) => s.sales);
@@ -35,7 +22,6 @@ export default function Reports() {
   const audit = useStore((s) => s.audit);
   const [from, setFrom] = useState(format(new Date(Date.now() - 6 * 86400000), "yyyy-MM-dd"));
   const [to, setTo] = useState(format(new Date(), "yyyy-MM-dd"));
-  const [pdfLoading, setPdfLoading] = useState(false);
 
   const inRange = useMemo(() => {
     const f = startOfDay(new Date(from)).getTime();
@@ -43,18 +29,15 @@ export default function Reports() {
     return sales.filter((s) => { const x = new Date(s.createdAt).getTime(); return x >= f && x < t; });
   }, [sales, from, to]);
 
-  const totals = inRange.reduce(
-    (a, s) => ({ rev: a.rev + s.total, profit: a.profit + s.profit, count: a.count + 1 }),
-    { rev: 0, profit: 0, count: 0 }
-  );
+  const totals = inRange.reduce((a, s) => ({ rev: a.rev + s.total, profit: a.profit + s.profit, count: a.count + 1 }), { rev: 0, profit: 0, count: 0 });
 
-  const expiryRows = products
-    .map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
+  const expiryRows = products.map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
     .sort((a, b) => a.days - b.days);
 
   const stockCostValue = products.reduce((a, p) => a + p.quantity * p.costPrice, 0);
   const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
 
+  // Profit by product within range
   const profitMap = new Map<string, { name: string; units: number; revenue: number; profit: number }>();
   for (const s of inRange) {
     for (const it of s.items) {
@@ -66,6 +49,7 @@ export default function Reports() {
   }
   const profitRows = [...profitMap.values()].sort((a, b) => b.profit - a.profit);
 
+  // Stock Movement: units sold per product within range
   const movementMap = new Map<string, { name: string; sold: number; revenue: number }>();
   for (const s of inRange) {
     for (const it of s.items) {
@@ -74,237 +58,102 @@ export default function Reports() {
       movementMap.set(it.productId, cur);
     }
   }
-  const movementRows = products
-    .map((p) => {
-      const m = movementMap.get(p.id);
-      return { id: p.id, name: p.name, batch: p.batch, opening: p.quantity + (m?.sold || 0), sold: m?.sold || 0, closing: p.quantity, revenue: m?.revenue || 0 };
-    })
-    .sort((a, b) => b.sold - a.sold);
+  const movementRows = products.map((p) => {
+    const m = movementMap.get(p.id);
+    return { id: p.id, name: p.name, batch: p.batch, opening: p.quantity + (m?.sold || 0), sold: m?.sold || 0, closing: p.quantity, revenue: m?.revenue || 0 };
+  }).sort((a, b) => b.sold - a.sold);
 
-  // ── INSPECTION PDF ──────────────────────────────────────────────────────
-  const inspectionReadyPdf = async () => {
-    setPdfLoading(true);
+  const inspectionReadyPdf = () => {
     try {
-      const { doc, autoTable } = await makePdf();
-      const pageW = doc.internal.pageSize.getWidth();
-      const pageH = doc.internal.pageSize.getHeight();
+    const doc = new jsPDF();
+    const pageW = doc.internal.pageSize.getWidth();
+    doc.setFontSize(16); doc.setFont("helvetica", "bold");
+    doc.text(settings.name, pageW / 2, 16, { align: "center" });
+    doc.setFontSize(10); doc.setFont("helvetica", "normal");
+    doc.text(settings.address, pageW / 2, 22, { align: "center" });
+    doc.text(`Tel: ${settings.phone}  ·  PCN License: ${settings.premiseLicense || "—"}`, pageW / 2, 27, { align: "center" });
+    doc.setFontSize(13); doc.setFont("helvetica", "bold");
+    doc.text("INSPECTION-READY COMPLIANCE REPORT", pageW / 2, 36, { align: "center" });
+    doc.setFontSize(9); doc.setFont("helvetica", "normal");
+    doc.text(`Period: ${from} to ${to}  ·  Generated: ${format(new Date(), "dd MMM yyyy HH:mm")}`, pageW / 2, 41, { align: "center" });
 
-      // ── Header ──
-      doc.setFontSize(16); doc.setFont("helvetica", "bold");
-      doc.text(settings.name || "Pharmacy", pageW / 2, 16, { align: "center" });
-      doc.setFontSize(9); doc.setFont("helvetica", "normal");
-      if (settings.address) doc.text(settings.address, pageW / 2, 22, { align: "center" });
-      doc.text(
-        `Tel: ${settings.phone || "—"}   |   PCN License: ${settings.premiseLicense || "—"}`,
-        pageW / 2, 27, { align: "center" }
-      );
-      doc.setDrawColor(22, 160, 110); doc.setLineWidth(0.5);
-      doc.line(14, 30, pageW - 14, 30);
-      doc.setFontSize(12); doc.setFont("helvetica", "bold");
-      doc.text("INSPECTION-READY COMPLIANCE REPORT", pageW / 2, 37, { align: "center" });
-      doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(100);
-      doc.text(
-        `Period: ${from}  to  ${to}   |   Generated: ${format(new Date(), "dd MMM yyyy HH:mm")}`,
-        pageW / 2, 43, { align: "center" }
-      );
-      doc.setTextColor(0);
+    let y = 48;
+    const section = (title: string) => {
+      doc.setFontSize(11); doc.setFont("helvetica", "bold");
+      doc.text(title, 14, y); y += 3;
+    };
 
-      let y = 50;
+    section("1. Sales Summary");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [22, 160, 110] },
+      head: [["Metric", "Value"]],
+      body: [["Transactions", String(totals.count)], ["Revenue", NGN(totals.rev)], ["Profit", NGN(totals.profit)]],
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
 
-      const section = (num: string, title: string) => {
-        if (y > pageH - 60) { doc.addPage(); y = 20; }
-        doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(22, 160, 110);
-        doc.text(`${num}. ${title}`, 14, y);
-        doc.setTextColor(0); doc.setFont("helvetica", "normal");
-        y += 5;
-      };
+    section("2. Stock On Hand");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 160, 110] },
+      head: [["Drug", "NAFDAC", "Batch", "Expiry", "Qty", "Value (cost)"]],
+      body: products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, NGN(p.quantity * p.costPrice)]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
 
-      // ── 1. Sales Summary ──
-      section("1", "Sales Summary");
-      y = autoTable(
-        [["Metric", "Value"]],
-        [
-          ["Period", `${from} to ${to}`],
-          ["Total Transactions", String(totals.count)],
-          ["Total Revenue", NGN(totals.rev)],
-          ["Total Profit", NGN(totals.profit)],
-          ["Avg. Transaction Value", totals.count > 0 ? NGN(totals.rev / totals.count) : "—"],
-        ],
-        { startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [22, 160, 110] }, columnStyles: { 0: { fontStyle: "bold", cellWidth: 70 } } }
-      ) + 8;
+    if (y > 240) { doc.addPage(); y = 20; }
+    section("3. Expiry Watch (sorted by days left)");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [200, 60, 60] },
+      head: [["Drug", "Batch", "Expiry", "Days", "Status", "Qty"]],
+      body: expiryRows.slice(0, 50).map((p) => [p.name, p.batch, p.expiry, String(p.days), p.status, String(p.quantity)]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
 
-      // ── 2. Stock On Hand ──
-      section("2", "Current Stock On Hand");
-      y = autoTable(
-        [["Drug Name", "NAFDAC No.", "Batch", "Expiry", "Qty", "Cost Value"]],
-        products.map((p) => [
-          p.name, p.nafdac || "—", p.batch || "—",
-          p.expiry ? format(new Date(p.expiry), "dd/MM/yyyy") : "—",
-          String(p.quantity),
-          NGN(p.quantity * p.costPrice),
-        ]),
-        {
-          startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 160, 110] },
-          foot: [["", "", "", "TOTAL STOCK VALUE", "", NGN(stockCostValue)]],
-          footStyles: { fillColor: [240, 240, 240], fontStyle: "bold", fontSize: 7 },
-        }
-      ) + 8;
+    if (y > 220) { doc.addPage(); y = 20; }
+    section("4. Controlled Substances Register");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [180, 50, 50] },
+      head: [["Date", "Drug", "Batch", "Qty", "Patient", "Prescriber", "Rx Ref"]],
+      body: dispenses.map((d) => [
+        format(new Date(d.at), "dd-MM-yyyy"), d.productName, d.batch, String(d.quantity),
+        d.patientName, `${d.prescriber}${d.prescriberRegNo ? " / "+d.prescriberRegNo : ""}`, d.prescriptionRef,
+      ]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
 
-      // ── 3. Expiry Watch ──
-      section("3", "Expiry Watch (sorted: soonest first)");
-      const expiredItems = expiryRows.filter((p) => p.days < 0);
-      const criticalItems = expiryRows.filter((p) => p.days >= 0 && p.days <= 30);
-      const warningItems = expiryRows.filter((p) => p.days > 30 && p.days <= 180);
+    if (y > 240) { doc.addPage(); y = 20; }
+    section("5. Audit Trail (recent 50 entries)");
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 100, 160] },
+      head: [["When", "User", "Action", "Target", "Detail"]],
+      body: audit.slice(0, 50).map((a) => [
+        format(new Date(a.at), "dd-MM HH:mm"), a.user, a.action, a.target, a.detail || "",
+      ]),
+    });
 
-      if (expiredItems.length > 0 || criticalItems.length > 0) {
-        doc.setFontSize(8); doc.setTextColor(180, 50, 50);
-        doc.text(
-          `⚠  ${expiredItems.length} expired item(s) · ${criticalItems.length} critical (≤30 days) · ${warningItems.length} warning (≤6 months)`,
-          14, y
-        );
-        doc.setTextColor(0);
-        y += 5;
-      }
+    const pages = doc.getNumberOfPages();
+    for (let i = 1; i <= pages; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(`${settings.name} — Inspection Report — Page ${i} of ${pages}`, pageW / 2, doc.internal.pageSize.getHeight() - 8, { align: "center" });
+    }
 
-      y = autoTable(
-        [["Drug Name", "Batch", "Expiry Date", "Days Left", "Status", "Qty"]],
-        expiryRows.slice(0, 60).map((p) => [
-          p.name, p.batch || "—",
-          p.expiry ? format(new Date(p.expiry), "dd/MM/yyyy") : "—",
-          p.days < 0 ? `EXPIRED (${-p.days}d ago)` : `${p.days}d`,
-          p.status.toUpperCase(),
-          String(p.quantity),
-        ]),
-        {
-          startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [200, 60, 60] },
-          didParseCell: (data: any) => {
-            if (data.section === "body") {
-              const status = data.row.raw[4];
-              if (status === "EXPIRED") data.cell.styles.textColor = [180, 50, 50];
-              else if (status === "CRITICAL") data.cell.styles.textColor = [200, 100, 0];
-            }
-          },
-        }
-      ) + 8;
-
-      // ── 4. Controlled Substances Register ──
-      section("4", "Controlled Substances Poisons Register");
-      if (dispenses.length === 0) {
-        doc.setFontSize(8); doc.setTextColor(100);
-        doc.text("No controlled substance dispensing records in this period.", 14, y);
-        doc.setTextColor(0); y += 8;
-      } else {
-        y = autoTable(
-          [["Date", "Drug", "Batch", "Qty", "Patient Name", "Phone", "Prescriber", "MDCN Reg", "Rx Ref", "Cashier"]],
-          dispenses.map((d) => [
-            format(new Date(d.at), "dd/MM/yyyy HH:mm"),
-            d.productName, d.batch || "—", String(d.quantity),
-            d.patientName, d.patientPhone || "—",
-            d.prescriber, d.prescriberRegNo || "—",
-            d.prescriptionRef, d.cashier,
-          ]),
-          {
-            startY: y, styles: { fontSize: 6.5 }, headStyles: { fillColor: [140, 30, 30] },
-            columnStyles: { 0: { cellWidth: 22 }, 1: { cellWidth: 28 } },
-          }
-        ) + 8;
-      }
-
-      // ── 5. Sales Detail for Period ──
-      section("5", `Sales Transactions (${from} to ${to})`);
-      y = autoTable(
-        [["Date & Time", "Receipt No.", "Items", "Payment", "Cashier", "Customer", "Total (₦)", "Profit (₦)"]],
-        inRange.map((s) => [
-          format(new Date(s.createdAt), "dd/MM/yy HH:mm"),
-          s.id.slice(0, 8).toUpperCase(),
-          String(s.items.length),
-          s.payment,
-          s.cashier,
-          s.customer || "Walk-in",
-          s.total.toFixed(2),
-          s.profit.toFixed(2),
-        ]),
-        {
-          startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 160, 110] },
-          foot: [["", "", "", "", "", "TOTALS", NGN(totals.rev), NGN(totals.profit)]],
-          footStyles: { fillColor: [230, 245, 235], fontStyle: "bold", fontSize: 7 },
-        }
-      ) + 8;
-
-      // ── 6. Audit Trail ──
-      section("6", "Audit Trail (most recent 50 entries)");
-      y = autoTable(
-        [["Timestamp", "User", "Action", "Target", "Detail"]],
-        audit.slice(0, 50).map((a) => [
-          format(new Date(a.at), "dd/MM/yy HH:mm"),
-          a.user, a.action, a.target, a.detail || "—",
-        ]),
-        { startY: y, styles: { fontSize: 6.5 }, headStyles: { fillColor: [22, 100, 160] } }
-      ) + 8;
-
-      // ── Footer on every page ──
-      const totalPages = doc.getNumberOfPages();
-      for (let i = 1; i <= totalPages; i++) {
-        doc.setPage(i);
-        doc.setDrawColor(200); doc.setLineWidth(0.3);
-        doc.line(14, pageH - 12, pageW - 14, pageH - 12);
-        doc.setFontSize(7); doc.setTextColor(120); doc.setFont("helvetica", "normal");
-        doc.text(
-          `${settings.name} — PCN Inspection Compliance Report — Page ${i} of ${totalPages}`,
-          pageW / 2, pageH - 7, { align: "center" }
-        );
-        doc.text(
-          `CONFIDENTIAL — For authorised regulatory inspection only`,
-          pageW / 2, pageH - 3, { align: "center" }
-        );
-      }
-
-      doc.save(`inspection-report-${format(new Date(), "yyyy-MM-dd")}.pdf`);
+    doc.save(`inspection-ready-${format(new Date(), "yyyy-MM-dd")}.pdf`);
     } catch (err) {
-      console.error("PDF generation failed:", err);
-      // Dynamic import fallback for environments where the module path differs
-      try {
-        const jsPDF = (await import("jspdf")).default;
-        const doc = new jsPDF();
-        const pageW = doc.internal.pageSize.getWidth();
-        doc.setFontSize(14); doc.setFont("helvetica", "bold");
-        doc.text(settings.name || "Pharmacy", pageW / 2, 20, { align: "center" });
-        doc.setFontSize(11);
-        doc.text("INSPECTION COMPLIANCE REPORT", pageW / 2, 30, { align: "center" });
-        doc.setFontSize(9); doc.setFont("helvetica", "normal");
-        doc.text(`Period: ${from} to ${to}`, 14, 45);
-        doc.text(`Generated: ${format(new Date(), "dd MMM yyyy HH:mm")}`, 14, 52);
-        doc.text(`Total Transactions: ${totals.count}`, 14, 65);
-        doc.text(`Total Revenue: ${NGN(totals.rev)}`, 14, 72);
-        doc.text(`Total Profit: ${NGN(totals.profit)}`, 14, 79);
-        doc.text(`Total Products: ${products.length}`, 14, 86);
-        doc.text(`Controlled Dispenses: ${dispenses.length}`, 14, 93);
-        doc.text("NOTE: Install jspdf-autotable for full table support.", 14, 110);
-        doc.save(`inspection-report-${format(new Date(), "yyyy-MM-dd")}.pdf`);
-      } catch (err2) {
-        console.error("Fallback PDF also failed:", err2);
-        alert("PDF generation failed. Check browser console for details.");
-      }
-    } finally {
-      setPdfLoading(false);
+      console.error("Inspection PDF failed:", err);
+      alert("Failed to generate Inspection PDF: " + (err as Error)?.message);
     }
   };
 
-  // ── Generic export helpers ──
-  const exportPDF = async (title: string, head: string[], body: any[][]) => {
-    try {
-      const { doc, autoTable } = await makePdf();
-      doc.setFontSize(14); doc.text(settings.name || "PharmaGuard NG", 14, 14);
-      doc.setFontSize(10); doc.text(title, 14, 21);
-      doc.text(`Generated ${format(new Date(), "dd MMM yyyy HH:mm")}`, 14, 27);
-      autoTable([head], body, { startY: 32, styles: { fontSize: 9 }, headStyles: { fillColor: [22, 160, 110] } });
-      doc.save(`${title.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.pdf`);
-    } catch (err) {
-      console.error("Export PDF failed:", err);
-      alert("PDF export failed. Check browser console.");
-    }
-  };
 
+
+  const exportPDF = (title: string, head: string[], body: any[][]) => {
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text("PharmaGuard NG", 14, 14);
+    doc.setFontSize(10); doc.text(title, 14, 21);
+    doc.text(`Generated ${format(new Date(), "dd MMM yyyy HH:mm")}`, 14, 27);
+    autoTable(doc, { head: [head], body, startY: 32, styles: { fontSize: 9 }, headStyles: { fillColor: [22, 160, 110] } });
+    doc.save(`${title.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.pdf`);
+  };
   const exportXLSX = (name: string, rows: any[]) => {
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -319,11 +168,8 @@ export default function Reports() {
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Reports & Compliance</h1>
           <p className="text-sm text-muted-foreground">Generate sales, stock, expiry, movement and statutory inspection reports</p>
         </div>
-        <Button onClick={inspectionReadyPdf} disabled={pdfLoading} className="bg-primary hover:bg-primary/90">
-          {pdfLoading
-            ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Generating PDF…</>
-            : <><ShieldCheck className="mr-2 h-4 w-4" />Inspection Ready PDF</>
-          }
+        <Button size="sm" variant="outline" onClick={inspectionReadyPdf}>
+          <ShieldCheck className="mr-1 h-4 w-4" />Inspection Ready PDF
         </Button>
       </div>
 
@@ -356,7 +202,7 @@ export default function Reports() {
                 <Button size="sm" variant="outline" onClick={() => exportXLSX("Sales", inRange.map((s) => ({
                   Date: format(new Date(s.createdAt), "yyyy-MM-dd HH:mm"), Receipt: s.id.slice(0,8).toUpperCase(),
                   Items: s.items.length, Total: s.total, Profit: s.profit, Payment: s.payment, Cashier: s.cashier,
-                }))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
+                })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
                 <Button size="sm" variant="outline" onClick={() => exportPDF("Sales Report",
                   ["Date","Receipt","Items","Total","Profit","Payment"],
                   inRange.map((s) => [format(new Date(s.createdAt), "dd MMM HH:mm"), s.id.slice(0,8).toUpperCase(), s.items.length, s.total.toFixed(2), s.profit.toFixed(2), s.payment])
@@ -501,14 +347,12 @@ export default function Reports() {
                       <TableRow key={p.id}>
                         <TableCell className="font-medium">{p.name}</TableCell>
                         <TableCell className="text-xs">{p.batch}</TableCell>
-                        <TableCell className="text-xs">
-                          {p.expiry ? format(new Date(p.expiry), "dd MMM yyyy") : "—"}
-                          <span className="text-muted-foreground ml-1">({p.days < 0 ? `${-p.days}d ago` : `${p.days}d`})</span>
-                        </TableCell>
+                        <TableCell className="text-xs">{format(new Date(p.expiry), "dd MMM yyyy")} <span className="text-muted-foreground">({p.days < 0 ? `${-p.days}d ago` : `${p.days}d`})</span></TableCell>
                         <TableCell>
                           <Badge variant="outline" className={
                             p.status === "expired" || p.status === "critical" ? "border-destructive text-destructive" :
-                            p.status === "warning" ? "border-warning text-warning" : "border-success text-success"
+                            p.status === "warning" ? "border-warning text-warning" :
+                            "border-success text-success"
                           }>{p.status}</Badge>
                         </TableCell>
                         <TableCell className="text-right">{p.quantity}</TableCell>
