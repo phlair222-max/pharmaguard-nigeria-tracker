@@ -4,7 +4,7 @@ import {
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
   SidebarHeader, SidebarFooter, useSidebar,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon } from "lucide-react";
+import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { store, useStore } from "@/lib/store";
 import { useTheme } from "next-themes";
@@ -16,6 +16,7 @@ const items = [
   { title: "Sales History", url: "/sales", icon: ReceiptText },
   { title: "Suppliers", url: "/suppliers", icon: Truck },
   { title: "Reports", url: "/reports", icon: FileBarChart2 },
+  { title: "AI Forecast", url: "/forecast", icon: Sparkles },
   { title: "Poisons Register", url: "/poisons", icon: ShieldAlert },
   { title: "Audit Trail", url: "/audit", icon: History },
   { title: "Settings", url: "/settings", icon: SettingsIcon },
@@ -29,15 +30,11 @@ function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 px-2 py-3">
-          {/* Pharmacy logo in sidebar — green cross default */}
           {settings.logo ? (
             <img src={settings.logo} alt="logo" className="h-9 w-9 rounded-lg object-cover border bg-white shadow-elevated" />
           ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#16a36e] shadow-elevated">
-              <svg viewBox="0 0 100 100" className="h-5 w-5">
-                <rect x="38" y="15" width="24" height="70" rx="6" fill="white"/>
-                <rect x="15" y="38" width="70" height="24" rx="6" fill="white"/>
-              </svg>
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-elevated">
+              <Pill className="h-5 w-5" />
             </div>
           )}
           {!collapsed && (
@@ -119,23 +116,56 @@ function ThemeToggle() {
 }
 
 export default function AppLayout() {
+  const settings = useStore((s) => s.settings);
+  const user = useStore((s) => s.user);
+
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full bg-background">
         <AppSidebar />
         <div className="flex flex-1 flex-col">
           <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-card/80 px-4 backdrop-blur">
-            {/* Left — sidebar trigger + label */}
+
+            {/* Left — sidebar trigger + owner photo */}
             <div className="flex items-center gap-3">
               <SidebarTrigger />
+              {user && (
+                settings.ownerPhoto ? (
+                  <img
+                    src={settings.ownerPhoto}
+                    alt="Owner"
+                    className="h-8 w-8 rounded-full object-cover border shadow-sm"
+                  />
+                ) : (
+                  <div className="h-8 w-8 rounded-full bg-muted border flex items-center justify-center text-xs font-medium text-muted-foreground">
+                    {user.username?.charAt(0).toUpperCase() || "U"}
+                  </div>
+                )
+              )}
               <div className="hidden text-sm text-muted-foreground sm:block">
                 Retail Pharmacy Operations
               </div>
             </div>
-            {/* Right — theme toggle only, no photo */}
+
+            {/* Right — theme toggle + pharmacy logo */}
             <div className="flex items-center gap-3">
               <ThemeToggle />
+              {settings.logo ? (
+                <img
+                  src={settings.logo}
+                  alt="Pharmacy Logo"
+                  className="h-8 w-8 rounded-lg object-cover border bg-white shadow-sm"
+                />
+              ) : (
+                <div className="h-8 w-8 rounded-lg bg-[#16a36e] flex items-center justify-center shadow-sm">
+                  <svg viewBox="0 0 100 100" className="h-5 w-5">
+                    <rect x="38" y="15" width="24" height="70" rx="6" fill="white"/>
+                    <rect x="15" y="38" width="70" height="24" rx="6" fill="white"/>
+                  </svg>
+                </div>
+              )}
             </div>
+
           </header>
           <main className="flex-1 p-4 md:p-6">
             <Outlet />
