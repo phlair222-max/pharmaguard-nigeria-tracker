@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useStore } from "@/lib/store";
-import { supabase } from "@/integrations/supabase/client";
 import { Sparkles, Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { num } from "@/lib/format";
@@ -71,6 +70,83 @@ export default function Forecast() {
       .map(({ _total, ...rest }) => rest);
   }, [products, sales]);
 
+  // ---- Local statistical forecast engine (no API, no Edge Function) ----
+  const computeForecasts = (): Forecast[] => {
+    return payload.map((p) => {
+      const daily = p.daily; // 30 values, oldest -> newest
+      const n = daily.length;
+
+      // Split into first half / second half to detect trend direction
+      const half = Math.floor(n / 2);
+      const firstHalf = daily.slice(0, half);
+      const secondHalf = daily.slice(half);
+      const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / Math.max(1, firstHalf.length);
+      const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / Math.max(1, secondHalf.length);
+
+      // Overall average daily demand (last 30 days)
+      const overallAvg = daily.reduce((a, b) => a + b, 0) / n;
+
+      // % change between first and second half (guard against divide-by-zero)
+      const pctChange = firstAvg > 0 ? ((secondAvg - firstAvg) / firstAvg) * 100 : (secondAvg > 0 ? 100 : 0);
+
+      let trend: Forecast["trend"] = "stable";
+      if (pctChange > 15) trend = "rising";
+      else if (pctChange < -15) trend = "falling";
+
+      // Weighted daily demand estimate: lean more on recent data (60% recent half, 40% overall)
+      const weightedDailyDemand = secondAvg * 0.6 + overallAvg * 0.4;
+
+      // 14-day projection: apply a damped trend factor so it doesn't overshoot
+      const trendFactor = trend === "rising" ? 1.15 : trend === "falling" ? 0.85 : 1;
+      const predictedUnits14d = weightedDailyDemand * 14 * trendFactor;
+
+      // Days of stock remaining at current weighted daily demand
+      const safeDailyDemand = Math.max(weightedDailyDemand, 0.01);
+      const daysOfStock = p.quantity / safeDailyDemand;
+
+      // Urgency thresholds
+      let urgency: Forecast["urgency"] = "ok";
+      if (daysOfStock <= 5 || p.quantity <= p.reorderLevel) urgency = "urgent";
+      else if (daysOfStock <= 10) urgency = "soon";
+
+      // Suggested reorder quantity: cover the next 14 days plus a small safety buffer,
+      // minus what's already on hand. Falls back to product's own reorderQuantity if set higher.
+      const projectedNeed = Math.max(0, predictedUnits14d * 1.2 - p.quantity);
+      const suggestedReorderQty = urgency === "ok"
+        ? 0
+        : Math.max(Math.round(projectedNeed), p.reorderQuantity || 0);
+
+      // Templated reasoning text (no AI, just plain logic -> readable sentence)
+      const trendPhrase =
+        trend === "rising"
+          ? `Sales trending up ${Math.round(Math.abs(pctChange))}% over the last 2 weeks.`
+          : trend === "falling"
+          ? `Sales trending down ${Math.round(Math.abs(pctChange))}% over the last 2 weeks.`
+          : `Sales steady over the last 30 days.`;
+
+      const stockPhrase =
+        daysOfStock <= 5
+          ? `Stock will run out in ~${Math.max(0, Math.round(daysOfStock))} day${Math.round(daysOfStock) === 1 ? "" : "s"} — reorder now.`
+          : daysOfStock <= 10
+          ? `Stock will last ~${Math.round(daysOfStock)} days at this rate — reorder soon.`
+          : `Stock will last ~${Math.round(daysOfStock)} days at this rate.`;
+
+      const reason = `${trendPhrase} ${stockPhrase}`;
+
+      return {
+        id: p.id,
+        name: p.name,
+        predictedUnits14d,
+        avgDailyDemand: weightedDailyDemand,
+        trend,
+        daysOfStock,
+        urgency,
+        suggestedReorderQty,
+        reason,
+      };
+    });
+  };
+
   const runForecast = async () => {
     if (payload.length === 0) {
       toast.error("No sales history found in the last 30 days");
@@ -78,14 +154,12 @@ export default function Forecast() {
     }
     setLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("forecast-demand", {
-        body: { products: payload },
-      });
-      if (error) throw error;
-      if (data?.error) throw new Error(data.error);
-      setForecasts(data.forecasts || []);
-      setGeneratedAt(data.generatedAt);
-      toast.success(`Forecast generated for ${data.forecasts?.length || 0} products`);
+      // Simulate a brief analysis delay so the UI feels consistent with the loading state
+      await new Promise((r) => setTimeout(r, 350));
+      const results = computeForecasts();
+      setForecasts(results);
+      setGeneratedAt(new Date().toISOString());
+      toast.success(`Forecast generated for ${results.length} products`);
     } catch (e: any) {
       console.error("Forecast failed:", e);
       toast.error(e?.message || "Forecast failed");
@@ -102,7 +176,7 @@ export default function Forecast() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight md:text-3xl">
-            <Sparkles className="h-6 w-6 text-primary" /> AI Demand Forecast
+            <Sparkles className="h-6 w-6 text-primary" /> Demand Forecast
           </h1>
           <p className="text-sm text-muted-foreground">
             Predicts the next 14 days of demand from the last 30 days of sales and suggests reorder quantities.
@@ -116,7 +190,7 @@ export default function Forecast() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Card><CardContent className="p-4">
-          <div className="text-xs text-muted-foreground">Products with sales history</div>
+          <div className="text-xs text-muted-foreground">Products with sales in last 30 days</div>
           <div className="text-2xl font-bold">{num(payload.length)}</div>
         </CardContent></Card>
         <Card className={urgentCount > 0 ? "border-destructive/50 bg-destructive/5" : ""}><CardContent className="p-4">
@@ -191,7 +265,7 @@ export default function Forecast() {
       </Card>
 
       <p className="text-xs text-muted-foreground">
-        Forecasts are AI estimates based on historical sales. Always review against your knowledge of seasonality, promotions, and supplier lead times.
+        Forecasts are calculated locally from your own sales history (moving average + trend). Always review against your knowledge of seasonality, promotions, and supplier lead times.
       </p>
     </div>
   );
