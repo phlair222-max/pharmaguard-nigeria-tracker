@@ -1,289 +1,375 @@
-import { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useStore } from "@/lib/store";
-import { Sparkles, Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
-import { toast } from "sonner";
-import { num } from "@/lib/format";
-import { startOfDay, format } from "date-fns";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AlertTriangle, TrendingUp, TrendingDown, Minus, RefreshCw, Clock } from "lucide-react";
 
-type Forecast = {
+// ---- Types ------------------------------------------------
+
+interface Product {
+  id: string;
+  name: string;
+  quantity: number;
+  reorder_level: number;
+  reorder_quantity: number;
+}
+
+interface SaleRecord {
+  product_id: string;
+  quantity: number;
+  sale_date: string;
+}
+
+interface Forecast {
   id: string;
   name: string;
   predictedUnits14d: number;
   avgDailyDemand: number;
-  trend: "rising" | "stable" | "falling";
+  trend: "rising" | "falling" | "stable";
   daysOfStock: number;
   urgency: "urgent" | "soon" | "ok";
   suggestedReorderQty: number;
   reason: string;
-};
+}
+
+// ---- Helpers ----------------------------------------------
+
+function formatDate(isoString: string | null): string {
+  if (!isoString) return "—";
+  return new Date(isoString).toLocaleString("en-NG", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// ---- Component --------------------------------------------
 
 export default function Forecast() {
-  const products = useStore((s) => s.products);
-  const sales = useStore((s) => s.sales);
-  const [loading, setLoading] = useState(false);
   const [forecasts, setForecasts] = useState<Forecast[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  const [nextUpdateAt, setNextUpdateAt] = useState<string | null>(null);
+  const [source, setSource] = useState<"gemini" | "cache" | null>(null);
 
-  const payload = useMemo(() => {
-    const today = startOfDay(new Date()).getTime();
-    const dayKeys: string[] = Array.from({ length: 30 }).map((_, i) => {
-      const d = new Date(today - (29 - i) * 86400000);
-      return format(d, "yyyy-MM-dd");
-    });
+  // On page load, check if there's a cached forecast to show immediately
+  // without waiting for the user to click the button.
+  useEffect(() => {
+    loadCachedForecast();
+  }, []);
 
-    // build per-product per-day units
-    const perProduct = new Map<string, Map<string, number>>();
-    for (const s of sales) {
-      const t = new Date(s.createdAt).getTime();
-      if (t < today - 29 * 86400000) continue;
-      const k = format(new Date(s.createdAt), "yyyy-MM-dd");
-      for (const it of s.items) {
-        if (!perProduct.has(it.productId)) perProduct.set(it.productId, new Map());
-        const m = perProduct.get(it.productId)!;
-        m.set(k, (m.get(k) || 0) + it.qty);
+  async function loadCachedForecast() {
+    try {
+      const { data } = await supabase
+        .from("forecast_cache")
+        .select("forecasts, generated_at")
+        .eq("id", 1)
+        .maybeSingle();
+
+      if (data) {
+        const generatedAtMs = new Date(data.generated_at).getTime();
+        const nextUpdateAtIso = new Date(
+          generatedAtMs + 7 * 24 * 60 * 60 * 1000
+        ).toISOString();
+        setForecasts(data.forecasts as Forecast[]);
+        setGeneratedAt(data.generated_at);
+        setNextUpdateAt(nextUpdateAtIso);
+        setSource("cache");
       }
+    } catch {
+      // Silently ignore — user can still click Generate Forecast to try again.
     }
+  }
 
-    return products
-      .map((p) => {
-        const m = perProduct.get(p.id);
-        const daily = dayKeys.map((k) => m?.get(k) || 0);
-        const total = daily.reduce((a, b) => a + b, 0);
-        return {
-          id: p.id,
-          name: p.name,
-          generic: p.generic,
-          quantity: p.quantity,
-          reorderLevel: p.reorderLevel,
-          reorderQuantity: p.reorderQuantity,
-          daily,
-          _total: total,
-        };
-      })
-      .filter((p) => p._total > 0) // only products with consumption history
-      .sort((a, b) => b._total - a._total)
-      .slice(0, 60)
-      .map(({ _total, ...rest }) => rest);
-  }, [products, sales]);
+  async function generateForecast() {
+    setLoading(true);
+    setError(null);
 
-  // ---- Local statistical forecast engine (no API, no Edge Function) ----
-  const computeForecasts = (): Forecast[] => {
-    return payload.map((p) => {
-      const daily = p.daily; // 30 values, oldest -> newest
-      const n = daily.length;
+    try {
+      // 1. Fetch products from the database.
+      const { data: products, error: prodError } = await supabase
+        .from("products")
+        .select("id, name, quantity, reorder_level, reorder_quantity");
 
-      // Split into first half / second half to detect trend direction
-      const half = Math.floor(n / 2);
-      const firstHalf = daily.slice(0, half);
-      const secondHalf = daily.slice(half);
-      const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / Math.max(1, firstHalf.length);
-      const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / Math.max(1, secondHalf.length);
+      if (prodError) throw new Error(`Could not load products: ${prodError.message}`);
+      if (!products || products.length === 0) throw new Error("No products found in your inventory.");
 
-      // Overall average daily demand (last 30 days)
-      const overallAvg = daily.reduce((a, b) => a + b, 0) / n;
+      // 2. Fetch the last 30 days of sales.
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const cutoffDate = thirtyDaysAgo.toISOString().split("T")[0];
 
-      // % change between first and second half (guard against divide-by-zero)
-      const pctChange = firstAvg > 0 ? ((secondAvg - firstAvg) / firstAvg) * 100 : (secondAvg > 0 ? 100 : 0);
+      const { data: sales, error: salesError } = await supabase
+        .from("sales")
+        .select("product_id, quantity, sale_date")
+        .gte("sale_date", cutoffDate);
 
-      let trend: Forecast["trend"] = "stable";
-      if (pctChange > 15) trend = "rising";
-      else if (pctChange < -15) trend = "falling";
+      if (salesError) throw new Error(`Could not load sales: ${salesError.message}`);
 
-      // Weighted daily demand estimate: lean more on recent data (60% recent half, 40% overall)
-      const weightedDailyDemand = secondAvg * 0.6 + overallAvg * 0.4;
+      // 3. Build per-product daily-sales arrays (30 slots, one per day).
+      const dailySalesMap = buildDailySalesMap(
+        (sales as SaleRecord[]) ?? [],
+        (products as Product[]).map((p) => p.id)
+      );
 
-      // 14-day projection: apply a damped trend factor so it doesn't overshoot
-      const trendFactor = trend === "rising" ? 1.15 : trend === "falling" ? 0.85 : 1;
-      const predictedUnits14d = weightedDailyDemand * 14 * trendFactor;
-
-      // Days of stock remaining at current weighted daily demand
-      const safeDailyDemand = Math.max(weightedDailyDemand, 0.01);
-      const daysOfStock = p.quantity / safeDailyDemand;
-
-      // Urgency thresholds — based purely on projected days of stock remaining,
-      // not the static reorderLevel field (which doesn't account for actual sales pace).
-      let urgency: Forecast["urgency"] = "ok";
-      if (daysOfStock <= 5) urgency = "urgent";
-      else if (daysOfStock <= 14) urgency = "soon";
-
-      // Suggested reorder quantity: cover the next 14 days plus a small safety buffer,
-      // minus what's already on hand. Falls back to product's own reorderQuantity if set higher.
-      const projectedNeed = Math.max(0, predictedUnits14d * 1.2 - p.quantity);
-      const suggestedReorderQty = urgency === "ok"
-        ? 0
-        : Math.max(Math.round(projectedNeed), p.reorderQuantity || 0);
-
-      // Templated reasoning text (no AI, just plain logic -> readable sentence)
-      const trendPhrase =
-        trend === "rising"
-          ? `Sales trending up ${Math.round(Math.abs(pctChange))}% over the last 2 weeks.`
-          : trend === "falling"
-          ? `Sales trending down ${Math.round(Math.abs(pctChange))}% over the last 2 weeks.`
-          : `Sales steady over the last 30 days.`;
-
-      const stockPhrase =
-        daysOfStock <= 5
-          ? `Stock will run out in ~${Math.max(0, Math.round(daysOfStock))} day${Math.round(daysOfStock) === 1 ? "" : "s"} — reorder now.`
-          : daysOfStock <= 10
-          ? `Stock will last ~${Math.round(daysOfStock)} days at this rate — reorder soon.`
-          : `Stock will last ~${Math.round(daysOfStock)} days at this rate.`;
-
-      const reason = `${trendPhrase} ${stockPhrase}`;
-
-      return {
+      // 4. Assemble the payload for the Edge Function.
+      const payload = (products as Product[]).map((p) => ({
         id: p.id,
         name: p.name,
-        predictedUnits14d,
-        avgDailyDemand: weightedDailyDemand,
-        trend,
-        daysOfStock,
-        urgency,
-        suggestedReorderQty,
-        reason,
-      };
-    });
-  };
+        quantity: p.quantity,
+        reorderLevel: p.reorder_level,
+        reorderQuantity: p.reorder_quantity,
+        dailySales: dailySalesMap[p.id] ?? new Array(30).fill(0),
+      }));
 
-  const runForecast = async () => {
-    if (payload.length === 0) {
-      toast.error("No sales history found in the last 30 days");
-      return;
-    }
-    setLoading(true);
-    try {
-      // Simulate a brief analysis delay so the UI feels consistent with the loading state
-      await new Promise((r) => setTimeout(r, 350));
-      const results = computeForecasts();
-      setForecasts(results);
-      setGeneratedAt(new Date().toISOString());
-      toast.success(`Forecast generated for ${results.length} products`);
-    } catch (e: any) {
-      console.error("Forecast failed:", e);
-      toast.error(e?.message || "Forecast failed");
+      // 5. Invoke the Edge Function.
+      // The function itself decides whether to call Gemini or return a
+      // cached result — the frontend always sends the fresh payload so
+      // the function can use it if a Gemini call is needed.
+      const { data: result, error: fnError } = await supabase.functions.invoke(
+        "forecast-demand",
+        { body: { products: payload } }
+      );
+
+      if (fnError) throw new Error(`Edge Function error: ${fnError.message}`);
+      if (!result || !result.forecasts) throw new Error("Edge Function returned no forecast data.");
+
+      setForecasts(result.forecasts as Forecast[]);
+      setGeneratedAt(result.generated_at ?? null);
+      setNextUpdateAt(result.next_update_at ?? null);
+      setSource(result.source ?? "gemini");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  };
+  }
 
+  // Build a map of productId → number[30] (daily unit sales, oldest → newest)
+  function buildDailySalesMap(
+    sales: SaleRecord[],
+    productIds: string[]
+  ): Record<string, number[]> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const result: Record<string, number[]> = {};
+    for (const id of productIds) {
+      result[id] = new Array(30).fill(0);
+    }
+
+    for (const sale of sales) {
+      if (!result[sale.product_id]) continue;
+      const saleDate = new Date(sale.sale_date);
+      saleDate.setHours(0, 0, 0, 0);
+      const daysAgo = Math.floor((today.getTime() - saleDate.getTime()) / 86400000);
+      const slotIndex = 29 - daysAgo; // index 0 = 30 days ago, 29 = today
+      if (slotIndex >= 0 && slotIndex < 30) {
+        result[sale.product_id][slotIndex] += sale.quantity;
+      }
+    }
+
+    return result;
+  }
+
+  // ---- Stat card summaries ----
   const urgentCount = forecasts.filter((f) => f.urgency === "urgent").length;
   const soonCount = forecasts.filter((f) => f.urgency === "soon").length;
+  const okCount = forecasts.filter((f) => f.urgency === "ok").length;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight md:text-3xl">
-            <Sparkles className="h-6 w-6 text-primary" /> Demand Forecast
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Predicts the next 14 days of demand from the last 30 days of sales and suggests reorder quantities.
+    <div className="space-y-6 p-4">
+      {/* Page header */}
+      <div>
+        <h1 className="text-2xl font-bold">AI Demand Forecast</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          Gemini AI analyses your 30-day sales history to predict demand and
+          suggest reorder quantities. Results are cached for 7 days to keep
+          costs minimal.
+        </p>
+      </div>
+
+      {/* Generate button + cache status */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <Button onClick={generateForecast} disabled={loading} className="gap-2">
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          {loading ? "Generating…" : "Generate Forecast"}
+        </Button>
+
+        {/* Cache timestamp info — always shown when data exists */}
+        {generatedAt && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Clock className="h-4 w-4 shrink-0" />
+            <span>
+              {source === "cache" ? "Cached result from" : "Generated"}{" "}
+              <strong>{formatDate(generatedAt)}</strong>
+              {nextUpdateAt && (
+                <>
+                  {" "}— next Gemini call available{" "}
+                  <strong>{formatDate(nextUpdateAt)}</strong>
+                </>
+              )}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Error display */}
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {/* Stat summary cards — only shown when we have data */}
+      {forecasts.length > 0 && (
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Card className="border-red-200 bg-red-50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-red-700 flex items-center gap-1">
+                  <AlertTriangle className="h-4 w-4" /> Urgent Restock
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-red-700">{urgentCount}</p>
+                <p className="text-xs text-red-500 mt-1">≤ 5 days of stock</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-yellow-200 bg-yellow-50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-yellow-700 flex items-center gap-1">
+                  <AlertTriangle className="h-4 w-4" /> Order Soon
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-yellow-700">{soonCount}</p>
+                <p className="text-xs text-yellow-500 mt-1">6–14 days of stock</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-green-200 bg-green-50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-green-700">
+                  Well Stocked
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-green-700">{okCount}</p>
+                <p className="text-xs text-green-500 mt-1">15+ days of stock</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Forecast table */}
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Product</TableHead>
+                  <TableHead className="text-right">Avg Daily Sales</TableHead>
+                  <TableHead className="text-right">Predicted (14d)</TableHead>
+                  <TableHead className="text-right">Days of Stock</TableHead>
+                  <TableHead>Trend</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Reorder Qty</TableHead>
+                  <TableHead>AI Reasoning</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {forecasts.map((f) => (
+                  <TableRow key={f.id}>
+                    <TableCell className="font-medium">{f.name}</TableCell>
+                    <TableCell className="text-right">
+                      {f.avgDailyDemand.toFixed(1)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {f.predictedUnits14d}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {f.daysOfStock >= 999 ? "∞" : f.daysOfStock}
+                    </TableCell>
+                    <TableCell>
+                      <TrendIcon trend={f.trend} />
+                    </TableCell>
+                    <TableCell>
+                      <UrgencyBadge urgency={f.urgency} />
+                    </TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {f.suggestedReorderQty > 0 ? f.suggestedReorderQty : "—"}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground max-w-xs">
+                      {f.reason}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
+
+      {/* Empty state — no forecast yet */}
+      {forecasts.length === 0 && !loading && !error && (
+        <div className="rounded-md border border-dashed p-12 text-center text-muted-foreground">
+          <p className="text-lg font-medium">No forecast yet</p>
+          <p className="text-sm mt-1">
+            Click <strong>Generate Forecast</strong> to have Gemini AI analyse
+            your sales data. Results are cached for 7 days.
           </p>
         </div>
-        <Button onClick={runForecast} disabled={loading} size="lg">
-          {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-          {loading ? "Analyzing..." : "Generate Forecast"}
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Card><CardContent className="p-4">
-          <div className="text-xs text-muted-foreground">Products with sales in last 30 days</div>
-          <div className="text-2xl font-bold">{num(payload.length)}</div>
-        </CardContent></Card>
-        <Card className={urgentCount > 0 ? "border-destructive/50 bg-destructive/5" : ""}><CardContent className="p-4">
-          <div className="text-xs text-muted-foreground">Urgent reorders</div>
-          <div className="text-2xl font-bold text-destructive">{urgentCount}</div>
-        </CardContent></Card>
-        <Card className={soonCount > 0 ? "border-warning/50 bg-warning/5" : ""}><CardContent className="p-4">
-          <div className="text-xs text-muted-foreground">Reorder soon</div>
-          <div className="text-2xl font-bold text-warning">{soonCount}</div>
-        </CardContent></Card>
-      </div>
-
-      <Card className="shadow-card">
-        <CardHeader>
-          <CardTitle className="text-base">
-            14-Day Forecast & Reorder Suggestions
-            {generatedAt && (
-              <span className="ml-2 text-xs font-normal text-muted-foreground">
-                Generated {format(new Date(generatedAt), "PPp")}
-              </span>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {forecasts.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">
-              {loading ? "Analyzing sales patterns..." : "Click \"Generate Forecast\" to predict demand for the next 14 days."}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Product</TableHead>
-                    <TableHead className="text-right">Stock</TableHead>
-                    <TableHead className="text-right">Avg/Day</TableHead>
-                    <TableHead className="text-right">Next 14d</TableHead>
-                    <TableHead>Trend</TableHead>
-                    <TableHead className="text-right">Days Left</TableHead>
-                    <TableHead>Urgency</TableHead>
-                    <TableHead className="text-right">Reorder Qty</TableHead>
-                    <TableHead>Reason</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {forecasts
-                    .slice()
-                    .sort((a, b) => (a.urgency === b.urgency ? b.predictedUnits14d - a.predictedUnits14d : urgencyRank(a.urgency) - urgencyRank(b.urgency)))
-                    .map((f) => {
-                      const product = products.find((p) => p.id === f.id);
-                      return (
-                        <TableRow key={f.id}>
-                          <TableCell className="font-medium">{f.name}</TableCell>
-                          <TableCell className="text-right">{num(product?.quantity ?? 0)}</TableCell>
-                          <TableCell className="text-right">{f.avgDailyDemand.toFixed(1)}</TableCell>
-                          <TableCell className="text-right font-semibold">{num(Math.round(f.predictedUnits14d))}</TableCell>
-                          <TableCell><TrendBadge trend={f.trend} /></TableCell>
-                          <TableCell className="text-right">{Math.round(f.daysOfStock)}d</TableCell>
-                          <TableCell><UrgencyBadge urgency={f.urgency} /></TableCell>
-                          <TableCell className="text-right font-semibold">
-                            {f.suggestedReorderQty > 0 ? num(Math.round(f.suggestedReorderQty)) : "—"}
-                          </TableCell>
-                          <TableCell className="max-w-[280px] text-xs text-muted-foreground">{f.reason}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <p className="text-xs text-muted-foreground">
-        Forecasts are calculated locally from your own sales history (moving average + trend). Always review against your knowledge of seasonality, promotions, and supplier lead times.
-      </p>
+      )}
     </div>
   );
 }
 
-function urgencyRank(u: string) {
-  return u === "urgent" ? 0 : u === "soon" ? 1 : 2;
+// ---- Small sub-components ---------------------------------
+
+function TrendIcon({ trend }: { trend: "rising" | "falling" | "stable" }) {
+  if (trend === "rising")
+    return (
+      <span className="flex items-center gap-1 text-green-600 font-medium">
+        <TrendingUp className="h-4 w-4" /> Rising
+      </span>
+    );
+  if (trend === "falling")
+    return (
+      <span className="flex items-center gap-1 text-red-600 font-medium">
+        <TrendingDown className="h-4 w-4" /> Falling
+      </span>
+    );
+  return (
+    <span className="flex items-center gap-1 text-muted-foreground">
+      <Minus className="h-4 w-4" /> Stable
+    </span>
+  );
 }
 
-function TrendBadge({ trend }: { trend: string }) {
-  if (trend === "rising") return <Badge variant="outline" className="border-success bg-success/10 text-success gap-1"><TrendingUp className="h-3 w-3" />Rising</Badge>;
-  if (trend === "falling") return <Badge variant="outline" className="border-muted-foreground/40 bg-muted text-muted-foreground gap-1"><TrendingDown className="h-3 w-3" />Falling</Badge>;
-  return <Badge variant="outline" className="gap-1"><Minus className="h-3 w-3" />Stable</Badge>;
-}
-
-function UrgencyBadge({ urgency }: { urgency: string }) {
-  if (urgency === "urgent") return <Badge variant="outline" className="border-destructive bg-destructive/10 text-destructive gap-1"><AlertTriangle className="h-3 w-3" />Urgent</Badge>;
-  if (urgency === "soon") return <Badge variant="outline" className="border-warning bg-warning/10 text-warning">Soon</Badge>;
-  return <Badge variant="outline" className="border-success bg-success/10 text-success">OK</Badge>;
+function UrgencyBadge({ urgency }: { urgency: "urgent" | "soon" | "ok" }) {
+  if (urgency === "urgent")
+    return <Badge variant="destructive">Urgent</Badge>;
+  if (urgency === "soon")
+    return (
+      <Badge className="bg-yellow-100 text-yellow-800 border-yellow-300 hover:bg-yellow-100">
+        Order Soon
+      </Badge>
+    );
+  return (
+    <Badge className="bg-green-100 text-green-800 border-green-300 hover:bg-green-100">
+      OK
+    </Badge>
+  );
 }
