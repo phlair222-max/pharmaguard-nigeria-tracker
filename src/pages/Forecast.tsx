@@ -23,10 +23,15 @@ interface Product {
   reorder_quantity: number;
 }
 
-interface SaleRecord {
+// sale_items stores individual product lines per transaction.
+// sales stores the parent transaction with the date (created_at).
+interface SaleItem {
   product_id: string;
-  quantity: number;
-  sale_date: string;
+  qty: number;
+  sale_id: string;
+  sales: {
+    created_at: string;
+  } | null;
 }
 
 interface Forecast {
@@ -64,8 +69,7 @@ export default function Forecast() {
   const [nextUpdateAt, setNextUpdateAt] = useState<string | null>(null);
   const [source, setSource] = useState<"gemini" | "cache" | null>(null);
 
-  // On page load, check if there's a cached forecast to show immediately
-  // without waiting for the user to click the button.
+  // On page load, show any existing cached forecast immediately.
   useEffect(() => {
     loadCachedForecast();
   }, []);
@@ -89,7 +93,7 @@ export default function Forecast() {
         setSource("cache");
       }
     } catch {
-      // Silently ignore — user can still click Generate Forecast to try again.
+      // Silently ignore — user can click Generate Forecast to try.
     }
   }
 
@@ -98,7 +102,7 @@ export default function Forecast() {
     setError(null);
 
     try {
-      // 1. Fetch products from the database.
+      // 1. Fetch all products from the database.
       const { data: products, error: prodError } = await supabase
         .from("products")
         .select("id, name, quantity, reorder_level, reorder_quantity");
@@ -106,21 +110,26 @@ export default function Forecast() {
       if (prodError) throw new Error(`Could not load products: ${prodError.message}`);
       if (!products || products.length === 0) throw new Error("No products found in your inventory.");
 
-      // 2. Fetch the last 30 days of sales.
+      // 2. Fetch the last 30 days of sale_items, joining to sales to get
+      //    the transaction date. Your schema:
+      //      sale_items: id, sale_id, product_id, name, qty, price, cost
+      //      sales:      id, user_id, total, profit, payment, cashier,
+      //                  customer, created_at
+      //    The join is sale_items.sale_id → sales.id.
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const cutoffDate = thirtyDaysAgo.toISOString().split("T")[0];
+      const cutoffDate = thirtyDaysAgo.toISOString();
 
-      const { data: sales, error: salesError } = await supabase
-        .from("sales")
-        .select("product_id, quantity, sale_date")
-        .gte("sale_date", cutoffDate);
+      const { data: saleItems, error: salesError } = await supabase
+        .from("sale_items")
+        .select("product_id, qty, sale_id, sales!inner(created_at)")
+        .gte("sales.created_at", cutoffDate);
 
       if (salesError) throw new Error(`Could not load sales: ${salesError.message}`);
 
-      // 3. Build per-product daily-sales arrays (30 slots, one per day).
+      // 3. Build per-product daily-sales arrays (30 slots, oldest → newest).
       const dailySalesMap = buildDailySalesMap(
-        (sales as SaleRecord[]) ?? [],
+        (saleItems as unknown as SaleItem[]) ?? [],
         (products as Product[]).map((p) => p.id)
       );
 
@@ -135,9 +144,7 @@ export default function Forecast() {
       }));
 
       // 5. Invoke the Edge Function.
-      // The function itself decides whether to call Gemini or return a
-      // cached result — the frontend always sends the fresh payload so
-      // the function can use it if a Gemini call is needed.
+      // The function decides cache-vs-Gemini server-side.
       const { data: result, error: fnError } = await supabase.functions.invoke(
         "forecast-demand",
         { body: { products: payload } }
@@ -157,9 +164,10 @@ export default function Forecast() {
     }
   }
 
-  // Build a map of productId → number[30] (daily unit sales, oldest → newest)
+  // Build a map of productId → number[30] (daily unit sales, oldest → newest).
+  // Slot 0 = 30 days ago, slot 29 = today.
   function buildDailySalesMap(
-    sales: SaleRecord[],
+    items: SaleItem[],
     productIds: string[]
   ): Record<string, number[]> {
     const today = new Date();
@@ -170,14 +178,18 @@ export default function Forecast() {
       result[id] = new Array(30).fill(0);
     }
 
-    for (const sale of sales) {
-      if (!result[sale.product_id]) continue;
-      const saleDate = new Date(sale.sale_date);
+    for (const item of items) {
+      if (!item.product_id || !result[item.product_id]) continue;
+      if (!item.sales?.created_at) continue;
+
+      const saleDate = new Date(item.sales.created_at);
       saleDate.setHours(0, 0, 0, 0);
-      const daysAgo = Math.floor((today.getTime() - saleDate.getTime()) / 86400000);
-      const slotIndex = 29 - daysAgo; // index 0 = 30 days ago, 29 = today
+      const daysAgo = Math.floor(
+        (today.getTime() - saleDate.getTime()) / 86400000
+      );
+      const slotIndex = 29 - daysAgo;
       if (slotIndex >= 0 && slotIndex < 30) {
-        result[sale.product_id][slotIndex] += sale.quantity;
+        result[item.product_id][slotIndex] += item.qty ?? 0;
       }
     }
 
@@ -208,7 +220,6 @@ export default function Forecast() {
           {loading ? "Generating…" : "Generate Forecast"}
         </Button>
 
-        {/* Cache timestamp info — always shown when data exists */}
         {generatedAt && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Clock className="h-4 w-4 shrink-0" />
@@ -233,7 +244,7 @@ export default function Forecast() {
         </div>
       )}
 
-      {/* Stat summary cards — only shown when we have data */}
+      {/* Stat summary cards */}
       {forecasts.length > 0 && (
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -322,7 +333,7 @@ export default function Forecast() {
         </>
       )}
 
-      {/* Empty state — no forecast yet */}
+      {/* Empty state */}
       {forecasts.length === 0 && !loading && !error && (
         <div className="rounded-md border border-dashed p-12 text-center text-muted-foreground">
           <p className="text-lg font-medium">No forecast yet</p>
@@ -336,7 +347,7 @@ export default function Forecast() {
   );
 }
 
-// ---- Small sub-components ---------------------------------
+// ---- Sub-components ---------------------------------------
 
 function TrendIcon({ trend }: { trend: "rising" | "falling" | "stable" }) {
   if (trend === "rising")
