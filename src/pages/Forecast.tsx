@@ -104,10 +104,11 @@ export default function Forecast() {
       const safeDailyDemand = Math.max(weightedDailyDemand, 0.01);
       const daysOfStock = p.quantity / safeDailyDemand;
 
-      // Urgency thresholds
+      // Urgency thresholds — based purely on projected days of stock remaining,
+      // not the static reorderLevel field (which doesn't account for actual sales pace).
       let urgency: Forecast["urgency"] = "ok";
-      if (daysOfStock <= 5 || p.quantity <= p.reorderLevel) urgency = "urgent";
-      else if (daysOfStock <= 10) urgency = "soon";
+      if (daysOfStock <= 5) urgency = "urgent";
+      else if (daysOfStock <= 14) urgency = "soon";
 
       // Suggested reorder quantity: cover the next 14 days plus a small safety buffer,
       // minus what's already on hand. Falls back to product's own reorderQuantity if set higher.
