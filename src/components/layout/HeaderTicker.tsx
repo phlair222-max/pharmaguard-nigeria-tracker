@@ -105,22 +105,36 @@ export default function HeaderTicker() {
 
   return (
     <div
-      className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-full border border-border/40 bg-muted/20 px-2 py-1"
+      className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded-full border border-border/40 bg-muted/20 px-1.5 py-1"
       style={{ maxHeight: "32px" }}
     >
-      {/* Live pill */}
-      <div className="flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5">
+      {/* Live pill — hidden on very small screens to give ticker max space */}
+      <div className="hidden xs:flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 sm:flex">
         <span className="relative flex h-1.5 w-1.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" style={{ animationDuration: "2.2s" }} />
+          <span
+            className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60"
+            style={{ animationDuration: "2.2s" }}
+          />
           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
         </span>
         <span className="text-[9px] font-semibold uppercase tracking-wider text-success">Live</span>
       </div>
 
+      {/* On smallest screens show just the dot, not the word "Live" */}
+      <div className="flex xs:hidden shrink-0 items-center pl-0.5">
+        <span className="relative flex h-1.5 w-1.5">
+          <span
+            className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60"
+            style={{ animationDuration: "2.2s" }}
+          />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+        </span>
+      </div>
+
       {/* Scroll track — strictly clipped, never expands vertically */}
       <div className="relative min-w-0 flex-1 overflow-hidden" style={{ height: "20px" }}>
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-4 bg-gradient-to-r from-muted/40 to-transparent" />
-        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-muted/40 to-transparent" />
+        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-3 bg-gradient-to-r from-muted/40 to-transparent" />
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-6 bg-gradient-to-l from-muted/40 to-transparent" />
         <div
           className="ticker-scroll-track absolute inset-y-0 left-0 flex items-center"
           style={{ width: "max-content" }}
@@ -135,15 +149,26 @@ export default function HeaderTicker() {
           from { transform: translateX(0); }
           to   { transform: translateX(-50%); }
         }
+
+        /* Desktop — comfortable reading speed */
         .ticker-scroll-track {
           animation: ticker-move 160s linear infinite;
           will-change: transform;
         }
+
         .ticker-scroll-track:hover {
           animation-play-state: paused;
         }
+
+        /* Tablet (641px – 1024px) */
+        @media (max-width: 1024px) and (min-width: 641px) {
+          .ticker-scroll-track { animation-duration: 180s; }
+        }
+
+        /* Mobile (≤640px) — much slower because screen is narrow
+           so each word flies past faster at the same pixel speed */
         @media (max-width: 640px) {
-          .ticker-scroll-track { animation-duration: 110s; }
+          .ticker-scroll-track { animation-duration: 260s; }
         }
       `}</style>
     </div>
