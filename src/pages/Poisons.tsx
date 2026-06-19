@@ -108,9 +108,9 @@ export default function Poisons() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-start gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
             <ShieldAlert className="h-5 w-5" />
           </div>
           <div>
@@ -119,12 +119,14 @@ export default function Poisons() {
             <p className="mt-1 text-xs text-muted-foreground">Premise: <span className="font-medium">{settings.name}</span> · License: {settings.premiseLicense || "—"}</p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={() => navigate("/inventory?filter=controlled")}>
-            <PackagePlus className="mr-1.5 h-4 w-4" />Add / manage controlled drugs
-          </Button>
-          <Button variant="outline" size="sm" onClick={exportCsv}><FileDown className="mr-1.5 h-4 w-4" />Export CSV</Button>
-          <Button size="sm" className="bg-primary hover:bg-primary/90" onClick={exportInspectionPdf}><ShieldCheck className="mr-1.5 h-4 w-4" />Inspection-ready PDF</Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center lg:shrink-0">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-1.5">
+            <Button variant="ghost" size="sm" onClick={() => navigate("/inventory?filter=controlled")}>
+              <PackagePlus className="mr-1.5 h-4 w-4" />Manage drugs
+            </Button>
+            <Button variant="ghost" size="sm" onClick={exportCsv}><FileDown className="mr-1.5 h-4 w-4" />Export CSV</Button>
+            <Button variant="ghost" size="sm" onClick={exportInspectionPdf}><ShieldCheck className="mr-1.5 h-4 w-4" />Inspection PDF</Button>
+          </div>
           <DispenseDialog products={controlled} />
         </div>
       </div>
