@@ -121,13 +121,17 @@ export default function AppLayout() {
     <SidebarProvider>
       <div className="flex min-h-screen w-full bg-background">
         <AppSidebar />
-        <div className="flex flex-1 flex-col">
-          <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-card/80 px-4 backdrop-blur">
-            <SidebarTrigger />
-            <HeaderTicker />
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* Header: fixed height, never grows, ticker is sandwiched between trigger and theme toggle */}
+          <header className="sticky top-0 z-30 flex h-12 w-full items-center gap-2 border-b bg-card/80 px-3 backdrop-blur overflow-hidden">
+            <SidebarTrigger className="shrink-0" />
+            {/* Ticker occupies only the middle space — flex-1 with min-w-0 ensures it never overflows */}
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <HeaderTicker />
+            </div>
             <ThemeToggle />
           </header>
-          <main className="flex-1 p-4 md:p-6">
+          <main className="flex-1 overflow-auto p-4 md:p-6">
             <Outlet />
           </main>
         </div>
