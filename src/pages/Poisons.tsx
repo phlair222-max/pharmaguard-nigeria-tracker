@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -10,12 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { store, useStore } from "@/lib/store";
 import { NGN } from "@/lib/format";
 import { format } from "date-fns";
-import { ShieldAlert, ClipboardPlus, FileDown, ShieldCheck } from "lucide-react";
+import { ShieldAlert, ClipboardPlus, FileDown, ShieldCheck, PackagePlus } from "lucide-react";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 export default function Poisons() {
+  const navigate = useNavigate();
   const products = useStore((s) => s.products);
   const dispenses = useStore((s) => s.controlledDispense);
   const settings = useStore((s) => s.settings);
@@ -118,6 +120,9 @@ export default function Poisons() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate("/inventory?filter=controlled")}>
+            <PackagePlus className="mr-1.5 h-4 w-4" />Add / manage controlled drugs
+          </Button>
           <Button variant="outline" size="sm" onClick={exportCsv}><FileDown className="mr-1.5 h-4 w-4" />Export CSV</Button>
           <Button size="sm" className="bg-primary hover:bg-primary/90" onClick={exportInspectionPdf}><ShieldCheck className="mr-1.5 h-4 w-4" />Inspection-ready PDF</Button>
           <DispenseDialog products={controlled} />
