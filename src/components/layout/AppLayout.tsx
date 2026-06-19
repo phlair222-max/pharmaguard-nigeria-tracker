@@ -8,6 +8,7 @@ import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, His
 import { Button } from "@/components/ui/button";
 import { store, useStore } from "@/lib/store";
 import { useTheme } from "next-themes";
+import HeaderTicker from "./HeaderTicker";
 
 const items = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -121,8 +122,9 @@ export default function AppLayout() {
       <div className="flex min-h-screen w-full bg-background">
         <AppSidebar />
         <div className="flex flex-1 flex-col">
-          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-card/80 px-4 backdrop-blur">
+          <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-card/80 px-4 backdrop-blur">
             <SidebarTrigger />
+            <HeaderTicker />
             <ThemeToggle />
           </header>
           <main className="flex-1 p-4 md:p-6">
