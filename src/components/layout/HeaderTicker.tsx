@@ -3,8 +3,6 @@ import { Activity, ShieldAlert, HeartPulse, TrendingUp } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { NGN, num, daysUntil } from "@/lib/format";
 
-// ---- Static message pools (edit freely) ----------------------------------
-
 const REGULATORY = [
   "PCN requires every premise to retain a valid practice license — confirm yours is current.",
   "NAFDAC registration numbers must be verified before stocking new products.",
@@ -36,7 +34,6 @@ const MOTIVATION = [
   "Great pharmacists fill prescriptions. Great pharmacy owners build systems.",
 ];
 
-// Fisher–Yates shuffle so order differs on every load/session
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -91,10 +88,10 @@ function TickerStream({ items }: { items: TickerItem[] }) {
       {items.map((item, idx) => {
         const Icon = item.icon;
         return (
-          <span key={idx} className="flex items-center gap-2.5 pr-10">
-            <Icon className="h-3.5 w-3.5 shrink-0 text-primary/60" strokeWidth={2} />
-            <span className="text-[13px] font-normal tracking-[0.01em] text-muted-foreground/90">{item.text}</span>
-            <span className="ml-7 h-[3px] w-[3px] shrink-0 rounded-full bg-border" />
+          <span key={idx} className="flex items-center gap-2 pr-8">
+            <Icon className="h-3 w-3 shrink-0 text-primary/60" strokeWidth={2} />
+            <span className="text-[12px] font-normal text-muted-foreground/90">{item.text}</span>
+            <span className="ml-6 h-[3px] w-[3px] shrink-0 rounded-full bg-border" />
           </span>
         );
       })}
@@ -104,42 +101,51 @@ function TickerStream({ items }: { items: TickerItem[] }) {
 
 export default function HeaderTicker() {
   const items = useTickerItems();
-  if (!items.length) return <div className="flex-1" />;
+  if (!items.length) return null;
 
   return (
-    <div className="flex h-full flex-1 min-w-0 items-center gap-2.5 rounded-full border border-border/50 bg-muted/30 pl-1 pr-3">
-      {/* "Live" indicator — sits in normal flow, never overlapped */}
-      <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1">
+    <div
+      className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-full border border-border/40 bg-muted/20 px-2 py-1"
+      style={{ maxHeight: "32px" }}
+    >
+      {/* Live pill */}
+      <div className="flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5">
         <span className="relative flex h-1.5 w-1.5">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" style={{ animationDuration: "2.2s" }} />
           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
         </span>
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-success">Live</span>
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-success">Live</span>
       </div>
 
-      {/* Scrolling track — its own clipped region, separate from the badge */}
-      <div className="group relative h-full flex-1 min-w-0 overflow-hidden">
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-muted/60 to-transparent" />
-        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-10 bg-gradient-to-l from-muted/60 to-transparent" />
-        <div className="ticker-track flex h-full items-center group-hover:[animation-play-state:paused]">
+      {/* Scroll track — strictly clipped, never expands vertically */}
+      <div className="relative min-w-0 flex-1 overflow-hidden" style={{ height: "20px" }}>
+        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-4 bg-gradient-to-r from-muted/40 to-transparent" />
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-muted/40 to-transparent" />
+        <div
+          className="ticker-scroll-track absolute inset-y-0 left-0 flex items-center"
+          style={{ width: "max-content" }}
+        >
           <TickerStream items={items} />
           <TickerStream items={items} />
         </div>
-        <style>{`
-          @keyframes ticker-scroll {
-            from { transform: translateX(0); }
-            to { transform: translateX(-50%); }
-          }
-          .ticker-track {
-            width: max-content;
-            animation: ticker-scroll 110s linear infinite;
-            will-change: transform;
-          }
-          @media (max-width: 640px) {
-            .ticker-track { animation-duration: 70s; }
-          }
-        `}</style>
       </div>
+
+      <style>{`
+        @keyframes ticker-move {
+          from { transform: translateX(0); }
+          to   { transform: translateX(-50%); }
+        }
+        .ticker-scroll-track {
+          animation: ticker-move 160s linear infinite;
+          will-change: transform;
+        }
+        .ticker-scroll-track:hover {
+          animation-play-state: paused;
+        }
+        @media (max-width: 640px) {
+          .ticker-scroll-track { animation-duration: 110s; }
+        }
+      `}</style>
     </div>
   );
 }
