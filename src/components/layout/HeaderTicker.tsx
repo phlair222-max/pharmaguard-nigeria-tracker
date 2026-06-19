@@ -60,7 +60,6 @@ function useTickerItems(): TickerItem[] {
     const expiringSoon = products.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; }).length;
     const controlledCount = products.filter((p) => p.controlled).length;
 
-    // Live stats — pulled straight from the store, real numbers
     const live: TickerItem[] = [
       { text: `${NGN(stockValue)} in stock value currently tracked`, icon: TrendingUp },
       { text: `${num(products.length)} product${products.length === 1 ? "" : "s"} in inventory right now`, icon: Activity },
@@ -74,7 +73,6 @@ function useTickerItems(): TickerItem[] {
     const facts: TickerItem[] = shuffle(HEALTH_FACTS).map((text) => ({ text, icon: HeartPulse }));
     const motivation: TickerItem[] = shuffle(MOTIVATION).map((text) => ({ text, icon: TrendingUp }));
 
-    // Interleave so it never reads as "live stuff, then static block" — feels like one continuous feed
     const pools = [shuffle(live), regulatory, facts, motivation];
     const merged: TickerItem[] = [];
     let i = 0;
@@ -93,10 +91,10 @@ function TickerStream({ items }: { items: TickerItem[] }) {
       {items.map((item, idx) => {
         const Icon = item.icon;
         return (
-          <span key={idx} className="flex items-center gap-3 px-5">
-            <Icon className="h-3.5 w-3.5 shrink-0 text-primary/70" />
-            <span className="text-[12.5px] font-medium text-muted-foreground">{item.text}</span>
-            <span className="h-1 w-1 shrink-0 rounded-full bg-border" />
+          <span key={idx} className="flex items-center gap-2.5 pr-10">
+            <Icon className="h-3.5 w-3.5 shrink-0 text-primary/60" strokeWidth={2} />
+            <span className="text-[13px] font-normal tracking-[0.01em] text-muted-foreground/90">{item.text}</span>
+            <span className="ml-7 h-[3px] w-[3px] shrink-0 rounded-full bg-border" />
           </span>
         );
       })}
@@ -109,39 +107,39 @@ export default function HeaderTicker() {
   if (!items.length) return <div className="flex-1" />;
 
   return (
-    <>
-      <div className="group relative mx-3 flex h-full flex-1 min-w-0 items-center overflow-hidden">
-        {/* Edge fade masks so text doesn't hard-cut at the container edges */}
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-8 bg-gradient-to-r from-card to-transparent" />
-        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-card to-transparent" />
-
-        {/* "Live" indicator */}
-        <div className="z-10 mr-3 flex shrink-0 items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2 py-0.5">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
-          </span>
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-success">Live</span>
-        </div>
-
-        <div className="ticker-track flex items-center group-hover:[animation-play-state:paused]">
-          <TickerStream items={items} />
-          <TickerStream items={items} aria-hidden />
-        </div>
+    <div className="flex h-full flex-1 min-w-0 items-center gap-2.5 rounded-full border border-border/50 bg-muted/30 pl-1 pr-3">
+      {/* "Live" indicator — sits in normal flow, never overlapped */}
+      <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" style={{ animationDuration: "2.2s" }} />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-success">Live</span>
       </div>
-      <style>{`
-        @keyframes ticker-scroll {
-          from { transform: translateX(0); }
-          to { transform: translateX(-50%); }
-        }
-        .ticker-track {
-          width: max-content;
-          animation: ticker-scroll 60s linear infinite;
-        }
-        @media (max-width: 640px) {
-          .ticker-track { animation-duration: 38s; }
-        }
-      `}</style>
-    </>
+
+      {/* Scrolling track — its own clipped region, separate from the badge */}
+      <div className="group relative h-full flex-1 min-w-0 overflow-hidden">
+        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-muted/60 to-transparent" />
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-10 bg-gradient-to-l from-muted/60 to-transparent" />
+        <div className="ticker-track flex h-full items-center group-hover:[animation-play-state:paused]">
+          <TickerStream items={items} />
+          <TickerStream items={items} />
+        </div>
+        <style>{`
+          @keyframes ticker-scroll {
+            from { transform: translateX(0); }
+            to { transform: translateX(-50%); }
+          }
+          .ticker-track {
+            width: max-content;
+            animation: ticker-scroll 110s linear infinite;
+            will-change: transform;
+          }
+          @media (max-width: 640px) {
+            .ticker-track { animation-duration: 70s; }
+          }
+        `}</style>
+      </div>
+    </div>
   );
 }
