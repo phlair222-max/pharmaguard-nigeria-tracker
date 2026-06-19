@@ -283,17 +283,28 @@ export default function Forecast() {
             </div>
 
             <div className="overflow-x-auto">
-              <Table>
+              <Table style={{ tableLayout: "fixed", width: "100%" }}>
+                {/* Fixed column widths — this is what makes spacing uniform */}
+                <colgroup>
+                  <col style={{ width: "22%" }} /> {/* Product */}
+                  <col style={{ width: "10%" }} /> {/* Avg / Day */}
+                  <col style={{ width: "10%" }} /> {/* Next 14d */}
+                  <col style={{ width: "18%" }} /> {/* Stock Runway */}
+                  <col style={{ width: "12%" }} /> {/* Trend */}
+                  <col style={{ width: "12%" }} /> {/* Status */}
+                  <col style={{ width: "12%" }} /> {/* Reorder Qty */}
+                  <col style={{ width: "4%" }}  /> {/* Chevron */}
+                </colgroup>
                 <TableHeader>
                   <TableRow className="border-border/50 hover:bg-transparent">
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground w-[220px]">Product</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground text-right">Avg / Day</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground text-right">Next 14d</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Stock Runway</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Trend</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Status</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground text-right">Reorder Qty</TableHead>
-                    <TableHead className="w-6"></TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4">Product</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4 text-right">Avg / Day</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4 text-right">Next 14d</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4">Stock Runway</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4">Trend</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4">Status</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-6 py-4 text-right">Reorder Qty</TableHead>
+                    <TableHead className="px-4 py-4"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -308,20 +319,20 @@ export default function Forecast() {
                           onClick={() => setExpandedRow(isExpanded ? null : f.id)}
                         >
                           {/* Product name */}
-                          <TableCell className="font-medium py-4">{f.name}</TableCell>
+                          <TableCell className="font-medium px-6 py-4 truncate">{f.name}</TableCell>
 
                           {/* Avg daily */}
-                          <TableCell className="text-right tabular-nums text-muted-foreground">
+                          <TableCell className="px-6 py-4 text-right tabular-nums text-muted-foreground">
                             {f.avgDailyDemand.toFixed(1)}
                           </TableCell>
 
                           {/* Predicted */}
-                          <TableCell className="text-right tabular-nums font-semibold">
+                          <TableCell className="px-6 py-4 text-right tabular-nums font-semibold">
                             {f.predictedUnits14d}
                           </TableCell>
 
                           {/* Stock runway bar */}
-                          <TableCell className="min-w-[140px]">
+                          <TableCell className="px-6 py-4">
                             <div className="flex items-center gap-2">
                               <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
                                 <div
@@ -329,24 +340,24 @@ export default function Forecast() {
                                   className="h-full rounded-full transition-all"
                                 />
                               </div>
-                              <span className="text-xs tabular-nums text-muted-foreground w-10 text-right">
+                              <span className="text-xs tabular-nums text-muted-foreground w-10 text-right shrink-0">
                                 {f.daysOfStock >= 999 ? "∞" : `${f.daysOfStock}d`}
                               </span>
                             </div>
                           </TableCell>
 
                           {/* Trend */}
-                          <TableCell>
+                          <TableCell className="px-6 py-4">
                             <TrendPill trend={f.trend} />
                           </TableCell>
 
                           {/* Status */}
-                          <TableCell>
+                          <TableCell className="px-6 py-4">
                             <StatusBadge urgency={f.urgency} />
                           </TableCell>
 
                           {/* Reorder qty */}
-                          <TableCell className="text-right">
+                          <TableCell className="px-6 py-4 text-right">
                             {f.suggestedReorderQty > 0 ? (
                               <span className="font-bold text-emerald-400">
                                 {f.suggestedReorderQty}
@@ -357,7 +368,7 @@ export default function Forecast() {
                           </TableCell>
 
                           {/* Expand toggle */}
-                          <TableCell className="pr-4">
+                          <TableCell className="px-4 py-4">
                             <ChevronRight
                               className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? "rotate-90" : ""}`}
                             />
@@ -367,7 +378,7 @@ export default function Forecast() {
                         {/* Expanded AI reasoning row */}
                         {isExpanded && (
                           <TableRow key={`${f.id}-reason`} className="border-border/20 bg-white/[0.02]">
-                            <TableCell colSpan={8} className="px-5 py-3">
+                            <TableCell colSpan={8} className="px-6 py-4">
                               <div className="flex items-start gap-2">
                                 <Sparkles className="h-3.5 w-3.5 text-emerald-400 mt-0.5 shrink-0" />
                                 <p className="text-sm text-muted-foreground leading-relaxed">
