@@ -7,13 +7,14 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
@@ -31,7 +32,7 @@ const empty: Omit<Product, "id"> = {
   name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
   reorderLevel: 10, reorderQuantity: 30, packSize: "10 Tablets",
   costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
-  image: "",
+  image: "", controlled: false,
 };
 
 async function fileToDataUrl(file: File, max = 400): Promise<string> {
@@ -99,6 +100,7 @@ export default function Inventory() {
       if (filter === "low" && p.quantity > p.reorderLevel) return false;
       if (filter === "near" && t !== "red" && t !== "yellow") return false;
       if (filter === "expired" && daysUntil(p.expiry) >= 0) return false;
+      if (filter === "controlled" && !p.controlled) return false;
       if (cat !== "all" && p.category !== cat) return false;
       if (supFilter !== "all" && p.supplierId !== supFilter && p.supplier !== supFilter) return false;
       if (expFilter !== "all" && t !== expFilter) return false;
@@ -155,7 +157,7 @@ export default function Inventory() {
   };
 
   const exportCSV = () => {
-    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode"];
+    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled"];
     const rows = products.map((p) => headers.map((h) => JSON.stringify((p as any)[h] ?? "")).join(","));
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -173,6 +175,11 @@ export default function Inventory() {
         const obj: any = { ...empty };
         headers.forEach((h, i) => obj[h] = cols[i] ?? "");
         ["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"].forEach((k) => obj[k] = Number(obj[k]) || 0);
+        if (headers.includes("controlled")) {
+          obj.controlled = ["true", "1", "yes"].includes(String(obj.controlled).trim().toLowerCase());
+        } else {
+          obj.controlled = obj.category === "Controlled Substances";
+        }
         return obj as Omit<Product, "id">;
       });
       store.importProducts(rows);
@@ -244,6 +251,7 @@ export default function Inventory() {
                 <SelectItem value="low">Low stock</SelectItem>
                 <SelectItem value="near">Near expiry</SelectItem>
                 <SelectItem value="expired">Expired</SelectItem>
+                <SelectItem value="controlled">Controlled drugs</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -303,7 +311,7 @@ export default function Inventory() {
                   const speed = movementSpeed(sold30);
                   const tierLabel = tier === "red" ? (days < 0 ? "Expired" : "Critical") : tier === "yellow" ? "Warning" : "Safe";
                   return (
-                    <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10")}>
+                    <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
                       <TableCell>
                         {p.image ? (
                           <img src={p.image} alt={p.name} className="h-10 w-10 rounded-md object-cover border" />
@@ -314,6 +322,7 @@ export default function Inventory() {
                       <TableCell>
                         <div className="font-medium flex items-center gap-1.5">
                           {p.name}
+                          {p.controlled && <ShieldAlert className="h-3.5 w-3.5 text-destructive" title="Controlled drug — tracked in Poisons Register" />}
                           {low && <AlertTriangle className="h-3.5 w-3.5 text-destructive" />}
                         </div>
                         <div className="text-xs text-muted-foreground">{p.category}</div>
@@ -397,7 +406,7 @@ export default function Inventory() {
                 value={CATEGORIES.includes(draft.category) ? draft.category : "Others"}
                 onValueChange={(v) => {
                   if (v === "Others") { setDraft({ ...draft, category: "" }); setNewCat(""); }
-                  else setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" });
+                  else setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" ? true : draft.controlled });
                 }}
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -417,6 +426,22 @@ export default function Inventory() {
                   }}>Save</Button>
                 </div>
               )}
+            </div>
+            <div className="col-span-2 flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+              <div className="flex items-start gap-2.5">
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <div>
+                  <Label className="cursor-pointer" htmlFor="controlled-toggle">Controlled Drug (Poisons Register)</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Tracks this product in the Poisons / Controlled Register and requires a dispensing form (patient, prescriber, Rx ref) at POS checkout.
+                  </p>
+                </div>
+              </div>
+              <Switch
+                id="controlled-toggle"
+                checked={!!draft.controlled}
+                onCheckedChange={(v) => setDraft({ ...draft, controlled: v })}
+              />
             </div>
             <div>
               <Label>Pack Size / Unit</Label>
