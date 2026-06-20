@@ -413,35 +413,40 @@ export const store = {
     const uid = auth.user.id;
     const email = auth.user.email || "";
 
-    // ── 1. Resolve organization membership ───────────────────────────────
+    // ── 1. Resolve organization membership (any status, not just active) ──
     const { data: membership, error: membershipError } = await (supabase.from as any)("memberships")
       .select("organization_id, role, can_view_margins, status")
       .eq("user_id", uid)
-      .eq("status", "active")
       .maybeSingle();
 
     console.log("[hydrate] uid:", uid, "email:", email);
     console.log("[hydrate] membership result:", membership, "error:", membershipError);
 
-    // Check if this is an invited user whose membership hasn't been activated yet
-    if (!membership) {
-      // If the query errored (RLS/permissions) — bail out, do NOT create a new org
-      if (membershipError) {
-        console.error("[hydrate] membership query failed, aborting:", membershipError.message);
-        return;
-      }
+    // Removed or suspended: sign them out immediately, do NOT fall through
+    // to invited/new-org logic below — that's what was silently creating
+    // a brand-new pharmacy for kicked-out staff.
+    if (membership && membership.status === "removed") {
+      toast.error("Your access to this pharmacy has been removed.");
+      await supabase.auth.signOut();
+      this.setAuthUser(null);
+      return;
+    }
+    if (membership && membership.status === "suspended") {
+      toast.error("Your account has been suspended. Contact your pharmacy owner.");
+      await supabase.auth.signOut();
+      this.setAuthUser(null);
+      return;
+    }
 
+    // Check if this is an invited user whose membership hasn't been activated yet,
+    // or a genuinely new signup with no membership row at all.
+    if (!membership || membership.status !== "active") {
       // Try matching by invited_email — activate the membership on first login
-      const { data: invited, error: invitedError } = await (supabase.from as any)("memberships")
+      const { data: invited } = await (supabase.from as any)("memberships")
         .select("id, organization_id, role, can_view_margins")
         .eq("invited_email", email.toLowerCase())
         .eq("status", "invited")
         .maybeSingle();
-
-      if (invitedError) {
-        console.error("[hydrate] invited lookup failed:", invitedError.message);
-        return;
-      }
 
       if (invited) {
         // Activate: attach user_id and flip to active
