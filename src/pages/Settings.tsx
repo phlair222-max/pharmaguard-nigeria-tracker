@@ -10,7 +10,10 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { store, useStore } from "@/lib/store";
 import { toast } from "sonner";
-import { Building2, Upload, ImageIcon, User, Shield, FileCheck2, KeyRound, LogOut, CheckCircle2, XCircle, Eye, EyeOff } from "lucide-react";
+import { Building2, Upload, ImageIcon, User, Shield, FileCheck2, KeyRound, LogOut, CheckCircle2, XCircle, Eye, EyeOff, Users, Mail, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { format } from "date-fns";
 
 async function fileToDataUrl(file: File, max = 400): Promise<string> {
@@ -130,6 +133,9 @@ export default function Settings() {
           <TabsTrigger value="branding"><ImageIcon className="mr-1.5 h-4 w-4" />Branding & Logo</TabsTrigger>
           <TabsTrigger value="security"><Shield className="mr-1.5 h-4 w-4" />Security & Account</TabsTrigger>
           <TabsTrigger value="compliance"><FileCheck2 className="mr-1.5 h-4 w-4" />Reports & Compliance</TabsTrigger>
+          {user?.memberRole === "Owner" && (
+            <TabsTrigger value="team"><Users className="mr-1.5 h-4 w-4" />Team</TabsTrigger>
+          )}
         </TabsList>
 
         {/* ── PHARMACY DETAILS ── */}
@@ -291,6 +297,14 @@ export default function Settings() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ── TEAM ── */}
+        {user?.memberRole === "Owner" && (
+          <TabsContent value="team">
+            <TeamTab organizationId={user.organizationId!} organizationName={settings.name} />
+          </TabsContent>
+        )}
+
       </Tabs>
     </div>
   );
@@ -415,5 +429,260 @@ function Req({ ok, children }: { ok: boolean; children: React.ReactNode }) {
       {ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
       {children}
     </li>
+  );
+}
+
+// ── TeamTab ───────────────────────────────────────────────────────────────────
+type Member = {
+  id: string;
+  user_id: string | null;
+  role: "Owner" | "Pharmacist" | "Cashier";
+  status: "invited" | "active" | "suspended";
+  invited_email: string | null;
+  can_view_margins: boolean;
+  created_at: string;
+};
+
+function roleColor(role: string) {
+  if (role === "Owner") return "bg-violet-500/15 text-violet-400 border-violet-500/30";
+  if (role === "Pharmacist") return "bg-blue-500/15 text-blue-400 border-blue-500/30";
+  return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
+}
+function statusColor(status: string) {
+  if (status === "active") return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+  if (status === "invited") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+  return "bg-red-500/15 text-red-400 border-red-500/30";
+}
+
+function TeamTab({ organizationId, organizationName }: { organizationId: string; organizationName: string }) {
+  const [members, setMembers] = useState<Member[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"Pharmacist" | "Cashier">("Pharmacist");
+  const [inviting, setInviting] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
+
+  const fetchMembers = async () => {
+    setLoading(true);
+    const { data, error } = await (supabase.from as any)("memberships")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: true });
+    if (error) { toast.error("Failed to load team"); }
+    else setMembers(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchMembers(); }, [organizationId]);
+
+  const sendInvite = async () => {
+    if (!inviteEmail.trim()) { toast.error("Enter an email address"); return; }
+    setInviting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-staff`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({
+            email: inviteEmail.trim().toLowerCase(),
+            role: inviteRole,
+            organizationId,
+            organizationName,
+          }),
+        }
+      );
+      const result = await res.json();
+      if (!res.ok) { toast.error(result.error || "Invite failed"); }
+      else {
+        toast.success(`Invite sent to ${inviteEmail}`);
+        setInviteEmail("");
+        fetchMembers();
+      }
+    } catch (e) {
+      toast.error("Network error — please try again");
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const toggleMargins = async (member: Member) => {
+    const { error } = await (supabase.from as any)("memberships")
+      .update({ can_view_margins: !member.can_view_margins })
+      .eq("id", member.id);
+    if (error) { toast.error("Update failed"); }
+    else {
+      setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, can_view_margins: !m.can_view_margins } : m));
+      toast.success("Updated");
+    }
+  };
+
+  const toggleSuspend = async (member: Member) => {
+    const newStatus = member.status === "suspended" ? "active" : "suspended";
+    const { error } = await (supabase.from as any)("memberships")
+      .update({ status: newStatus })
+      .eq("id", member.id);
+    if (error) { toast.error("Update failed"); }
+    else {
+      setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, status: newStatus } : m));
+      toast.success(newStatus === "suspended" ? "Staff member suspended" : "Staff member reactivated");
+    }
+  };
+
+  const removeMember = async (member: Member) => {
+    const { error } = await (supabase.from as any)("memberships").delete().eq("id", member.id);
+    if (error) { toast.error("Remove failed"); }
+    else {
+      setMembers((prev) => prev.filter((m) => m.id !== member.id));
+      toast.success("Member removed");
+    }
+    setRemoveTarget(null);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Invite card */}
+      <Card>
+        <CardContent className="pt-6 space-y-4">
+          <div>
+            <h3 className="font-semibold text-base flex items-center gap-2">
+              <Mail className="h-4 w-4 text-muted-foreground" />
+              Invite a Staff Member
+            </h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              They'll receive an email with a sign-in link. Their account is created automatically.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Input
+              placeholder="colleague@email.com"
+              type="email"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && sendInvite()}
+              className="flex-1"
+            />
+            <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as "Pharmacist" | "Cashier")}>
+              <SelectTrigger className="w-full sm:w-[140px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Pharmacist">Pharmacist</SelectItem>
+                <SelectItem value="Cashier">Cashier</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button onClick={sendInvite} disabled={inviting} className="gap-2">
+              <Mail className="h-4 w-4" />
+              {inviting ? "Sending…" : "Send Invite"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Members list */}
+      <Card>
+        <CardContent className="pt-6">
+          <h3 className="font-semibold text-base mb-4">Team Members ({members.length})</h3>
+          {loading ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">Loading team…</p>
+          ) : members.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">No team members yet. Invite your first staff member above.</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40 text-left text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">Email</th>
+                    <th className="px-4 py-3 font-medium">Role</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium text-center">See Margins</th>
+                    <th className="px-4 py-3 font-medium text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((m) => (
+                    <tr key={m.id} className="border-b last:border-0 hover:bg-muted/20">
+                      <td className="px-4 py-3 text-xs text-muted-foreground max-w-[200px] truncate">
+                        {m.invited_email || m.user_id || "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge className={`text-xs border ${roleColor(m.role)}`}>{m.role}</Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge className={`text-xs border ${statusColor(m.status)}`}>{m.status}</Badge>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {m.role === "Pharmacist" ? (
+                          <button
+                            onClick={() => toggleMargins(m)}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            title={m.can_view_margins ? "Revoke margin access" : "Grant margin access"}
+                          >
+                            {m.can_view_margins
+                              ? <ToggleRight className="h-5 w-5 text-emerald-400" />
+                              : <ToggleLeft className="h-5 w-5" />}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground/40 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          {m.role !== "Owner" && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs text-muted-foreground"
+                                onClick={() => toggleSuspend(m)}
+                              >
+                                {m.status === "suspended" ? "Reactivate" : "Suspend"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                                onClick={() => setRemoveTarget(m)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Remove confirm dialog */}
+      <AlertDialog open={!!removeTarget} onOpenChange={() => setRemoveTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {removeTarget?.invited_email}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              They will lose access to this pharmacy immediately. You can re-invite them later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => removeTarget && removeMember(removeTarget)}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }
