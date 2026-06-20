@@ -425,12 +425,23 @@ export const store = {
 
     // Check if this is an invited user whose membership hasn't been activated yet
     if (!membership) {
+      // If the query errored (RLS/permissions) — bail out, do NOT create a new org
+      if (membershipError) {
+        console.error("[hydrate] membership query failed, aborting:", membershipError.message);
+        return;
+      }
+
       // Try matching by invited_email — activate the membership on first login
-      const { data: invited } = await (supabase.from as any)("memberships")
+      const { data: invited, error: invitedError } = await (supabase.from as any)("memberships")
         .select("id, organization_id, role, can_view_margins")
         .eq("invited_email", email.toLowerCase())
         .eq("status", "invited")
         .maybeSingle();
+
+      if (invitedError) {
+        console.error("[hydrate] invited lookup failed:", invitedError.message);
+        return;
+      }
 
       if (invited) {
         // Activate: attach user_id and flip to active
