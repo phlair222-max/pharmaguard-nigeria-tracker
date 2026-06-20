@@ -8,21 +8,21 @@ export type Product = {
   generic: string;
   nafdac: string;
   batch: string;
-  expiry: string; // ISO date
+  expiry: string;
   quantity: number;
   reorderLevel: number;
   reorderQuantity: number;
-  packSize: string; // Tablet, Bottle, Box, 10ml, etc
-  lastRestocked?: string; // ISO date
+  packSize: string;
+  lastRestocked?: string;
   costPrice: number;
   sellingPrice: number;
-  supplier: string; // legacy supplier name
+  supplier: string;
   supplierId?: string;
   category: string;
   description?: string;
   controlled?: boolean;
   barcode?: string;
-  image?: string; // data URL
+  image?: string;
 };
 
 export type SaleItem = { productId: string; name: string; qty: number; price: number; cost?: number };
@@ -46,7 +46,13 @@ export type AuditEntry = {
   at: string;
 };
 
-export type User = { username: string; role: "Admin" | "Pharmacist" };
+export type User = {
+  username: string;
+  role: "Admin" | "Pharmacist";
+  organizationId?: string;
+  memberRole?: "Owner" | "Pharmacist" | "Cashier";
+  canViewMargins?: boolean;
+};
 
 export type ControlledDispense = {
   id: string;
@@ -90,8 +96,8 @@ export type PharmacySettings = {
   phone: string;
   email?: string;
   premiseLicense?: string;
-  logo?: string; // data URL
-  ownerPhoto?: string; // data URL
+  logo?: string;
+  ownerPhoto?: string;
   ownerName?: string;
 };
 
@@ -158,7 +164,6 @@ function makeSeed(): DB {
     email: name.toLowerCase().replace(/[^a-z]/g, "") + "@supplier.ng",
     address: "Lagos, Nigeria",
   }));
-  // link products to suppliers
   products.forEach((p) => { p.supplierId = suppliers.find((s) => s.name === p.supplier)?.id; });
 
   const sales: Sale[] = [];
@@ -178,7 +183,7 @@ function makeSeed(): DB {
       sales.push({
         id: crypto.randomUUID(),
         items, total, profit,
-        payment: (["Cash","POS","Bank Transfer","Mobile Money"] as const)[Math.floor(Math.random()*4)],
+        payment: (["Cash", "POS", "Bank Transfer", "Mobile Money"] as const)[Math.floor(Math.random() * 4)],
         cashier: "admin",
         createdAt: new Date(today - d * 86400000 - Math.random() * 80000000).toISOString(),
       });
@@ -206,7 +211,6 @@ function emptyDb(): DB {
 }
 
 function hashPwd(p: string): string {
-  // Lightweight non-cryptographic hash. Local-only app; acceptable for offline POS.
   let h = 5381;
   for (let i = 0; i < p.length; i++) h = ((h << 5) + h) ^ p.charCodeAt(i);
   return "h_" + (h >>> 0).toString(16);
@@ -217,8 +221,6 @@ function load(): DB {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) {
-      // New users (and the app at first launch) start with a completely empty
-      // pharmacy. Demo data only lives in the admin's cloud account.
       const empty = emptyDb();
       localStorage.setItem(KEY, JSON.stringify(empty));
       return empty;
@@ -299,7 +301,6 @@ export const store = {
     void supabasePush.insertSale(ns);
     return ns;
   },
-  // suppliers
   addSupplier(s: Omit<Supplier, "id">) {
     const ns = { ...s, id: crypto.randomUUID() };
     db.suppliers.push(ns);
@@ -320,13 +321,11 @@ export const store = {
     persist();
     void supabasePush.deleteSupplier(id);
   },
-  // settings
   updateSettings(p: Partial<PharmacySettings>) {
     db.settings = { ...db.settings, ...p };
     persist();
     void supabasePush.updateProfile(p);
   },
-
   audit(action: string, target: string, detail?: string) {
     const entry = { id: crypto.randomUUID(), user: db.user?.username ?? "system", action, target, detail, at: new Date().toISOString() };
     db.audit.unshift(entry);
@@ -393,7 +392,8 @@ export const store = {
     persist();
     void supabasePush.insertProducts(newRows);
   },
-  // Supabase auth bridge — sets the active user from a Supabase session
+
+  // ── Supabase auth bridge ──────────────────────────────────────────────────
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
       db.user = null;
@@ -402,25 +402,92 @@ export const store = {
       persist();
       return;
     }
-    const role: "Admin" | "Pharmacist" = "Admin";
-    db.user = { username: u.email, role };
+    // role/org resolved properly in hydrateFromSupabase; set a placeholder here
+    db.user = { username: u.email, role: "Admin" };
     persist();
   },
+
   async hydrateFromSupabase() {
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return;
     const uid = auth.user.id;
     const email = auth.user.email || "";
+
+    // ── 1. Resolve organization membership ───────────────────────────────
+    const { data: membership } = await (supabase.from as any)("memberships")
+      .select("organization_id, role, can_view_margins, status")
+      .eq("user_id", uid)
+      .eq("status", "active")
+      .maybeSingle();
+
+    // Check if this is an invited user whose membership hasn't been activated yet
+    if (!membership) {
+      // Try matching by invited_email — activate the membership on first login
+      const { data: invited } = await (supabase.from as any)("memberships")
+        .select("id, organization_id, role, can_view_margins")
+        .eq("invited_email", email.toLowerCase())
+        .eq("status", "invited")
+        .maybeSingle();
+
+      if (invited) {
+        // Activate: attach user_id and flip to active
+        await (supabase.from as any)("memberships")
+          .update({ user_id: uid, status: "active" })
+          .eq("id", invited.id);
+        toast.success("Welcome! You've been connected to your pharmacy.");
+        // Re-run hydration now that membership is activated
+        return this.hydrateFromSupabase();
+      }
+
+      // No membership at all — create a new org for this user (first-time signup)
+      const { data: newOrg } = await (supabase.from as any)("organizations")
+        .insert({ owner_id: uid, name: "My Pharmacy" })
+        .select("id")
+        .single();
+
+      if (newOrg) {
+        await (supabase.from as any)("memberships").insert({
+          organization_id: newOrg.id,
+          user_id: uid,
+          role: "Owner",
+          can_view_margins: true,
+          status: "active",
+        });
+        return this.hydrateFromSupabase();
+      }
+      return;
+    }
+
+    const orgId: string = membership.organization_id;
+    const memberRole: "Owner" | "Pharmacist" | "Cashier" = membership.role;
+    const canViewMargins: boolean = membership.can_view_margins ?? false;
+
+    // Map memberRole to legacy role field (kept for UI compat)
+    const legacyRole: "Admin" | "Pharmacist" =
+      memberRole === "Owner" ? "Admin" : "Pharmacist";
+
+    db.user = {
+      username: email,
+      role: legacyRole,
+      organizationId: orgId,
+      memberRole,
+      canViewMargins,
+    };
+    persist();
+
+    // ── 2. Load all org data — RLS enforces access, no manual user_id filter ──
     const [prodsR, salesR, supR, contR, audR, profR] = await Promise.all([
-      supabase.from("products").select("*").eq("user_id", uid),
-      supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
-      supabase.from("suppliers").select("*").eq("user_id", uid).order("name"),
-      (supabase.from as any)("controlled_dispense").select("*").eq("user_id", uid).order("at", { ascending: false }),
-      (supabase.from as any)("audit_logs").select("*").eq("user_id", uid).order("at", { ascending: false }).limit(500),
+      supabase.from("products").select("*").eq("organization_id", orgId),
+      supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+      supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
+      (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
+      (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
     ]);
+
     if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
     if (salesR.error) { console.error(salesR.error); toast.error("Failed to load sales"); }
+
     db.products = (prodsR.data || []).map(rowToProduct);
     db.sales = (salesR.data || []).map(rowToSale);
     db.suppliers = (supR.data || []).map(rowToSupplier);
@@ -429,18 +496,17 @@ export const store = {
     if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
     persist();
 
-    // Admin gets the demo data, seeded once into their cloud account.
+    // ── 3. Seed demo data for platform admin only ─────────────────────────
     if (
       email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
       db.products.length === 0 &&
       db.sales.length === 0
     ) {
-      await seedAdminDemoData(uid);
-      // Re-fetch after seeding so the UI shows the demo dataset.
+      await seedAdminDemoData(uid, orgId);
       const [p2, s2, sup2] = await Promise.all([
-        supabase.from("products").select("*").eq("user_id", uid),
-        supabase.from("sales").select("*, sale_items(*)").eq("user_id", uid).order("created_at", { ascending: false }),
-        supabase.from("suppliers").select("*").eq("user_id", uid).order("name"),
+        supabase.from("products").select("*").eq("organization_id", orgId),
+        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+        supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
       ]);
       db.products = (p2.data || []).map(rowToProduct);
       db.sales = (s2.data || []).map(rowToSale);
@@ -451,10 +517,12 @@ export const store = {
   },
 };
 
-// ---- Supabase row mappers ----
-function productToRow(p: Product, userId: string) {
+// ── Row mappers ───────────────────────────────────────────────────────────────
+
+function productToRow(p: Product, userId: string, orgId: string) {
   return {
-    id: p.id, user_id: userId, name: p.name, generic: p.generic, nafdac: p.nafdac, batch: p.batch,
+    id: p.id, user_id: userId, organization_id: orgId,
+    name: p.name, generic: p.generic, nafdac: p.nafdac, batch: p.batch,
     expiry: p.expiry || null, quantity: p.quantity, reorder_level: p.reorderLevel,
     reorder_quantity: p.reorderQuantity, pack_size: p.packSize, last_restocked: p.lastRestocked || null,
     cost_price: p.costPrice, selling_price: p.sellingPrice, supplier: p.supplier,
@@ -499,17 +567,17 @@ function rowToSale(r: any): Sale {
     })),
   };
 }
-
 function rowToSupplier(r: any): Supplier {
   return {
     id: r.id, name: r.name, contactPerson: r.contact_person || "", phone: r.phone || "",
     email: r.email || "", address: r.address || "", notes: r.notes || "",
   };
 }
-function supplierToRow(s: Supplier, uid: string) {
+function supplierToRow(s: Supplier, userId: string, orgId: string) {
   return {
-    id: s.id, user_id: uid, name: s.name, contact_person: s.contactPerson || null,
-    phone: s.phone || null, email: s.email || null, address: s.address || null, notes: s.notes || null,
+    id: s.id, user_id: userId, organization_id: orgId, name: s.name,
+    contact_person: s.contactPerson || null, phone: s.phone || null,
+    email: s.email || null, address: s.address || null, notes: s.notes || null,
   };
 }
 function supplierPatchToRow(patch: Partial<Supplier>) {
@@ -549,37 +617,42 @@ function settingsPatchToRow(p: Partial<PharmacySettings>) {
   return out;
 }
 
+// ── Supabase push (write-back) ────────────────────────────────────────────────
 const supabasePush = {
-  async _uid() {
+  async _context(): Promise<{ uid: string; orgId: string } | null> {
     const { data } = await supabase.auth.getUser();
-    return data.user?.id || null;
+    const uid = data.user?.id;
+    const orgId = db.user?.organizationId;
+    if (!uid || !orgId) return null;
+    return { uid, orgId };
   },
   async insertProduct(p: Product) {
-    const uid = await this._uid(); if (!uid) return;
-    const { error } = await supabase.from("products").insert(productToRow(p, uid));
+    const ctx = await this._context(); if (!ctx) return;
+    const { error } = await supabase.from("products").insert(productToRow(p, ctx.uid, ctx.orgId));
     if (error) { console.error(error); toast.error("Could not sync product to cloud"); }
   },
   async insertProducts(rows: Product[]) {
-    const uid = await this._uid(); if (!uid || !rows.length) return;
-    const { error } = await supabase.from("products").insert(rows.map((r) => productToRow(r, uid)));
+    const ctx = await this._context(); if (!ctx || !rows.length) return;
+    const { error } = await supabase.from("products").insert(rows.map((r) => productToRow(r, ctx.uid, ctx.orgId)));
     if (error) { console.error(error); toast.error("Could not sync imported products"); }
   },
   async updateProduct(id: string, patch: Partial<Product>) {
-    const uid = await this._uid(); if (!uid) return;
+    const ctx = await this._context(); if (!ctx) return;
     const row = productPatchToRow(patch);
     if (!Object.keys(row).length) return;
-    const { error } = await supabase.from("products").update(row).eq("id", id).eq("user_id", uid);
+    const { error } = await supabase.from("products").update(row).eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not sync product update"); }
   },
   async deleteProduct(id: string) {
-    const uid = await this._uid(); if (!uid) return;
-    const { error } = await supabase.from("products").delete().eq("id", id).eq("user_id", uid);
+    const ctx = await this._context(); if (!ctx) return;
+    const { error } = await supabase.from("products").delete().eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not delete product in cloud"); }
   },
   async insertSale(s: Sale) {
-    const uid = await this._uid(); if (!uid) return;
+    const ctx = await this._context(); if (!ctx) return;
     const { error: e1 } = await supabase.from("sales").insert({
-      id: s.id, user_id: uid, total: s.total, profit: s.profit, payment: s.payment,
+      id: s.id, user_id: ctx.uid, organization_id: ctx.orgId,
+      total: s.total, profit: s.profit, payment: s.payment,
       cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
     });
     if (e1) { console.error(e1); toast.error("Could not sync sale"); return; }
@@ -592,33 +665,33 @@ const supabasePush = {
       );
       if (e2) { console.error(e2); toast.error("Could not sync sale items"); }
     }
-    // also sync stock decrements
     for (const it of s.items) {
       const p = db.products.find((p) => p.id === it.productId);
       if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
     }
   },
   async insertSupplier(s: Supplier) {
-    const uid = await this._uid(); if (!uid) return;
-    const { error } = await supabase.from("suppliers").insert(supplierToRow(s, uid));
+    const ctx = await this._context(); if (!ctx) return;
+    const { error } = await supabase.from("suppliers").insert(supplierToRow(s, ctx.uid, ctx.orgId));
     if (error) { console.error(error); toast.error("Could not sync supplier"); }
   },
   async updateSupplier(id: string, patch: Partial<Supplier>) {
-    const uid = await this._uid(); if (!uid) return;
+    const ctx = await this._context(); if (!ctx) return;
     const row = supplierPatchToRow(patch);
     if (!Object.keys(row).length) return;
-    const { error } = await supabase.from("suppliers").update(row).eq("id", id).eq("user_id", uid);
+    const { error } = await supabase.from("suppliers").update(row).eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not sync supplier update"); }
   },
   async deleteSupplier(id: string) {
-    const uid = await this._uid(); if (!uid) return;
-    const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("user_id", uid);
+    const ctx = await this._context(); if (!ctx) return;
+    const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not delete supplier"); }
   },
   async insertControlled(d: ControlledDispense) {
-    const uid = await this._uid(); if (!uid) return;
+    const ctx = await this._context(); if (!ctx) return;
     const { error } = await (supabase.from as any)("controlled_dispense").insert({
-      id: d.id, user_id: uid, product_id: d.productId || null, product_name: d.productName,
+      id: d.id, user_id: ctx.uid, organization_id: ctx.orgId,
+      product_id: d.productId || null, product_name: d.productName,
       batch: d.batch, quantity: d.quantity, amount: d.amount, patient_name: d.patientName,
       patient_phone: d.patientPhone || null, prescriber: d.prescriber,
       prescriber_reg_no: d.prescriberRegNo || null, prescription_ref: d.prescriptionRef,
@@ -627,39 +700,39 @@ const supabasePush = {
     if (error) { console.error(error); toast.error("Could not sync controlled dispense"); }
   },
   async insertAudit(a: AuditEntry) {
-    const uid = await this._uid(); if (!uid) return;
+    const ctx = await this._context(); if (!ctx) return;
     const { error } = await (supabase.from as any)("audit_logs").insert({
-      id: a.id, user_id: uid, username: a.user, action: a.action,
+      id: a.id, user_id: ctx.uid, organization_id: ctx.orgId,
+      username: a.user, action: a.action,
       target: a.target, detail: a.detail || null, at: a.at,
     });
     if (error) console.error(error);
   },
   async updateProfile(p: Partial<PharmacySettings>) {
-    const uid = await this._uid(); if (!uid) return;
+    const ctx = await this._context(); if (!ctx) return;
     const row = settingsPatchToRow(p);
     if (!Object.keys(row).length) return;
-    const { error } = await supabase.from("profiles").update(row).eq("id", uid);
+    const { error } = await supabase.from("profiles").update(row).eq("id", ctx.uid);
     if (error) { console.error(error); toast.error("Could not save pharmacy settings"); }
   },
 };
 
-async function seedAdminDemoData(uid: string) {
+async function seedAdminDemoData(uid: string, orgId: string) {
   const seed = makeSeed();
-  // Suppliers first (products reference supplier names)
-  const supRows = seed.suppliers.map((s) => supplierToRow(s, uid));
+  const supRows = seed.suppliers.map((s) => supplierToRow(s, uid, orgId));
   if (supRows.length) {
     const { error } = await supabase.from("suppliers").insert(supRows);
     if (error) { console.error(error); }
   }
-  const prodRows = seed.products.map((p) => productToRow(p, uid));
+  const prodRows = seed.products.map((p) => productToRow(p, uid, orgId));
   if (prodRows.length) {
     const { error } = await supabase.from("products").insert(prodRows);
-    if (error) { console.error(error); toast.error("Failed to seed demo products"); return; }
+    if (error) { toast.error("Failed to seed demo products"); return; }
   }
-  // Sales + sale_items
   for (const s of seed.sales) {
     const { error: e1 } = await supabase.from("sales").insert({
-      id: s.id, user_id: uid, total: s.total, profit: s.profit, payment: s.payment,
+      id: s.id, user_id: uid, organization_id: orgId,
+      total: s.total, profit: s.profit, payment: s.payment,
       cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
     });
     if (e1) { console.error(e1); continue; }
@@ -683,7 +756,6 @@ export function useStore<T>(selector: (db: DB) => T): T {
   );
 }
 
-/** Compute units sold per product over last `days` days. */
 export function salesVelocityMap(sales: Sale[], days = 30): Map<string, number> {
   const since = Date.now() - days * 86400000;
   const m = new Map<string, number>();
