@@ -301,7 +301,7 @@ export default function Settings() {
         {/* ── TEAM ── */}
         {(user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole)) && (
           <TabsContent value="team">
-            <TeamTab organizationId={user.organizationId!} organizationName={settings.name} />
+            <TeamTab organizationName={settings.name} />
           </TabsContent>
         )}
 
@@ -454,7 +454,9 @@ function statusColor(status: string) {
   return "bg-red-500/15 text-red-400 border-red-500/30";
 }
 
-function TeamTab({ organizationId, organizationName }: { organizationId: string; organizationName: string }) {
+function TeamTab({ organizationName }: { organizationName: string }) {
+  const user = useStore((s) => s.user);
+  const organizationId = user?.organizationId ?? "";
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [inviteEmail, setInviteEmail] = useState("");
