@@ -437,7 +437,7 @@ type Member = {
   id: string;
   user_id: string | null;
   role: "Owner" | "Pharmacist" | "Cashier";
-  status: "invited" | "active" | "suspended";
+  status: "invited" | "active" | "suspended" | "removed";
   invited_email: string | null;
   can_view_margins: boolean;
   created_at: string;
@@ -470,6 +470,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     const { data, error } = await (supabase.from as any)("memberships")
       .select("*")
       .eq("organization_id", organizationId)
+      .neq("status", "removed")
       .order("created_at", { ascending: true });
     if (error) { toast.error("Failed to load team"); }
     else setMembers(data || []);
@@ -546,8 +547,14 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     }
   };
 
+  // Soft-delete: flip status to "removed" instead of deleting the row.
+  // This lets hydrateFromSupabase recognize a kicked-out user and sign them
+  // out, instead of silently creating them a brand-new pharmacy because no
+  // membership row could be found at all.
   const removeMember = async (member: Member) => {
-    const { error } = await (supabase.from as any)("memberships").delete().eq("id", member.id);
+    const { error } = await (supabase.from as any)("memberships")
+      .update({ status: "removed" })
+      .eq("id", member.id);
     if (error) { toast.error("Remove failed"); }
     else {
       setMembers((prev) => prev.filter((m) => m.id !== member.id));
