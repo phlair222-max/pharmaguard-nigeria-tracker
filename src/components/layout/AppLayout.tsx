@@ -4,11 +4,13 @@ import {
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
   SidebarHeader, SidebarFooter, useSidebar,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { store, useStore } from "@/lib/store";
 import { useTheme } from "next-themes";
 import HeaderTicker from "./HeaderTicker";
+
+const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const items = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -27,6 +29,11 @@ function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const settings = useStore((s) => s.settings);
+  const user = useStore((s) => s.user);
+  const isPlatformAdmin = user?.username?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+
+  const adminItem = { title: "Platform Admin", url: "/admin", icon: ShieldCheck };
+
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
@@ -67,6 +74,21 @@ function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+              {isPlatformAdmin && (
+                <SidebarMenuItem key="admin">
+                  <SidebarMenuButton asChild>
+                    <NavLink
+                      to={adminItem.url}
+                      className={({ isActive }) =>
+                        `flex items-center gap-2 ${isActive ? "bg-sidebar-accent text-sidebar-primary font-medium" : ""}`
+                      }
+                    >
+                      <adminItem.icon className="h-4 w-4 text-violet-400" />
+                      {!collapsed && <span className="text-violet-400">{adminItem.title}</span>}
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
