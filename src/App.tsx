@@ -17,6 +17,7 @@ import Suppliers from "@/pages/Suppliers";
 import SalesHistory from "@/pages/SalesHistory";
 import Settings from "@/pages/Settings";
 import Forecast from "@/pages/Forecast";
+import AdminDashboard from "@/pages/AdminDashboard";
 import NotFound from "@/pages/NotFound";
 import { store } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
@@ -87,6 +88,7 @@ const App = () => (
               <Route path="/audit" element={<Audit />} />
               <Route path="/poisons" element={<Poisons />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/admin" element={<AdminDashboard />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
