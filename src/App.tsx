@@ -26,6 +26,30 @@ import { Loader2 } from "lucide-react";
 
 const queryClient = new QueryClient();
 
+// Handles magic link / invite redirects — Supabase appends #access_token=... to the URL
+function AuthCallback() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    // Supabase JS v2 automatically exchanges the hash tokens on getSession()
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) {
+        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+        void store.hydrateFromSupabase();
+        navigate("/", { replace: true });
+      } else {
+        navigate("/login", { replace: true });
+      }
+    });
+  }, [navigate]);
+
+  return (
+    <div className="flex min-h-screen items-center justify-center flex-col gap-3">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <p className="text-sm text-muted-foreground">Signing you in…</p>
+    </div>
+  );
+}
+
 const SessionGate = ({ children }: { children: JSX.Element }) => {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
@@ -77,6 +101,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
             <Route element={<SessionGate><AppLayout /></SessionGate>}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/inventory" element={<Inventory />} />
