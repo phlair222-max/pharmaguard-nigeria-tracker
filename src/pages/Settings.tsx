@@ -465,6 +465,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
 
   const fetchMembers = async () => {
+    if (!organizationId) return;          // wait until hydration lands
     setLoading(true);
     const { data, error } = await (supabase.from as any)("memberships")
       .select("*")
@@ -479,7 +480,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
 
   const sendInvite = async () => {
     if (!inviteEmail.trim()) { toast.error("Enter an email address"); return; }
-    if (!organizationId) { toast.error("Organization not loaded yet — please wait a moment and try again"); return; }
+    if (!organizationId) { toast.error("Still loading — please wait a moment"); return; }
     setInviting(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -587,9 +588,9 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                 <SelectItem value="Cashier">Cashier</SelectItem>
               </SelectContent>
             </Select>
-            <Button onClick={sendInvite} disabled={inviting} className="gap-2">
+            <Button onClick={sendInvite} disabled={inviting || !organizationId} className="gap-2">
               <Mail className="h-4 w-4" />
-              {inviting ? "Sending…" : "Send Invite"}
+              {inviting ? "Sending…" : !organizationId ? "Loading…" : "Send Invite"}
             </Button>
           </div>
         </CardContent>
