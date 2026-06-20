@@ -109,7 +109,7 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
       {!collapsed && (
         <div className="text-xs">
           <div className="font-medium text-sidebar-foreground">{user.username}</div>
-          <div className="text-sidebar-foreground/60">{user.role}</div>
+          <div className="text-sidebar-foreground/60">{user.memberRole || user.role}</div>
         </div>
       )}
       <Button
@@ -144,10 +144,8 @@ export default function AppLayout() {
       <div className="flex min-h-screen w-full bg-background">
         <AppSidebar />
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Header: fixed height, never grows, ticker is sandwiched between trigger and theme toggle */}
           <header className="sticky top-0 z-30 flex h-12 w-full items-center gap-2 border-b bg-card/80 px-3 backdrop-blur overflow-hidden">
             <SidebarTrigger className="shrink-0" />
-            {/* Ticker occupies only the middle space — flex-1 with min-w-0 ensures it never overflows */}
             <div className="min-w-0 flex-1 overflow-hidden">
               <HeaderTicker />
             </div>
