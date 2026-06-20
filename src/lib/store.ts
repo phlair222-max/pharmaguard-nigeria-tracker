@@ -414,11 +414,14 @@ export const store = {
     const email = auth.user.email || "";
 
     // ── 1. Resolve organization membership ───────────────────────────────
-    const { data: membership } = await (supabase.from as any)("memberships")
+    const { data: membership, error: membershipError } = await (supabase.from as any)("memberships")
       .select("organization_id, role, can_view_margins, status")
       .eq("user_id", uid)
       .eq("status", "active")
       .maybeSingle();
+
+    console.log("[hydrate] uid:", uid, "email:", email);
+    console.log("[hydrate] membership result:", membership, "error:", membershipError);
 
     // Check if this is an invited user whose membership hasn't been activated yet
     if (!membership) {
