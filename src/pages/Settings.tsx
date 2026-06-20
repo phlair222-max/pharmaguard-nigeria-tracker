@@ -133,7 +133,7 @@ export default function Settings() {
           <TabsTrigger value="branding"><ImageIcon className="mr-1.5 h-4 w-4" />Branding & Logo</TabsTrigger>
           <TabsTrigger value="security"><Shield className="mr-1.5 h-4 w-4" />Security & Account</TabsTrigger>
           <TabsTrigger value="compliance"><FileCheck2 className="mr-1.5 h-4 w-4" />Reports & Compliance</TabsTrigger>
-          {user?.memberRole === "Owner" && (
+          {(user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole)) && (
             <TabsTrigger value="team"><Users className="mr-1.5 h-4 w-4" />Team</TabsTrigger>
           )}
         </TabsList>
@@ -299,7 +299,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* ── TEAM ── */}
-        {user?.memberRole === "Owner" && (
+        {(user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole)) && (
           <TabsContent value="team">
             <TeamTab organizationId={user.organizationId!} organizationName={settings.name} />
           </TabsContent>
