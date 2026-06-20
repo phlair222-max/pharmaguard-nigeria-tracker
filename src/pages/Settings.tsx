@@ -479,17 +479,30 @@ function TeamTab({ organizationId, organizationName }: { organizationId: string;
     if (!inviteEmail.trim()) { toast.error("Enter an email address"); return; }
     setInviting(true);
     try {
-      const { data, error } = await supabase.functions.invoke("invite-staff", {
-        body: {
-          email: inviteEmail.trim().toLowerCase(),
-          role: inviteRole,
-          organizationId,
-          organizationName,
-        },
-      });
-      if (error) { toast.error(error.message || "Invite failed"); }
-      else if (data?.error) { toast.error(data.error); }
-      else {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { toast.error("Not logged in"); return; }
+
+      const res = await fetch(
+        `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/invite-staff`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
+            "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
+          },
+          body: JSON.stringify({
+            email: inviteEmail.trim().toLowerCase(),
+            role: inviteRole,
+            organizationId,
+            organizationName,
+          }),
+        }
+      );
+      const result = await res.json();
+      if (!res.ok || result.error) {
+        toast.error(result.error || "Invite failed");
+      } else {
         toast.success(`Invite sent to ${inviteEmail}`);
         setInviteEmail("");
         fetchMembers();
