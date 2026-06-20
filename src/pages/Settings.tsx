@@ -477,10 +477,20 @@ function TeamTab({ organizationId, organizationName }: { organizationId: string;
 
   const sendInvite = async () => {
     if (!inviteEmail.trim()) { toast.error("Enter an email address"); return; }
+    if (!organizationId) { toast.error("Organization not loaded yet — please wait a moment and try again"); return; }
     setInviting(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { toast.error("Not logged in"); return; }
+
+      const payload = {
+        email: inviteEmail.trim().toLowerCase(),
+        role: inviteRole,
+        organizationId: organizationId,
+        organizationName: organizationName || "My Pharmacy",
+      };
+
+      console.log("Sending invite payload:", JSON.stringify(payload));
 
       const res = await fetch(
         `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/invite-staff`,
@@ -491,15 +501,11 @@ function TeamTab({ organizationId, organizationName }: { organizationId: string;
             "Authorization": `Bearer ${session.access_token}`,
             "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
           },
-          body: JSON.stringify({
-            email: inviteEmail.trim().toLowerCase(),
-            role: inviteRole,
-            organizationId,
-            organizationName,
-          }),
+          body: JSON.stringify(payload),
         }
       );
       const result = await res.json();
+      console.log("Invite response:", res.status, JSON.stringify(result));
       if (!res.ok || result.error) {
         toast.error(result.error || "Invite failed");
       } else {
