@@ -479,25 +479,16 @@ function TeamTab({ organizationId, organizationName }: { organizationId: string;
     if (!inviteEmail.trim()) { toast.error("Enter an email address"); return; }
     setInviting(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-staff`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${session?.access_token}`,
-          },
-          body: JSON.stringify({
-            email: inviteEmail.trim().toLowerCase(),
-            role: inviteRole,
-            organizationId,
-            organizationName,
-          }),
-        }
-      );
-      const result = await res.json();
-      if (!res.ok) { toast.error(result.error || "Invite failed"); }
+      const { data, error } = await supabase.functions.invoke("invite-staff", {
+        body: {
+          email: inviteEmail.trim().toLowerCase(),
+          role: inviteRole,
+          organizationId,
+          organizationName,
+        },
+      });
+      if (error) { toast.error(error.message || "Invite failed"); }
+      else if (data?.error) { toast.error(data.error); }
       else {
         toast.success(`Invite sent to ${inviteEmail}`);
         setInviteEmail("");
