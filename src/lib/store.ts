@@ -52,6 +52,22 @@ export type User = {
   organizationId?: string;
   memberRole?: "Owner" | "Pharmacist" | "Cashier";
   canViewMargins?: boolean;
+  subscriptionTier?: string;
+  subscriptionExpiresAt?: string | null;
+};
+
+export type PlanConfig = {
+  tier: string;
+  displayName: string;
+  priceMonthly: number;
+  maxProducts: number;       // -1 = unlimited
+  maxStaff: number;          // -1 = unlimited
+  maxSalesHistoryDays: number; // -1 = unlimited
+  canAiForecast: boolean;
+  canPoisonsRegister: boolean;
+  canReports: boolean;
+  canSuppliers: boolean;
+  canAuditTrail: boolean;
 };
 
 export type ControlledDispense = {
@@ -111,6 +127,7 @@ type DB = {
   controlledDispense: ControlledDispense[];
   loginActivity: LoginActivity[];
   credentials: Credential[];
+  plan: PlanConfig | null;
 };
 
 const KEY = "pharmaguard_db_v3";
@@ -201,7 +218,7 @@ function makeSeed(): DB {
 
 function emptyDb(): DB {
   return {
-    products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings,
+    products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings, plan: null,
     controlledDispense: [], loginActivity: [],
     credentials: [
       { username: "admin", passwordHash: hashPwd("admin") },
@@ -490,13 +507,15 @@ export const store = {
     persist();
 
     // ── 2. Load all org data — RLS enforces access, no manual user_id filter ──
-    const [prodsR, salesR, supR, contR, audR, profR] = await Promise.all([
+    const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
       supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
       supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
       supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
       (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
       (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
+      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at").eq("id", orgId).maybeSingle(),
+      (supabase.from as any)("plan_config").select("*"),
     ]);
 
     if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
@@ -508,6 +527,28 @@ export const store = {
     db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
     db.audit = ((audR as any).data || []).map(rowToAudit);
     if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
+
+    // ── subscription tier ──
+    const orgTier: string = (orgR as any)?.data?.subscription_tier ?? "free";
+    const orgExpiry: string | null = (orgR as any)?.data?.subscription_expires_at ?? null;
+    db.user = { ...db.user!, subscriptionTier: orgTier, subscriptionExpiresAt: orgExpiry };
+
+    // ── plan config ──
+    const plans: any[] = (planR as any)?.data || [];
+    const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
+    db.plan = thisPlan ? {
+      tier: thisPlan.tier,
+      displayName: thisPlan.display_name,
+      priceMonthly: Number(thisPlan.price_monthly),
+      maxProducts: thisPlan.max_products,
+      maxStaff: thisPlan.max_staff,
+      maxSalesHistoryDays: thisPlan.max_sales_history_days,
+      canAiForecast: thisPlan.can_ai_forecast,
+      canPoisonsRegister: thisPlan.can_poisons_register,
+      canReports: thisPlan.can_reports,
+      canSuppliers: thisPlan.can_suppliers,
+      canAuditTrail: thisPlan.can_audit_trail,
+    } : null;
     persist();
 
     // ── 3. Seed demo data for platform admin only ─────────────────────────
@@ -784,4 +825,36 @@ export function movementSpeed(unitsLast30: number): "Fast" | "Medium" | "Slow" {
   if (unitsLast30 >= 30) return "Fast";
   if (unitsLast30 >= 5) return "Medium";
   return "Slow";
+}
+
+// ── Plan helpers ──────────────────────────────────────────────────────────────
+export function usePlan() {
+  const plan = useStore((s) => s.plan);
+  const user = useStore((s) => s.user);
+  const products = useStore((s) => s.products);
+
+  const isExpired = user?.subscriptionExpiresAt
+    ? new Date(user.subscriptionExpiresAt) < new Date()
+    : false;
+
+  // If expired, treat as free
+  const effectivePlan = isExpired ? null : plan;
+
+  return {
+    plan: effectivePlan,
+    tier: isExpired ? "free" : (user?.subscriptionTier ?? "free"),
+    isExpired,
+    // Feature gates
+    canAiForecast: effectivePlan?.canAiForecast ?? false,
+    canPoisonsRegister: effectivePlan?.canPoisonsRegister ?? false,
+    canReports: effectivePlan?.canReports ?? false,
+    canSuppliers: effectivePlan?.canSuppliers ?? false,
+    canAuditTrail: effectivePlan?.canAuditTrail ?? false,
+    // Limit checks
+    atProductLimit: effectivePlan
+      ? (effectivePlan.maxProducts !== -1 && products.length >= effectivePlan.maxProducts)
+      : products.length >= 50,
+    productLimit: effectivePlan?.maxProducts ?? 50,
+    staffLimit: effectivePlan?.maxStaff ?? 1,
+  };
 }
