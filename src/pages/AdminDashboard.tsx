@@ -1,4 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +35,8 @@ import {
   RefreshCw,
   LogIn,
   AlertTriangle,
+  Settings,
+  Save,
 } from "lucide-react";
 
 const ADMIN_EMAIL = "phlair222@gmail.com";
@@ -51,6 +56,20 @@ type OrgRow = {
 };
 
 const TIERS = ["free", "basic", "pro"];
+
+type PlanRow = {
+  tier: string;
+  display_name: string;
+  price_monthly: number;
+  max_products: number;
+  max_staff: number;
+  max_sales_history_days: number;
+  can_ai_forecast: boolean;
+  can_poisons_register: boolean;
+  can_reports: boolean;
+  can_suppliers: boolean;
+  can_audit_trail: boolean;
+};
 
 function tierColor(tier: string) {
   if (tier === "pro") return "bg-violet-500/15 text-violet-400 border-violet-500/30";
@@ -421,6 +440,9 @@ export default function AdminDashboard() {
         </div>
       )}
 
+      {/* Plan Config section */}
+      <PlanConfigTab />
+
       {/* Delete confirm dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>
@@ -443,6 +465,142 @@ export default function AdminDashboard() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+// ── Plan Config Tab ───────────────────────────────────────────────────────────
+function PlanConfigTab() {
+  const [plans, setPlans] = useState<PlanRow[]>([]);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    (supabase.from as any)("plan_config").select("*").order("price_monthly")
+      .then(({ data }: any) => { if (data) setPlans(data); });
+  }, []);
+
+  const update = (tier: string, field: keyof PlanRow, value: any) => {
+    setPlans((prev) => prev.map((p) => p.tier === tier ? { ...p, [field]: value } : p));
+  };
+
+  const save = async (plan: PlanRow) => {
+    setSaving(plan.tier);
+    const { error } = await (supabase.from as any)("plan_config")
+      .update({
+        display_name: plan.display_name,
+        price_monthly: plan.price_monthly,
+        max_products: plan.max_products,
+        max_staff: plan.max_staff,
+        max_sales_history_days: plan.max_sales_history_days,
+        can_ai_forecast: plan.can_ai_forecast,
+        can_poisons_register: plan.can_poisons_register,
+        can_reports: plan.can_reports,
+        can_suppliers: plan.can_suppliers,
+        can_audit_trail: plan.can_audit_trail,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("tier", plan.tier);
+    setSaving(null);
+    if (error) { toast.error("Failed to save: " + error.message); return; }
+    toast.success(`${plan.display_name} plan saved`);
+  };
+
+  const tierColor = (tier: string) => {
+    if (tier === "pro") return "border-violet-500/40 bg-violet-500/5";
+    if (tier === "basic") return "border-blue-500/40 bg-blue-500/5";
+    return "border-zinc-500/40";
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold">Plan Configuration</h2>
+        <p className="text-sm text-muted-foreground">Edit pricing and feature limits for each subscription tier. Changes take effect immediately for new logins.</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        {plans.map((plan) => (
+          <div key={plan.tier} className={`rounded-xl border p-4 space-y-4 ${tierColor(plan.tier)}`}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold capitalize">{plan.display_name}</h3>
+              <Badge variant="outline" className="text-xs capitalize">{plan.tier}</Badge>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs">Monthly Price (₦)</Label>
+                <Input
+                  type="number"
+                  value={plan.price_monthly}
+                  onChange={(e) => update(plan.tier, "price_monthly", Number(e.target.value))}
+                  className="mt-1"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label className="text-xs">Max Products</Label>
+                  <Input
+                    type="number"
+                    value={plan.max_products}
+                    onChange={(e) => update(plan.tier, "max_products", Number(e.target.value))}
+                    className="mt-1"
+                    placeholder="-1=∞"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Max Staff</Label>
+                  <Input
+                    type="number"
+                    value={plan.max_staff}
+                    onChange={(e) => update(plan.tier, "max_staff", Number(e.target.value))}
+                    className="mt-1"
+                    placeholder="-1=∞"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">History (days)</Label>
+                  <Input
+                    type="number"
+                    value={plan.max_sales_history_days}
+                    onChange={(e) => update(plan.tier, "max_sales_history_days", Number(e.target.value))}
+                    className="mt-1"
+                    placeholder="-1=∞"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <Label className="text-xs text-muted-foreground uppercase tracking-wide">Features</Label>
+                {([
+                  ["can_reports", "Reports & Exports"],
+                  ["can_suppliers", "Suppliers Module"],
+                  ["can_poisons_register", "Poisons Register"],
+                  ["can_audit_trail", "Audit Trail"],
+                  ["can_ai_forecast", "AI Forecast"],
+                ] as [keyof PlanRow, string][]).map(([field, label]) => (
+                  <div key={field} className="flex items-center justify-between">
+                    <Label className="text-xs font-normal">{label}</Label>
+                    <Switch
+                      checked={!!plan[field]}
+                      onCheckedChange={(v) => update(plan.tier, field, v)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Button
+              className="w-full gap-2"
+              size="sm"
+              onClick={() => save(plan)}
+              disabled={saving === plan.tier}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {saving === plan.tier ? "Saving…" : "Save Changes"}
+            </Button>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">Tip: set max values to -1 for unlimited. Existing sessions reload plan config on next login.</p>
     </div>
   );
 }
