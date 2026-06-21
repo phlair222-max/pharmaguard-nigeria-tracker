@@ -34,7 +34,8 @@ export default function Reports() {
   const expiryRows = products.map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
     .sort((a, b) => a.days - b.days);
 
-  const stockCostValue = products.reduce((a, p) => a + p.quantity * p.costPrice, 0);
+  const canViewCost = products.some((p) => p.costPrice != null);
+  const stockCostValue = products.reduce((a, p) => a + p.quantity * (p.costPrice ?? 0), 0);
   const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
 
   // Profit by product within range
@@ -96,7 +97,7 @@ export default function Reports() {
     autoTable(doc, {
       startY: y, styles: { fontSize: 7 }, headStyles: { fillColor: [22, 160, 110] },
       head: [["Drug", "NAFDAC", "Batch", "Expiry", "Qty", "Value (cost)"]],
-      body: products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, NGN(p.quantity * p.costPrice)]),
+      body: products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, p.costPrice != null ? NGN(p.quantity * p.costPrice) : "—"]),
     });
     y = (doc as any).lastAutoTable.finalY + 6;
 
