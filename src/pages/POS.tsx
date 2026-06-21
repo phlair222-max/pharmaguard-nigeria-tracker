@@ -11,6 +11,8 @@ import { store, useStore, SaleItem } from "@/lib/store";
 import { NGN, expiryStatus } from "@/lib/format";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import { supabase } from "@/integrations/supabase/client";
+import { KeyRound } from "lucide-react";
 
 type CartLine = SaleItem & { stock: number; cost: number };
 
@@ -26,6 +28,7 @@ export default function POS() {
   const [lastReceipt, setLastReceipt] = useState<any>(null);
   const [quickMode, setQuickMode] = useState(false);
   const [controlledOpen, setControlledOpen] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
   const settings = useStore((s) => s.settings);
 
   const results = useMemo(() => {
@@ -99,8 +102,17 @@ export default function POS() {
 
   const checkout = () => {
     if (cart.length === 0) return;
-    if (controlledInCart.length > 0) { setControlledOpen(true); return; }
+    if (controlledInCart.length > 0) {
+      // Cashiers need pharmacist PIN authorization before dispensing controlled drugs
+      if (user?.memberRole === "Cashier") { setPinOpen(true); return; }
+      setControlledOpen(true); return;
+    }
     finalizeSale();
+  };
+
+  const onPinAuthorized = () => {
+    setPinOpen(false);
+    setControlledOpen(true);
   };
 
   const printReceipt = () => {
@@ -258,6 +270,12 @@ export default function POS() {
 
       {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
 
+      <PinAuthDialog
+        open={pinOpen}
+        onOpenChange={setPinOpen}
+        organizationId={user?.organizationId ?? ""}
+        onAuthorized={onPinAuthorized}
+      />
       <ControlledDispenseDialog
         open={controlledOpen}
         onOpenChange={setControlledOpen}
@@ -398,6 +416,83 @@ function ControlledDispenseDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={submit} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
             Save & complete sale
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── PIN Authorization Dialog ──────────────────────────────────────────────────
+async function hashPin(pin: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function PinAuthDialog({
+  open, onOpenChange, organizationId, onAuthorized,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+  onAuthorized: () => void;
+}) {
+  const [pin, setPin] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const verify = async () => {
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+      toast.error("Enter a valid 4-digit PIN"); return;
+    }
+    setLoading(true);
+    try {
+      const hashed = await hashPin(pin);
+      const { data, error } = await (supabase.from as any)("pharmacist_pins")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("pin_hash", hashed)
+        .maybeSingle();
+
+      if (error) { toast.error("Verification failed — try again"); return; }
+      if (!data) { toast.error("Incorrect PIN"); setPin(""); return; }
+
+      toast.success("Pharmacist authorized ✓");
+      setPin("");
+      onAuthorized();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) setPin(""); onOpenChange(o); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <KeyRound className="h-5 w-5" /> Pharmacist Authorization Required
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          This sale contains controlled substances. A registered pharmacist must enter their PIN to authorize dispensing.
+        </p>
+        <div className="space-y-3 py-2">
+          <Label className="text-xs">Pharmacist PIN (4 digits)</Label>
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={4}
+            placeholder="••••"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            onKeyDown={(e) => e.key === "Enter" && verify()}
+            className="text-center text-2xl tracking-widest"
+            autoFocus
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => { setPin(""); onOpenChange(false); }}>Cancel</Button>
+          <Button onClick={verify} disabled={loading || pin.length !== 4} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
+            {loading ? "Verifying…" : "Authorize"}
           </Button>
         </DialogFooter>
       </DialogContent>
