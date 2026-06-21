@@ -310,11 +310,66 @@ export default function Settings() {
   );
 }
 
+async function hashPin(pin: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function SecurityTab({ username, loginActivity }: { username: string; loginActivity: ReturnType<typeof useStore<any>> }) {
   const [oldPwd, setOldPwd] = useState("");
   const [newPwd, setNewPwd] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
   const [show, setShow] = useState(false);
+
+  // PIN setup state
+  const user = useStore((s) => s.user);
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [pinLoading, setPinLoading] = useState(false);
+  const [hasPin, setHasPin] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!user?.organizationId || !user?.memberRole) return;
+    if (!["Owner", "Pharmacist"].includes(user.memberRole)) return;
+    (supabase.from as any)("pharmacist_pins")
+      .select("id")
+      .eq("organization_id", user.organizationId)
+      .eq("user_id", (supabase.auth as any).getUser ? undefined : undefined)
+      .maybeSingle()
+      .then(async () => {
+        // check by current user id
+        const { data: authData } = await supabase.auth.getUser();
+        if (!authData.user) return;
+        const { data } = await (supabase.from as any)("pharmacist_pins")
+          .select("id")
+          .eq("organization_id", user.organizationId)
+          .eq("user_id", authData.user.id)
+          .maybeSingle();
+        setHasPin(!!data);
+      });
+  }, [user?.organizationId, user?.memberRole]);
+
+  const savePin = async () => {
+    if (!/^\d{4}$/.test(newPin)) { toast.error("PIN must be exactly 4 digits"); return; }
+    if (newPin !== confirmPin) { toast.error("PINs do not match"); return; }
+    setPinLoading(true);
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) { toast.error("Not authenticated"); return; }
+      const hashed = await hashPin(newPin);
+      const { error } = await (supabase.from as any)("pharmacist_pins")
+        .upsert({
+          user_id: authData.user.id,
+          organization_id: user!.organizationId,
+          pin_hash: hashed,
+        }, { onConflict: "user_id,organization_id" });
+      if (error) { toast.error("Failed to save PIN: " + error.message); return; }
+      toast.success(hasPin ? "PIN updated successfully" : "PIN set successfully");
+      setNewPin(""); setConfirmPin(""); setHasPin(true);
+    } finally {
+      setPinLoading(false);
+    }
+  };
 
   const checks = useMemo(() => ({
     length: newPwd.length >= 8,
@@ -384,6 +439,48 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
         </CardContent>
       </Card>
 
+      {(user?.memberRole === "Owner" || user?.memberRole === "Pharmacist") && (
+        <Card className="shadow-card">
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <KeyRound className="h-4 w-4 text-primary" /> Pharmacist Authorization PIN
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {hasPin === true ? "You have a PIN set. Update it below." : "Set a 4-digit PIN to authorize controlled drug sales by Cashiers."}
+            </p>
+            <div className="space-y-2">
+              <div>
+                <Label className="text-xs">{hasPin ? "New PIN" : "PIN"} (4 digits)</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="••••"
+                  value={newPin}
+                  onChange={(e) => setNewPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+                  className="text-center text-xl tracking-widest"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Confirm PIN</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="••••"
+                  value={confirmPin}
+                  onChange={(e) => setConfirmPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+                  className="text-center text-xl tracking-widest"
+                />
+              </div>
+            </div>
+            <Button className="w-full" onClick={savePin} disabled={pinLoading || newPin.length !== 4 || confirmPin.length !== 4}>
+              {pinLoading ? "Saving…" : hasPin ? "Update PIN" : "Set PIN"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="shadow-card">
         <CardContent className="space-y-3 p-4">
           <div className="flex items-center justify-between">
@@ -437,7 +534,7 @@ type Member = {
   id: string;
   user_id: string | null;
   role: "Owner" | "Pharmacist" | "Cashier";
-  status: "invited" | "active" | "suspended" | "removed";
+  status: "invited" | "active" | "suspended";
   invited_email: string | null;
   can_view_margins: boolean;
   created_at: string;
@@ -470,7 +567,6 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     const { data, error } = await (supabase.from as any)("memberships")
       .select("*")
       .eq("organization_id", organizationId)
-      .neq("status", "removed")
       .order("created_at", { ascending: true });
     if (error) { toast.error("Failed to load team"); }
     else setMembers(data || []);
@@ -547,14 +643,8 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     }
   };
 
-  // Soft-delete: flip status to "removed" instead of deleting the row.
-  // This lets hydrateFromSupabase recognize a kicked-out user and sign them
-  // out, instead of silently creating them a brand-new pharmacy because no
-  // membership row could be found at all.
   const removeMember = async (member: Member) => {
-    const { error } = await (supabase.from as any)("memberships")
-      .update({ status: "removed" })
-      .eq("id", member.id);
+    const { error } = await (supabase.from as any)("memberships").delete().eq("id", member.id);
     if (error) { toast.error("Remove failed"); }
     else {
       setMembers((prev) => prev.filter((m) => m.id !== member.id));
