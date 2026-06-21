@@ -12,14 +12,19 @@ import HeaderTicker from "./HeaderTicker";
 
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
-const items = [
+type MemberRole = "Owner" | "Pharmacist" | "Cashier";
+
+// Each nav item declares which roles can see it. Omitting `roles` means
+// everyone (Owner, Pharmacist, Cashier) can see it — matches the access
+// table enforced server-side by RoleRoute in App.tsx.
+const items: Array<{ title: string; url: string; icon: typeof LayoutDashboard; roles?: MemberRole[] }> = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Inventory", url: "/inventory", icon: Package },
   { title: "POS / Sales", url: "/pos", icon: ShoppingCart },
   { title: "Sales History", url: "/sales", icon: ReceiptText },
-  { title: "Suppliers", url: "/suppliers", icon: Truck },
-  { title: "Reports", url: "/reports", icon: FileBarChart2 },
-  { title: "AI Forecast", url: "/forecast", icon: Sparkles },
+  { title: "Suppliers", url: "/suppliers", icon: Truck, roles: ["Owner", "Pharmacist"] },
+  { title: "Reports", url: "/reports", icon: FileBarChart2, roles: ["Owner", "Pharmacist"] },
+  { title: "AI Forecast", url: "/forecast", icon: Sparkles, roles: ["Owner"] },
   { title: "Poisons Register", url: "/poisons", icon: ShieldAlert },
   { title: "Audit Trail", url: "/audit", icon: History },
   { title: "Settings", url: "/settings", icon: SettingsIcon },
@@ -31,6 +36,17 @@ function AppSidebar() {
   const settings = useStore((s) => s.settings);
   const user = useStore((s) => s.user);
   const isPlatformAdmin = user?.username?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+
+  // Owner always sees everything. For Pharmacist/Cashier, filter by the
+  // item's `roles` list. While memberRole hasn't resolved yet (hydration in
+  // flight), show only the universally-visible items to avoid a flash of
+  // restricted links.
+  const memberRole = user?.memberRole;
+  const visibleItems = items.filter((item) => {
+    if (!item.roles) return true;
+    if (!memberRole) return false;
+    return memberRole === "Owner" || item.roles.includes(memberRole);
+  });
 
   const adminItem = { title: "Platform Admin", url: "/admin", icon: ShieldCheck };
 
@@ -58,7 +74,7 @@ function AppSidebar() {
           <SidebarGroupLabel>Main</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {items.map((item) => (
+              {visibleItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild>
                     <NavLink
