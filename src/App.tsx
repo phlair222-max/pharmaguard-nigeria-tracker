@@ -39,8 +39,12 @@ function AuthCallback() {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
         store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
-        const hasPassword = data.session.user.user_metadata?.has_password === true;
-        if (!hasPassword) {
+        // Check if user has no password set (invited via magic link)
+        // Supabase sets identities with provider "email" for magic link users
+        const identities = data.session.user.identities || [];
+        const hasPassword = identities.some(i => i.provider === "email" && i.identity_data?.email_verified);
+        const createdRecently = Date.now() - new Date(data.session.user.created_at).getTime() < 5 * 60 * 1000;
+        if (createdRecently) {
           setNeedsPassword(true);
         } else {
           void store.hydrateFromSupabase();
@@ -56,10 +60,7 @@ function AuthCallback() {
     if (password.length < 8) { toast.error("Password must be at least 8 characters"); return; }
     if (password !== confirm) { toast.error("Passwords don't match"); return; }
     setSaving(true);
-    const { error } = await supabase.auth.updateUser({
-      password,
-      data: { has_password: true },
-    });
+    const { error } = await supabase.auth.updateUser({ password });
     if (error) {
       toast.error("Failed to set password: " + error.message);
       setSaving(false);
@@ -171,7 +172,7 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
 };
 
 const App = () => (
-  <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+  <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
