@@ -63,7 +63,7 @@ export default function POS() {
         if (ex.qty + 1 > p.quantity) { toast.error("Insufficient stock"); return c; }
         return c.map((l) => l.productId === id ? { ...l, qty: l.qty + 1 } : l);
       }
-      return [...c, { productId: id, name: p.name, qty: 1, price: p.sellingPrice, stock: p.quantity, cost: p.costPrice }];
+      return [...c, { productId: id, name: p.name, qty: 1, price: p.sellingPrice, stock: p.quantity, cost: p.costPrice ?? 0 }];
     });
     if (quickMode) setQ("");
   };
