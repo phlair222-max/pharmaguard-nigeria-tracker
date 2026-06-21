@@ -257,8 +257,8 @@ export default function Inventory() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
+          <div className="overflow-x-auto rounded-b-lg">
+            <Table className="min-w-[1100px]">
               <TableHeader>
                 <TableRow>
                   {(() => {
@@ -279,22 +279,18 @@ export default function Inventory() {
                       </button>
                     );
                     return <>
-                      <TableHead className="w-[60px]">Image</TableHead>
-                      <TableHead><SortBtn k="name" label="Product" /></TableHead>
-                      <TableHead><SortBtn k="generic" label="Generic" /></TableHead>
-                      <TableHead><SortBtn k="nafdac" label="NAFDAC" /></TableHead>
-                      <TableHead><SortBtn k="packSize" label="Pack" /></TableHead>
-                      <TableHead><SortBtn k="batch" label="Batch" /></TableHead>
-                      <TableHead><SortBtn k="expiry" label="Expiry" /></TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right"><SortBtn k="quantity" label="Stock" align="right" /></TableHead>
-                      <TableHead className="text-right"><SortBtn k="reorderLevel" label="Reorder" align="right" /></TableHead>
-                      <TableHead className="text-right"><SortBtn k="reorderQuantity" label="Reorder Qty" align="right" /></TableHead>
-                      <TableHead>Movement</TableHead>
-                      <TableHead className="text-right"><SortBtn k="costPrice" label="Cost" align="right" /></TableHead>
-                      <TableHead className="text-right"><SortBtn k="sellingPrice" label="Price" align="right" /></TableHead>
-                      <TableHead><SortBtn k="supplier" label="Supplier" /></TableHead>
-                      <TableHead></TableHead>
+                      <TableHead className="w-[52px] pl-4">Img</TableHead>
+                      <TableHead className="min-w-[180px]"><SortBtn k="name" label="Product" /></TableHead>
+                      <TableHead className="min-w-[90px]"><SortBtn k="batch" label="Batch" /></TableHead>
+                      <TableHead className="min-w-[110px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
+                      <TableHead className="min-w-[80px]">Status</TableHead>
+                      <TableHead className="text-right min-w-[70px]"><SortBtn k="quantity" label="Stock" align="right" /></TableHead>
+                      <TableHead className="text-right min-w-[70px]"><SortBtn k="reorderLevel" label="Reorder" align="right" /></TableHead>
+                      <TableHead className="min-w-[90px]">Movement</TableHead>
+                      <TableHead className="text-right min-w-[90px]"><SortBtn k="costPrice" label="Cost" align="right" /></TableHead>
+                      <TableHead className="text-right min-w-[90px]"><SortBtn k="sellingPrice" label="Price" align="right" /></TableHead>
+                      <TableHead className="min-w-[100px]"><SortBtn k="supplier" label="Supplier" /></TableHead>
+                      <TableHead className="w-[100px]"></TableHead>
                     </>;
                   })()}
                 </TableRow>
@@ -312,25 +308,27 @@ export default function Inventory() {
                   const tierLabel = tier === "red" ? (days < 0 ? "Expired" : "Critical") : tier === "yellow" ? "Warning" : "Safe";
                   return (
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
-                      <TableCell>
+                      <TableCell className="pl-4">
                         {p.image ? (
-                          <img src={p.image} alt={p.name} className="h-10 w-10 rounded-md object-cover border" />
+                          <img src={p.image} alt={p.name} className="h-9 w-9 rounded-md object-cover border" />
                         ) : (
-                          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-4 w-4" /></div>
+                          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-4 w-4" /></div>
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="font-medium flex items-center gap-1.5">
+                        <div className="font-medium flex items-center gap-1.5 leading-tight">
                           {p.name}
-                          {p.controlled && <ShieldAlert className="h-3.5 w-3.5 text-destructive" title="Controlled drug — tracked in Poisons Register" />}
-                          {low && <AlertTriangle className="h-3.5 w-3.5 text-destructive" />}
+                          {p.controlled && <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive" title="Controlled drug" />}
+                          {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                         </div>
-                        <div className="text-xs text-muted-foreground">{p.category}</div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5 space-x-2">
+                          <span>{p.category}</span>
+                          {p.generic && <span>· {p.generic}</span>}
+                          {p.nafdac && <span>· {p.nafdac}</span>}
+                          {p.packSize && <span>· {p.packSize}</span>}
+                        </div>
                       </TableCell>
-                      <TableCell className="text-xs">{p.generic}</TableCell>
-                      <TableCell className="text-xs">{p.nafdac}</TableCell>
-                      <TableCell className="text-xs">{p.packSize}</TableCell>
-                      <TableCell className="text-xs">{p.batch}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{p.batch}</TableCell>
                       <TableCell className="text-xs whitespace-nowrap">
                         <div>{format(new Date(p.expiry), "dd MMM yyyy")}</div>
                         <div className="text-[11px] text-muted-foreground">{days < 0 ? `${-days}d ago` : `${days}d left`}</div>
@@ -346,7 +344,6 @@ export default function Inventory() {
                         {low && <div className="text-[10px] text-destructive">LOW STOCK</div>}
                       </TableCell>
                       <TableCell className="text-right text-xs">{p.reorderLevel}</TableCell>
-                      <TableCell className="text-right text-xs">{p.reorderQuantity}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={movementBadgeClass(speed)}>{speed}</Badge>
                         <div className="text-[10px] text-muted-foreground">{sold30}/30d</div>
