@@ -351,7 +351,7 @@ export default function Inventory() {
                         <Badge variant="outline" className={movementBadgeClass(speed)}>{speed}</Badge>
                         <div className="text-[10px] text-muted-foreground">{sold30}/30d</div>
                       </TableCell>
-                      <TableCell className="text-right text-xs">{NGN(p.costPrice)}</TableCell>
+                      <TableCell className="text-right text-xs">{p.costPrice != null ? NGN(p.costPrice) : <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="text-right font-medium">{NGN(p.sellingPrice)}</TableCell>
                       <TableCell className="text-xs">{p.supplier}</TableCell>
                       <TableCell className="text-right">
@@ -473,7 +473,7 @@ export default function Inventory() {
             <Field label="Quantity in stock" type="number" v={String(draft.quantity)} on={(v) => setDraft({ ...draft, quantity: +v })} />
             <Field label="Reorder Level" type="number" v={String(draft.reorderLevel)} on={(v) => setDraft({ ...draft, reorderLevel: +v })} />
             <Field label="Reorder Quantity" type="number" v={String(draft.reorderQuantity)} on={(v) => setDraft({ ...draft, reorderQuantity: +v })} />
-            <Field label="Cost price (₦)" type="number" v={String(draft.costPrice)} on={(v) => setDraft({ ...draft, costPrice: +v })} />
+            <Field label="Cost price (₦)" type="number" v={draft.costPrice != null ? String(draft.costPrice) : ""} on={(v) => setDraft({ ...draft, costPrice: +v })} disabled={draft.costPrice == null} />
             <Field label="Selling price (₦)" type="number" v={String(draft.sellingPrice)} on={(v) => setDraft({ ...draft, sellingPrice: +v })} />
             <div>
               <Label>Supplier</Label>
@@ -561,11 +561,12 @@ export default function Inventory() {
   );
 }
 
-function Field({ label, v, on, type = "text" }: { label: string; v: string; on: (v: string) => void; type?: string }) {
+function Field({ label, v, on, type = "text", disabled }: { label: string; v: string; on: (v: string) => void; type?: string; disabled?: boolean }) {
   return (
     <div>
       <Label>{label}</Label>
-      <Input type={type} value={v} onChange={(e) => on(e.target.value)} />
+      <Input type={type} value={v} onChange={(e) => on(e.target.value)} disabled={disabled}
+        className={disabled ? "opacity-40 cursor-not-allowed" : ""} placeholder={disabled ? "Hidden" : ""} />
     </div>
   );
 }
