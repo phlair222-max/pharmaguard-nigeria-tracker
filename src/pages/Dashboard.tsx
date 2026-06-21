@@ -8,10 +8,33 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianG
 import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
 
+// Tailwind's JIT compiler only picks up class names it can see literally in
+// source — a template string like `md:grid-cols-${n}` won't work because the
+// class never appears as a complete literal anywhere. This map keeps the
+// classes static and discoverable while still letting the grid column count
+// vary at runtime based on how many stat cards are visible.
+const GRID_COLS_MD: Record<number, string> = {
+  1: "md:grid-cols-1",
+  2: "md:grid-cols-2",
+  3: "md:grid-cols-3",
+  4: "md:grid-cols-4",
+};
+
 export default function Dashboard() {
   const products = useStore((s) => s.products);
   const sales = useStore((s) => s.sales);
   const settings = useStore((s) => s.settings);
+  const user = useStore((s) => s.user);
+
+  // ── Margin visibility ─────────────────────────────────────────────────
+  // Owners always see cost/profit/margin figures. Pharmacists see them only
+  // if explicitly granted via the "See Margins" toggle in Team settings.
+  // Cashiers never see cost/margin data, regardless of any toggle.
+  const canSeeMargins =
+    user?.memberRole === "Owner" ||
+    (user?.memberRole === "Pharmacist" && !!user?.canViewMargins) ||
+    // Fallback for the pre-multi-tenant legacy "Admin" role (no memberRole yet)
+    (!user?.memberRole && user?.role === "Admin");
 
   const todayStart = startOfDay(new Date()).getTime();
   const todaySales = sales.filter((s) => new Date(s.createdAt).getTime() >= todayStart);
@@ -45,6 +68,28 @@ export default function Dashboard() {
     .sort((a, b) => b.units - a.units)
     .slice(0, 10);
 
+  // ── Top stat row: Today's Profit only shown if margins are visible ─────
+  const topStats = [
+    { key: "sales", icon: Wallet, label: "Today's Sales", value: NGN(todayRevenue), accent: "primary", tip: "Total revenue collected today across all payment methods." },
+    ...(canSeeMargins
+      ? [{ key: "profit", icon: TrendingUp, label: "Today's Profit", value: NGN(todayProfit), accent: "success", tip: "Selling price minus cost price for items sold today." }]
+      : []),
+    { key: "txns", icon: Receipt, label: "Transactions", value: num(todaySales.length), accent: "info", tip: "Number of completed sales today." },
+    { key: "avg", icon: Activity, label: "Daily Avg Sales (30 days)", value: NGN(dailyAvg), accent: "secondary", tip: "Average daily revenue over the last 30 days." },
+  ];
+
+  // ── Stock stat row: Cost value & Potential margin only if margins visible ─
+  const stockStats = [
+    { key: "totalProducts", icon: Boxes, label: "Total Products", value: num(products.length), accent: "primary", tip: "Distinct SKUs currently in inventory." },
+    ...(canSeeMargins
+      ? [{ key: "stockCost", icon: Boxes, label: "Stock Value (Cost)", value: NGN(stockCostValue), accent: "info", tip: "Quantity × cost price for every product in stock." }]
+      : []),
+    { key: "stockRetail", icon: Banknote, label: "Stock Value (Retail)", value: NGN(stockSellValue), accent: "success", tip: "Quantity × selling price — what stock is worth at retail." },
+    ...(canSeeMargins
+      ? [{ key: "margin", icon: TrendingUp, label: "Potential Margin", value: NGN(stockSellValue - stockCostValue), accent: "secondary", tip: "Retail value minus cost value — profit if all stock sells." }]
+      : []),
+  ];
+
   return (
     <TooltipProvider delayDuration={150}>
     <div className="space-y-6">
@@ -69,18 +114,16 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat icon={Wallet} label="Today's Sales" value={NGN(todayRevenue)} accent="primary" tip="Total revenue collected today across all payment methods." />
-        <Stat icon={TrendingUp} label="Today's Profit" value={NGN(todayProfit)} accent="success" tip="Selling price minus cost price for items sold today." />
-        <Stat icon={Receipt} label="Transactions" value={num(todaySales.length)} accent="info" tip="Number of completed sales today." />
-        <Stat icon={Activity} label="Daily Avg Sales (30 days)" value={NGN(dailyAvg)} accent="secondary" tip="Average daily revenue over the last 30 days." />
+      <div className={`grid grid-cols-2 gap-3 ${GRID_COLS_MD[topStats.length] || "md:grid-cols-4"}`}>
+        {topStats.map((s) => (
+          <Stat key={s.key} icon={s.icon} label={s.label} value={s.value} accent={s.accent} tip={s.tip} />
+        ))}
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat icon={Boxes} label="Total Products" value={num(products.length)} accent="primary" tip="Distinct SKUs currently in inventory." />
-        <Stat icon={Boxes} label="Stock Value (Cost)" value={NGN(stockCostValue)} accent="info" tip="Quantity × cost price for every product in stock." />
-        <Stat icon={Banknote} label="Stock Value (Retail)" value={NGN(stockSellValue)} accent="success" tip="Quantity × selling price — what stock is worth at retail." />
-        <Stat icon={TrendingUp} label="Potential Margin" value={NGN(stockSellValue - stockCostValue)} accent="secondary" tip="Retail value minus cost value — profit if all stock sells." />
+      <div className={`grid grid-cols-2 gap-3 ${GRID_COLS_MD[stockStats.length] || "md:grid-cols-4"}`}>
+        {stockStats.map((s) => (
+          <Stat key={s.key} icon={s.icon} label={s.label} value={s.value} accent={s.accent} tip={s.tip} />
+        ))}
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
