@@ -13,6 +13,8 @@ import { FileDown, FileText, ShieldCheck } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
+import { usePlan } from "@/lib/store";
+import { UpgradePrompt } from "@/components/UpgradePrompt";
 
 export default function Reports() {
   const sales = useStore((s) => s.sales);
@@ -163,6 +165,9 @@ export default function Reports() {
     XLSX.writeFile(wb, `${name.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.xlsx`);
   };
 
+
+  const plan = usePlan();
+  if (!plan.canReports) return <div className="p-6"><UpgradePrompt feature="Reports & Exports" requiredPlan="basic" description="Full sales reports, profit analysis, stock movement, and CSV/PDF exports." /></div>;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
