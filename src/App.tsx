@@ -8,6 +8,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import AppLayout from "@/components/layout/AppLayout";
 import Login from "@/pages/Login";
+import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Inventory from "@/pages/Inventory";
 import POS from "@/pages/POS";
@@ -48,7 +49,7 @@ function AuthCallback() {
           setNeedsPassword(true);
         } else {
           void store.hydrateFromSupabase();
-          navigate("/", { replace: true });
+          navigate("/dashboard", { replace: true });
         }
       } else {
         navigate("/login", { replace: true });
@@ -68,7 +69,7 @@ function AuthCallback() {
     }
     toast.success("Password set successfully — welcome to PharmaGuard NG!");
     void store.hydrateFromSupabase();
-    navigate("/", { replace: true });
+    navigate("/dashboard", { replace: true });
   };
 
   if (needsPassword) {
@@ -179,10 +180,11 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
+            <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
             <Route element={<SessionGate><AppLayout /></SessionGate>}>
-              <Route path="/" element={<Dashboard />} />
+              <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/pos" element={<POS />} />
               <Route path="/sales" element={<SalesHistory />} />
