@@ -27,12 +27,12 @@ export default function Login() {
     }
 
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate("/", { replace: true });
+      if (data.session) navigate("/dashboard", { replace: true });
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_IN" && session) {
-        navigate("/", { replace: true });
+        navigate("/dashboard", { replace: true });
       }
       if (event === "SIGNED_OUT") {
         setGoogleBusy(false);
@@ -59,7 +59,7 @@ export default function Login() {
     setSigningIn(false);
     if (error) { toast.error(error.message); return; }
     toast.success("Welcome back");
-    navigate("/", { replace: true });
+    navigate("/dashboard", { replace: true });
   };
 
   const signUp = async (e: React.FormEvent) => {
