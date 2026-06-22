@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, Pencil, Trash2, Search, Truck } from "lucide-react";
 import { store, useStore, Supplier } from "@/lib/store";
 import { toast } from "sonner";
+import { usePlan } from "@/lib/store";
+import { UpgradePrompt } from "@/components/UpgradePrompt";
 
 const empty: Omit<Supplier, "id"> = { name: "", contactPerson: "", phone: "", email: "", address: "", notes: "" };
 
@@ -37,6 +39,9 @@ export default function Suppliers() {
   };
   const remove = (s: Supplier) => { if (confirm(`Delete supplier ${s.name}?`)) { store.deleteSupplier(s.id); toast.success("Deleted"); } };
 
+
+  const plan = usePlan();
+  if (!plan.canSuppliers) return <div className="p-6"><UpgradePrompt feature="Suppliers Module" requiredPlan="basic" description="Manage your supplier list, track orders, and link products to their source." /></div>;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
