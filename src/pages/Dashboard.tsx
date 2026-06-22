@@ -174,10 +174,11 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <AlertCard icon={PackageX} label="Low Stock" count={lowStock.length} tone="warning" link="/inventory?filter=low" hint="At or below reorder level" />
-        <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length} tone="destructive" link="/inventory?filter=near" hint="Urgent action needed" />
-        <AlertCard icon={AlertTriangle} label="Expired Items" count={expiredCount} tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <AlertCard icon={PackageX}      label="Low Stock"          count={lowStock.length} tone="warning"    link="/inventory?filter=low"     hint="At or below reorder level" />
+        <AlertCard icon={CalendarClock} label="Expiring ≤30 days"  count={near30.length}   tone="red"        link="/inventory?filter=near"    hint="Urgent action needed" />
+        <AlertCard icon={CalendarClock} label="Expiring ≤60 days"  count={near60.length}   tone="amber"      link="/inventory?filter=near"    hint="Plan disposal soon" />
+        <AlertCard icon={AlertTriangle} label="Expired Items"       count={expiredCount}    tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
       </div>
 
       <Card className="shadow-card border-success/30">
@@ -328,19 +329,27 @@ function Stat({ icon: Icon, label, value, accent, tip }: { icon: any; label: str
 }
 
 function AlertCard({ icon: Icon, label, count, tone, hint, link }: any) {
-  const map: Record<string, string> = {
-    warning: "border-warning/50 bg-warning/5",
+  const cardMap: Record<string, string> = {
+    warning:     "border-warning/50 bg-warning/5",
+    red:         "border-destructive/50 bg-destructive/5",
+    amber:       "border-amber-500/50 bg-amber-500/5",
     destructive: "border-destructive/50 bg-destructive/5",
+  };
+  const textMap: Record<string, string> = {
+    warning:     "text-warning",
+    red:         "text-destructive",
+    amber:       "text-amber-500",
+    destructive: "text-destructive",
   };
   return (
     <Link to={link}>
-      <Card className={`shadow-card transition hover:shadow-elevated ${map[tone]}`}>
+      <Card className={`shadow-card transition hover:shadow-elevated ${cardMap[tone]}`}>
         <CardContent className="flex items-center justify-between p-4">
           <div>
             <div className="text-sm font-medium text-foreground">{label}</div>
             <div className="text-xs text-muted-foreground">{hint}</div>
           </div>
-          <div className={`flex items-center gap-2 ${tone === "warning" ? "text-warning" : "text-destructive"}`}>
+          <div className={`flex items-center gap-2 ${textMap[tone]}`}>
             <span className="text-2xl font-bold">{count}</span>
             <Icon className="h-5 w-5" />
           </div>
