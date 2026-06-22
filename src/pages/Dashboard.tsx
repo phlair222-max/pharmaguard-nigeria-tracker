@@ -1,78 +1,20 @@
-import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useStore, salesVelocityMap, movementSpeed } from "@/lib/store";
+import { useStore, salesVelocityMap, movementSpeed, usePlan } from "@/lib/store";
+import { UpgradePrompt } from "@/components/UpgradePrompt";
+import { useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
-import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, X } from "lucide-react";
+import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, FileText, Loader2 } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
-
-const GRID_COLS_MD: Record<number, string> = {
-  1: "md:grid-cols-1",
-  2: "md:grid-cols-2",
-  3: "md:grid-cols-3",
-  4: "md:grid-cols-4",
-};
-
-// ── Expiry Banner ─────────────────────────────────────────────────────────────
-type BannerTier = { label: string; count: number; tone: "red" | "amber" | "yellow"; key: string };
-
-function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
-  const visible = tiers.filter((t) => !dismissed.has(t.key) && t.count > 0);
-  if (visible.length === 0) return null;
-
-  const styles: Record<string, string> = {
-    red:    "border-destructive/60 bg-destructive/10 text-destructive",
-    amber:  "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-    yellow: "border-yellow-500/60 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
-  };
-  const iconStyles: Record<string, string> = {
-    red:    "text-destructive",
-    amber:  "text-amber-500",
-    yellow: "text-yellow-500",
-  };
-
-  return (
-    <div className="space-y-2">
-      {visible.map((t) => (
-        <div
-          key={t.key}
-          className={`flex items-center justify-between rounded-lg border px-4 py-3 ${styles[t.tone]}`}
-        >
-          <Link to="/inventory?filter=near" className="flex items-center gap-3 flex-1 min-w-0">
-            <AlertTriangle className={`h-4 w-4 shrink-0 ${iconStyles[t.tone]}`} />
-            <span className="text-sm font-medium">
-              <span className="font-bold">{t.count} product{t.count !== 1 ? "s" : ""}</span>{" "}
-              {t.label}
-            </span>
-            <span className="text-xs opacity-70 hidden sm:inline">— tap to review</span>
-          </Link>
-          <button
-            onClick={() => setDismissed((prev) => new Set(prev).add(t.key))}
-            className="ml-3 shrink-0 opacity-60 hover:opacity-100 transition-opacity"
-            aria-label={`Dismiss ${t.label} alert`}
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 export default function Dashboard() {
   const products = useStore((s) => s.products);
   const sales = useStore((s) => s.sales);
   const settings = useStore((s) => s.settings);
-  const user = useStore((s) => s.user);
-
-  const canSeeMargins =
-    user?.memberRole === "Owner" ||
-    (user?.memberRole === "Pharmacist" && !!user?.canViewMargins) ||
-    (!user?.memberRole && user?.role === "Admin");
 
   const todayStart = startOfDay(new Date()).getTime();
   const todaySales = sales.filter((s) => new Date(s.createdAt).getTime() >= todayStart);
@@ -89,17 +31,7 @@ export default function Dashboard() {
 
   const lowStock = products.filter((p) => p.quantity <= p.reorderLevel);
   const expiredCount = products.filter((p) => daysUntil(p.expiry) < 0).length;
-
-  // ── Expiry buckets ────────────────────────────────────────────────────────
   const near30 = products.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; });
-  const near60 = products.filter((p) => { const d = daysUntil(p.expiry); return d > 30 && d <= 60; });
-  const near90 = products.filter((p) => { const d = daysUntil(p.expiry); return d > 60 && d <= 90; });
-
-  const expiryBannerTiers: BannerTier[] = [
-    { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed" },
-    { key: "amber",  count: near60.length, tone: "amber",  label: "expiring within 31–60 days — plan disposal soon" },
-    { key: "yellow", count: near90.length, tone: "yellow", label: "expiring within 61–90 days — monitor closely" },
-  ];
 
   const trend = Array.from({ length: 7 }).map((_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
@@ -110,38 +42,22 @@ export default function Dashboard() {
   });
 
   const velocity = salesVelocityMap(sales, 30);
+  const plan = usePlan();
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportText, setReportText] = useState<string | null>(null);
   const fastMovers = products
     .map((p) => ({ p, units: velocity.get(p.id) || 0 }))
     .filter((x) => x.units > 0)
     .sort((a, b) => b.units - a.units)
     .slice(0, 10);
 
-  const topStats = [
-    { key: "sales", icon: Wallet, label: "Today's Sales", value: NGN(todayRevenue), accent: "primary", tip: "Total revenue collected today across all payment methods." },
-    ...(canSeeMargins
-      ? [{ key: "profit", icon: TrendingUp, label: "Today's Profit", value: NGN(todayProfit), accent: "success", tip: "Selling price minus cost price for items sold today." }]
-      : []),
-    { key: "txns", icon: Receipt, label: "Transactions", value: num(todaySales.length), accent: "info", tip: "Number of completed sales today." },
-    { key: "avg", icon: Activity, label: "Daily Avg Sales (30 days)", value: NGN(dailyAvg), accent: "secondary", tip: "Average daily revenue over the last 30 days." },
-  ];
-
-  const stockStats = [
-    { key: "totalProducts", icon: Boxes, label: "Total Products", value: num(products.length), accent: "primary", tip: "Distinct SKUs currently in inventory." },
-    ...(canSeeMargins
-      ? [{ key: "stockCost", icon: Boxes, label: "Stock Value (Cost)", value: NGN(stockCostValue), accent: "info", tip: "Quantity × cost price for every product in stock." }]
-      : []),
-    { key: "stockRetail", icon: Banknote, label: "Stock Value (Retail)", value: NGN(stockSellValue), accent: "success", tip: "Quantity × selling price — what stock is worth at retail." },
-    ...(canSeeMargins
-      ? [{ key: "margin", icon: TrendingUp, label: "Potential Margin", value: NGN(stockSellValue - stockCostValue), accent: "secondary", tip: "Retail value minus cost value — profit if all stock sells." }]
-      : []),
-  ];
-
   return (
     <TooltipProvider delayDuration={150}>
     <div className="space-y-6">
 
-      {/* Dashboard header */}
+      {/* Dashboard header — owner photo LEFT, title, nothing right */}
       <div className="flex items-center gap-3">
+        {/* Owner/Pharmacist photo — left of title */}
         {settings.ownerPhoto ? (
           <img
             src={settings.ownerPhoto}
@@ -159,26 +75,24 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── 90/60/30-day expiry banner ── */}
-      <ExpiryBanner tiers={expiryBannerTiers} />
-
-      <div className={`grid grid-cols-2 gap-3 ${GRID_COLS_MD[topStats.length] || "md:grid-cols-4"}`}>
-        {topStats.map((s) => (
-          <Stat key={s.key} icon={s.icon} label={s.label} value={s.value} accent={s.accent} tip={s.tip} />
-        ))}
-      </div>
-
-      <div className={`grid grid-cols-2 gap-3 ${GRID_COLS_MD[stockStats.length] || "md:grid-cols-4"}`}>
-        {stockStats.map((s) => (
-          <Stat key={s.key} icon={s.icon} label={s.label} value={s.value} accent={s.accent} tip={s.tip} />
-        ))}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat icon={Wallet} label="Today's Sales" value={NGN(todayRevenue)} accent="primary" tip="Total revenue collected today across all payment methods." />
+        <Stat icon={TrendingUp} label="Today's Profit" value={NGN(todayProfit)} accent="success" tip="Selling price minus cost price for items sold today." />
+        <Stat icon={Receipt} label="Transactions" value={num(todaySales.length)} accent="info" tip="Number of completed sales today." />
+        <Stat icon={Activity} label="Daily Avg Sales (30 days)" value={NGN(dailyAvg)} accent="secondary" tip="Average daily revenue over the last 30 days." />
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <AlertCard icon={PackageX}      label="Low Stock"          count={lowStock.length} tone="warning"    link="/inventory?filter=low"     hint="At or below reorder level" />
-        <AlertCard icon={CalendarClock} label="Expiring ≤30 days"  count={near30.length}   tone="red"        link="/inventory?filter=near"    hint="Urgent action needed" />
-        <AlertCard icon={CalendarClock} label="Expiring ≤60 days"  count={near60.length}   tone="amber"      link="/inventory?filter=near"    hint="Plan disposal soon" />
-        <AlertCard icon={AlertTriangle} label="Expired Items"       count={expiredCount}    tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
+        <Stat icon={Boxes} label="Total Products" value={num(products.length)} accent="primary" tip="Distinct SKUs currently in inventory." />
+        <Stat icon={Boxes} label="Stock Value (Cost)" value={NGN(stockCostValue)} accent="info" tip="Quantity × cost price for every product in stock." />
+        <Stat icon={Banknote} label="Stock Value (Retail)" value={NGN(stockSellValue)} accent="success" tip="Quantity × selling price — what stock is worth at retail." />
+        <Stat icon={TrendingUp} label="Potential Margin" value={NGN(stockSellValue - stockCostValue)} accent="secondary" tip="Retail value minus cost value — profit if all stock sells." />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <AlertCard icon={PackageX} label="Low Stock" count={lowStock.length} tone="warning" link="/inventory?filter=low" hint="At or below reorder level" />
+        <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length} tone="destructive" link="/inventory?filter=near" hint="Urgent action needed" />
+        <AlertCard icon={AlertTriangle} label="Expired Items" count={expiredCount} tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
       </div>
 
       <Card className="shadow-card border-success/30">
@@ -266,6 +180,73 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
+        <Card className="shadow-card border-destructive/20">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileText className="h-4 w-4 text-destructive" />
+              AI Disposal Report
+            </CardTitle>
+            {plan.canAiForecast && near30.length > 0 && !reportText && (
+              <button
+                onClick={async () => {
+                  setReportLoading(true);
+                  try {
+                    const { data, error } = await supabase.functions.invoke("generate-disposal-report", {
+                      body: { products: near30.map((p) => ({ name: p.name, batch: p.batch, expiry: p.expiry, quantity: p.quantity, nafdac: p.nafdac })) },
+                    });
+                    if (error) throw error;
+                    setReportText(data.report);
+                  } catch (e: any) {
+                    const { toast } = await import("sonner");
+                    toast.error("Failed to generate report: " + e.message);
+                  } finally {
+                    setReportLoading(false);
+                  }
+                }}
+                disabled={reportLoading}
+                className="flex items-center gap-1.5 rounded-md bg-destructive/10 border border-destructive/30 px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
+              >
+                {reportLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
+                {reportLoading ? "Generating…" : "Generate Report"}
+              </button>
+            )}
+          </CardHeader>
+          <CardContent>
+            {!plan.canAiForecast ? (
+              <UpgradePrompt
+                feature="AI Disposal Report"
+                requiredPlan="pro"
+                description="Automatically generate a NAFDAC-formatted disposal report for products expiring within 30 days. One click, ready to print."
+              />
+            ) : near30.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">No products expiring within 30 days 🎉</div>
+            ) : reportText ? (
+              <div className="space-y-3">
+                <pre className="whitespace-pre-wrap rounded-lg bg-muted/50 p-4 text-xs leading-relaxed max-h-80 overflow-y-auto font-mono border">{reportText}</pre>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(`<pre style="font-family:monospace;padding:2rem;white-space:pre-wrap">${reportText}</pre>`); w.print(); } }}
+                    className="flex-1 rounded-md bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
+                  >
+                    Print Report
+                  </button>
+                  <button
+                    onClick={() => setReportText(null)}
+                    className="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-muted transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-4 text-center space-y-2">
+                <p className="text-sm text-muted-foreground">{near30.length} product{near30.length !== 1 ? "s" : ""} expiring within 30 days</p>
+                <p className="text-xs text-muted-foreground">Click "Generate Report" to create a NAFDAC-formatted disposal document</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <Card className="shadow-card">
           <CardHeader><CardTitle className="text-base">Low Stock — Reorder Suggestions</CardTitle></CardHeader>
           <CardContent>
@@ -329,27 +310,19 @@ function Stat({ icon: Icon, label, value, accent, tip }: { icon: any; label: str
 }
 
 function AlertCard({ icon: Icon, label, count, tone, hint, link }: any) {
-  const cardMap: Record<string, string> = {
-    warning:     "border-warning/50 bg-warning/5",
-    red:         "border-destructive/50 bg-destructive/5",
-    amber:       "border-amber-500/50 bg-amber-500/5",
+  const map: Record<string, string> = {
+    warning: "border-warning/50 bg-warning/5",
     destructive: "border-destructive/50 bg-destructive/5",
-  };
-  const textMap: Record<string, string> = {
-    warning:     "text-warning",
-    red:         "text-destructive",
-    amber:       "text-amber-500",
-    destructive: "text-destructive",
   };
   return (
     <Link to={link}>
-      <Card className={`shadow-card transition hover:shadow-elevated ${cardMap[tone]}`}>
+      <Card className={`shadow-card transition hover:shadow-elevated ${map[tone]}`}>
         <CardContent className="flex items-center justify-between p-4">
           <div>
             <div className="text-sm font-medium text-foreground">{label}</div>
             <div className="text-xs text-muted-foreground">{hint}</div>
           </div>
-          <div className={`flex items-center gap-2 ${textMap[tone]}`}>
+          <div className={`flex items-center gap-2 ${tone === "warning" ? "text-warning" : "text-destructive"}`}>
             <span className="text-2xl font-bold">{count}</span>
             <Icon className="h-5 w-5" />
           </div>
