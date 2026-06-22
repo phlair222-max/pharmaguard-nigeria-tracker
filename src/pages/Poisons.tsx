@@ -15,6 +15,8 @@ import { ShieldAlert, ClipboardPlus, FileDown, ShieldCheck, PackagePlus } from "
 import { toast } from "sonner";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { usePlan } from "@/lib/store";
+import { UpgradePrompt } from "@/components/UpgradePrompt";
 
 export default function Poisons() {
   const navigate = useNavigate();
@@ -106,6 +108,9 @@ export default function Poisons() {
 
 
 
+
+  const plan = usePlan();
+  if (!plan.canPoisonsRegister) return <div className="p-6"><UpgradePrompt feature="Poisons Register" requiredPlan="basic" description="NAFDAC-compliant controlled drug dispensing log with pharmacist PIN authorization." /></div>;
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
