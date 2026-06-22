@@ -8,6 +8,8 @@ import { Sparkles, Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle, Pack
 import { toast } from "sonner";
 import { num } from "@/lib/format";
 import { startOfDay, format } from "date-fns";
+import { usePlan } from "@/lib/store";
+import { UpgradePrompt } from "@/components/UpgradePrompt";
 
 type Forecast = {
   id: string;
@@ -126,6 +128,9 @@ export default function Forecast() {
     a.urgency === b.urgency ? b.predictedUnits14d - a.predictedUnits14d : urgencyRank(a.urgency) - urgencyRank(b.urgency)
   );
 
+
+  const plan = usePlan();
+  if (!plan.canAiForecast) return <div className="p-6"><UpgradePrompt feature="AI Forecast" requiredPlan="pro" description="Get AI-powered demand forecasting and stock predictions. Know what to restock before you run out." /></div>;
   return (
     <div className="space-y-4">
       {/* Header */}
