@@ -21,10 +21,7 @@ export default function Landing() {
       {/* ── NAV ── */}
       <nav className="landing-nav">
         <div className="landing-logo">
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="7" fill="#00C896"/>
-            <path d="M9 14h10M14 9v10" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
+          <img src="/logo.jpg" alt="PharmaGuard NG" className="landing-logo-img" />
           <span>PharmaGuard NG</span>
         </div>
         <div className="landing-nav-links">
@@ -52,7 +49,7 @@ export default function Landing() {
           </button>
           <a
             className="btn-ghost"
-            href="https://wa.me/2348000000000?text=Hi%20Sola%2C%20I%20want%20a%20demo%20of%20PharmaGuard%20NG"
+            href="https://wa.me/2348051376835?text=Hi%20Sola%2C%20I%20want%20a%20demo%20of%20PharmaGuard%20NG"
             target="_blank"
             rel="noreferrer"
           >
@@ -166,7 +163,7 @@ export default function Landing() {
             <div className="plan-badge">Most popular</div>
             <div className="plan-name">Basic</div>
             <div className="plan-price">₦500<span>/day</span></div>
-            <div className="plan-price-sub">₦15,000/month</div>
+            <div className="plan-price-sub">≈ ₦15,000/month</div>
             <div className="plan-desc">For busy independent pharmacies.</div>
             <ul className="plan-features">
               <li>✓ Up to 500 products</li>
@@ -185,7 +182,7 @@ export default function Landing() {
           <div className="pricing-card pricing-card-pro">
             <div className="plan-name">Pro</div>
             <div className="plan-price">₦700<span>/day</span></div>
-            <div className="plan-price-sub">₦21,000/month</div>
+            <div className="plan-price-sub">≈ ₦21,000/month</div>
             <div className="plan-desc">For high-volume pharmacies and growing chains.</div>
             <ul className="plan-features">
               <li>✓ Unlimited products</li>
@@ -221,10 +218,7 @@ export default function Landing() {
       {/* ── FOOTER ── */}
       <footer className="landing-footer">
         <div className="landing-logo">
-          <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="7" fill="#00C896"/>
-            <path d="M9 14h10M14 9v10" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
+          <img src="/logo.jpg" alt="PharmaGuard NG" className="landing-logo-img" />
           <span>PharmaGuard NG</span>
         </div>
         <p className="footer-copy">Built for Nigerian pharmacies. © {new Date().getFullYear()} PharmaGuard NG.</p>
@@ -262,6 +256,12 @@ export default function Landing() {
           font-size: 1rem;
           color: #e8f0ef;
           text-decoration: none;
+        }
+        .landing-logo-img {
+          width: 32px;
+          height: 32px;
+          object-fit: contain;
+          border-radius: 6px;
         }
         .landing-nav-links {
           display: flex;
