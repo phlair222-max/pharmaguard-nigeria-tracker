@@ -1,18 +1,14 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useStore, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
-import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User } from "lucide-react";
+import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, X } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
 
-// Tailwind's JIT compiler only picks up class names it can see literally in
-// source — a template string like `md:grid-cols-${n}` won't work because the
-// class never appears as a complete literal anywhere. This map keeps the
-// classes static and discoverable while still letting the grid column count
-// vary at runtime based on how many stat cards are visible.
 const GRID_COLS_MD: Record<number, string> = {
   1: "md:grid-cols-1",
   2: "md:grid-cols-2",
@@ -20,20 +16,62 @@ const GRID_COLS_MD: Record<number, string> = {
   4: "md:grid-cols-4",
 };
 
+// ── Expiry Banner ─────────────────────────────────────────────────────────────
+type BannerTier = { label: string; count: number; tone: "red" | "amber" | "yellow"; key: string };
+
+function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const visible = tiers.filter((t) => !dismissed.has(t.key) && t.count > 0);
+  if (visible.length === 0) return null;
+
+  const styles: Record<string, string> = {
+    red:    "border-destructive/60 bg-destructive/10 text-destructive",
+    amber:  "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    yellow: "border-yellow-500/60 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
+  };
+  const iconStyles: Record<string, string> = {
+    red:    "text-destructive",
+    amber:  "text-amber-500",
+    yellow: "text-yellow-500",
+  };
+
+  return (
+    <div className="space-y-2">
+      {visible.map((t) => (
+        <div
+          key={t.key}
+          className={`flex items-center justify-between rounded-lg border px-4 py-3 ${styles[t.tone]}`}
+        >
+          <Link to="/inventory?filter=near" className="flex items-center gap-3 flex-1 min-w-0">
+            <AlertTriangle className={`h-4 w-4 shrink-0 ${iconStyles[t.tone]}`} />
+            <span className="text-sm font-medium">
+              <span className="font-bold">{t.count} product{t.count !== 1 ? "s" : ""}</span>{" "}
+              {t.label}
+            </span>
+            <span className="text-xs opacity-70 hidden sm:inline">— tap to review</span>
+          </Link>
+          <button
+            onClick={() => setDismissed((prev) => new Set(prev).add(t.key))}
+            className="ml-3 shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+            aria-label={`Dismiss ${t.label} alert`}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const products = useStore((s) => s.products);
   const sales = useStore((s) => s.sales);
   const settings = useStore((s) => s.settings);
   const user = useStore((s) => s.user);
 
-  // ── Margin visibility ─────────────────────────────────────────────────
-  // Owners always see cost/profit/margin figures. Pharmacists see them only
-  // if explicitly granted via the "See Margins" toggle in Team settings.
-  // Cashiers never see cost/margin data, regardless of any toggle.
   const canSeeMargins =
     user?.memberRole === "Owner" ||
     (user?.memberRole === "Pharmacist" && !!user?.canViewMargins) ||
-    // Fallback for the pre-multi-tenant legacy "Admin" role (no memberRole yet)
     (!user?.memberRole && user?.role === "Admin");
 
   const todayStart = startOfDay(new Date()).getTime();
@@ -51,7 +89,17 @@ export default function Dashboard() {
 
   const lowStock = products.filter((p) => p.quantity <= p.reorderLevel);
   const expiredCount = products.filter((p) => daysUntil(p.expiry) < 0).length;
+
+  // ── Expiry buckets ────────────────────────────────────────────────────────
   const near30 = products.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; });
+  const near60 = products.filter((p) => { const d = daysUntil(p.expiry); return d > 30 && d <= 60; });
+  const near90 = products.filter((p) => { const d = daysUntil(p.expiry); return d > 60 && d <= 90; });
+
+  const expiryBannerTiers: BannerTier[] = [
+    { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed" },
+    { key: "amber",  count: near60.length, tone: "amber",  label: "expiring within 31–60 days — plan disposal soon" },
+    { key: "yellow", count: near90.length, tone: "yellow", label: "expiring within 61–90 days — monitor closely" },
+  ];
 
   const trend = Array.from({ length: 7 }).map((_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
@@ -68,7 +116,6 @@ export default function Dashboard() {
     .sort((a, b) => b.units - a.units)
     .slice(0, 10);
 
-  // ── Top stat row: Today's Profit only shown if margins are visible ─────
   const topStats = [
     { key: "sales", icon: Wallet, label: "Today's Sales", value: NGN(todayRevenue), accent: "primary", tip: "Total revenue collected today across all payment methods." },
     ...(canSeeMargins
@@ -78,7 +125,6 @@ export default function Dashboard() {
     { key: "avg", icon: Activity, label: "Daily Avg Sales (30 days)", value: NGN(dailyAvg), accent: "secondary", tip: "Average daily revenue over the last 30 days." },
   ];
 
-  // ── Stock stat row: Cost value & Potential margin only if margins visible ─
   const stockStats = [
     { key: "totalProducts", icon: Boxes, label: "Total Products", value: num(products.length), accent: "primary", tip: "Distinct SKUs currently in inventory." },
     ...(canSeeMargins
@@ -94,9 +140,8 @@ export default function Dashboard() {
     <TooltipProvider delayDuration={150}>
     <div className="space-y-6">
 
-      {/* Dashboard header — owner photo LEFT, title, nothing right */}
+      {/* Dashboard header */}
       <div className="flex items-center gap-3">
-        {/* Owner/Pharmacist photo — left of title */}
         {settings.ownerPhoto ? (
           <img
             src={settings.ownerPhoto}
@@ -113,6 +158,9 @@ export default function Dashboard() {
           <p className="text-sm text-muted-foreground">{settings.name} — Real-time overview</p>
         </div>
       </div>
+
+      {/* ── 90/60/30-day expiry banner ── */}
+      <ExpiryBanner tiers={expiryBannerTiers} />
 
       <div className={`grid grid-cols-2 gap-3 ${GRID_COLS_MD[topStats.length] || "md:grid-cols-4"}`}>
         {topStats.map((s) => (
