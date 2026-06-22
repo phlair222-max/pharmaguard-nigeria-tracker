@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useStore } from "@/lib/store";
 import { format, startOfDay } from "date-fns";
 import { FileDown, History, Search } from "lucide-react";
+import { usePlan } from "@/lib/store";
+import { UpgradePrompt } from "@/components/UpgradePrompt";
 
 export default function Audit() {
   const audit = useStore((s) => s.audit);
@@ -48,6 +50,9 @@ export default function Audit() {
     a.click();
   };
 
+
+  const plan = usePlan();
+  if (!plan.canAuditTrail) return <div className="p-6"><UpgradePrompt feature="Audit Trail" requiredPlan="basic" description="Full history of every change made in your pharmacy — who did what and when." /></div>;
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3">
