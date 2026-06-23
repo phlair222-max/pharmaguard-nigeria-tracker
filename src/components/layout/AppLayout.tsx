@@ -124,7 +124,7 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
       {!collapsed && (
         <div className="text-xs">
           <div className="font-medium text-sidebar-foreground">{user.username}</div>
-          <div className="text-sidebar-foreground/60">{user.role}</div>
+          <div className="text-sidebar-foreground/60">{user.memberRole ?? user.role}</div>
         </div>
       )}
       <Button
