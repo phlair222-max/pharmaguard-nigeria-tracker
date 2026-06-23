@@ -19,15 +19,24 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceIdx, setDeviceIdx] = useState(0);
 
+  // Use native browser API to list cameras — avoids ZXing version issues
+  const getVideoDevices = async (): Promise<MediaDeviceInfo[]> => {
+    try {
+      // Request permission first so labels are populated
+      await navigator.mediaDevices.getUserMedia({ video: true });
+      const all = await navigator.mediaDevices.enumerateDevices();
+      return all.filter((d) => d.kind === "videoinput");
+    } catch {
+      return [];
+    }
+  };
+
   const startScanner = async (devIdx: number) => {
     setError(null);
     setScanning(true);
 
     try {
-      const reader = new BrowserMultiFormatReader();
-      readerRef.current = reader;
-
-      const videoDevices = await BrowserMultiFormatReader.listVideoInputDevices();
+      const videoDevices = await getVideoDevices();
       setDevices(videoDevices);
 
       if (videoDevices.length === 0) {
@@ -36,14 +45,19 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
         return;
       }
 
-      // Prefer rear camera — look for "back" or "environment" in label
+      // Prefer rear camera
       const preferredIdx = videoDevices.findIndex((d) =>
         d.label.toLowerCase().includes("back") ||
         d.label.toLowerCase().includes("rear") ||
         d.label.toLowerCase().includes("environment")
       );
-      const useIdx = devIdx < videoDevices.length ? devIdx : (preferredIdx >= 0 ? preferredIdx : 0);
+      const useIdx = devIdx < videoDevices.length
+        ? devIdx
+        : preferredIdx >= 0 ? preferredIdx : 0;
       setDeviceIdx(useIdx);
+
+      const reader = new BrowserMultiFormatReader();
+      readerRef.current = reader;
 
       await reader.decodeFromVideoDevice(
         videoDevices[useIdx].deviceId,
@@ -56,7 +70,7 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
             onOpenChange(false);
           }
           if (err && !(err instanceof NotFoundException)) {
-            console.error("Scanner error:", err);
+            console.error("Scanner decode error:", err);
           }
         }
       );
@@ -116,12 +130,10 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
           {scanning && !error && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="relative w-56 h-36">
-                {/* Corner markers */}
                 <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-primary rounded-tl" />
                 <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-primary rounded-tr" />
                 <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-primary rounded-bl" />
                 <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-primary rounded-br" />
-                {/* Scan line animation */}
                 <div className="absolute left-1 right-1 h-0.5 bg-primary/80 animate-bounce" style={{ top: "50%" }} />
               </div>
               <div className="absolute bottom-3 left-0 right-0 text-center">
