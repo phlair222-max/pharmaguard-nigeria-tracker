@@ -1,303 +1,696 @@
-import { useEffect, useRef, useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScanLine, CameraOff, RefreshCw, Upload, ImageIcon } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera } from "lucide-react";
+import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
+import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
+import { format } from "date-fns";
+import { cn } from "@/lib/utils";
+import { BarcodeScanner } from "@/components/BarcodeScanner";
+import { ExpiryScanner } from "@/components/ExpiryScanner";
 
-interface BarcodeScannerProps {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  onScanned: (barcode: string) => void;
-  title?: string;
+const DEFAULT_CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances"];
+const DEFAULT_PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
+const CAT_KEY = "pg_custom_categories";
+const PACK_KEY = "pg_custom_pack_sizes";
+const loadCustom = (k: string): string[] => { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } };
+const saveCustom = (k: string, v: string[]) => localStorage.setItem(k, JSON.stringify(v));
+
+const empty: Omit<Product, "id"> = {
+  name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
+  reorderLevel: 10, reorderQuantity: 30, packSize: "10 Tablets",
+  costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
+  image: "", controlled: false,
+};
+
+async function fileToDataUrl(file: File, max = 400): Promise<string> {
+  const dataUrl = await new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+  return await new Promise<string>((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      c.getContext("2d")!.drawImage(img, 0, 0, w, h);
+      res(c.toDataURL("image/jpeg", 0.8));
+    };
+    img.onerror = () => res(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
-export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Barcode" }: BarcodeScannerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
-  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
-  const [tab, setTab] = useState<"camera" | "upload">("camera");
-  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
-  const [uploadProcessing, setUploadProcessing] = useState(false);
+export default function Inventory() {
+  const products = useStore((s) => s.products);
+  const sales = useStore((s) => s.sales);
+  const suppliers = useStore((s) => s.suppliers);
+  const [params, setParams] = useSearchParams();
+  const filter = params.get("filter") || "all";
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("all");
+  const [supFilter, setSupFilter] = useState("all");
+  const [expFilter, setExpFilter] = useState("all");
+  const [moveFilter, setMoveFilter] = useState("all");
+  const [editing, setEditing] = useState<Product | null>(null);
+  const [draft, setDraft] = useState<Omit<Product, "id">>(empty);
+  const [open, setOpen] = useState(false);
+  const [receiveFor, setReceiveFor] = useState<Product | null>(null);
+  const [receiveQty, setReceiveQty] = useState(0);
+  const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
+  const [dupWarn, setDupWarn] = useState<Product[] | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [customCats, setCustomCats] = useState<string[]>(() => loadCustom(CAT_KEY));
+  const [customPacks, setCustomPacks] = useState<string[]>(() => loadCustom(PACK_KEY));
+  const [newCat, setNewCat] = useState("");
+  const [newPack, setNewPack] = useState("");
 
-  const stopCamera = () => {
-    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
-    if (videoRef.current) videoRef.current.srcObject = null;
-    setScanning(false);
+  // ── Scanner states ──────────────────────────────────────────────────────────
+  const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
+  const [barcodeSearchOpen, setBarcodeSearchOpen] = useState(false);
+  const [expiryScanOpen, setExpiryScanOpen] = useState(false);
+
+  type SortKey = "name" | "generic" | "nafdac" | "packSize" | "batch" | "expiry" | "quantity" | "reorderLevel" | "reorderQuantity" | "costPrice" | "sellingPrice" | "supplier";
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const toggleSort = (k: SortKey) => {
+    if (sortKey === k) setSortDir((d) => d === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
   };
+  const CATEGORIES = useMemo(() => [...DEFAULT_CATEGORIES, ...customCats, "Others"], [customCats]);
+  const PACK_SIZES = useMemo(() => [...DEFAULT_PACK_SIZES, ...customPacks, "Others"], [customPacks]);
 
-  const startCamera = async (facing: "environment" | "user") => {
-    stopCamera();
-    setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setScanning(true);
+  const velocity = useMemo(() => salesVelocityMap(sales, 30), [sales]);
 
-      if ("BarcodeDetector" in window) {
-        const detector = new (window as any).BarcodeDetector({
-          formats: ["ean_13", "ean_8", "code_128", "code_39", "qr_code", "upc_a", "upc_e", "itf", "data_matrix"],
-        });
-        const detect = async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) {
-            rafRef.current = requestAnimationFrame(detect); return;
-          }
-          try {
-            const barcodes = await detector.detect(videoRef.current);
-            if (barcodes.length > 0) {
-              stopCamera(); onScanned(barcodes[0].rawValue); onOpenChange(false); return;
-            }
-          } catch { /* frame not ready */ }
-          rafRef.current = requestAnimationFrame(detect);
-        };
-        rafRef.current = requestAnimationFrame(detect);
-      } else {
-        try {
-          const { BrowserMultiFormatReader, NotFoundException } = await import("@zxing/library");
-          const reader = new BrowserMultiFormatReader();
-          reader.decodeFromStream(stream, videoRef.current!, (result, err) => {
-            if (result) { reader.reset(); stopCamera(); onScanned(result.getText()); onOpenChange(false); }
-            if (err && !(err instanceof NotFoundException)) console.warn("ZXing:", err);
-          });
-        } catch {
-          setError("Camera scanning not supported on this browser. Use the Upload tab.");
-          setScanning(false);
-        }
-      }
-    } catch (e: any) {
-      if (e?.name === "NotAllowedError") setError("Camera permission denied. Use the Upload tab.");
-      else if (e?.name === "NotFoundError") setError("No camera found. Use the Upload tab.");
-      else setError("Could not start camera. Use the Upload tab.");
-      setScanning(false);
-    }
-  };
-
-  const switchCamera = () => {
-    const next = facingMode === "environment" ? "user" : "environment";
-    setFacingMode(next);
-    startCamera(next);
-  };
-
-  // ── Image upload decode ───────────────────────────────────────────────────
-  const decodeImageFile = async (file: File) => {
-    setUploadProcessing(true);
-    setError(null);
-
-    // Read file as data URL and set preview
-    const dataUrl = await new Promise<string>((res, rej) => {
-      const fr = new FileReader();
-      fr.onload = () => res(fr.result as string);
-      fr.onerror = rej;
-      fr.readAsDataURL(file);
+  const list = useMemo(() => {
+    const filtered = products.filter((p) => {
+      const t = expiryTier(p.expiry);
+      const sold30 = velocity.get(p.id) || 0;
+      const speed = movementSpeed(sold30);
+      if (filter === "low" && p.quantity > p.reorderLevel) return false;
+      if (filter === "near" && t !== "red" && t !== "yellow") return false;
+      if (filter === "expired" && daysUntil(p.expiry) >= 0) return false;
+      if (filter === "controlled" && !p.controlled) return false;
+      if (cat !== "all" && p.category !== cat) return false;
+      if (supFilter !== "all" && p.supplierId !== supFilter && p.supplier !== supFilter) return false;
+      if (expFilter !== "all" && t !== expFilter) return false;
+      if (moveFilter !== "all" && speed !== moveFilter) return false;
+      const term = q.trim().toLowerCase();
+      if (!term) return true;
+      return p.name.toLowerCase().includes(term)
+        || p.generic.toLowerCase().includes(term)
+        || p.nafdac.toLowerCase().includes(term)
+        || p.batch.toLowerCase().includes(term);
     });
-    setUploadPreview(dataUrl);
+    const dir = sortDir === "asc" ? 1 : -1;
+    const numericKeys = new Set(["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"]);
+    return [...filtered].sort((a, b) => {
+      let av: any = (a as any)[sortKey];
+      let bv: any = (b as any)[sortKey];
+      if (sortKey === "expiry") { av = new Date(av).getTime() || 0; bv = new Date(bv).getTime() || 0; }
+      else if (numericKeys.has(sortKey)) { av = Number(av) || 0; bv = Number(bv) || 0; }
+      else { av = String(av ?? "").toLowerCase(); bv = String(bv ?? "").toLowerCase(); }
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir]);
 
-    // Wait a tick for the img element to render with the new src
-    await new Promise((r) => setTimeout(r, 100));
+  const openNew = () => { setEditing(null); setDraft(empty); setOpen(true); };
+  const openEdit = (p: Product) => { setEditing(p); setDraft({ ...p }); setOpen(true); };
+  const performSave = () => {
+    const final = { ...draft };
+    if (final.supplierId) {
+      const s = suppliers.find((x) => x.id === final.supplierId);
+      if (s) final.supplier = s.name;
+    }
+    if (editing) { store.updateProduct(editing.id, final); toast.success("Product updated"); }
+    else { store.addProduct(final); toast.success("Product added"); }
+    setOpen(false);
+    setDupWarn(null);
+  };
+  const save = () => {
+    if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+    if (!editing) {
+      const name = draft.name.trim().toLowerCase();
+      const dups = products.filter((p) => p.name.trim().toLowerCase() === name);
+      if (dups.length > 0) { setDupWarn(dups); return; }
+    }
+    performSave();
+  };
 
-    try {
-      // 1. Try native BarcodeDetector on the img element (Chrome Android — fast & reliable)
-      if ("BarcodeDetector" in window && imgRef.current) {
-        const detector = new (window as any).BarcodeDetector({
-          formats: ["ean_13", "ean_8", "code_128", "code_39", "qr_code", "upc_a", "upc_e", "itf", "data_matrix"],
-        });
-        try {
-          const barcodes = await detector.detect(imgRef.current);
-          if (barcodes.length > 0) {
-            const code = barcodes[0].rawValue;
-            setUploadProcessing(false);
-            toast.success(`Barcode: ${code}`);
-            onScanned(code); onOpenChange(false); return;
-          }
-        } catch (e) {
-          console.warn("BarcodeDetector failed:", e);
-        }
-      }
+  const onImageChange = async (file?: File | null) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
+    const url = await fileToDataUrl(file, 400);
+    setDraft((d) => ({ ...d, image: url }));
+  };
 
-      // 2. ZXing via DOM img element (Firefox, Safari, desktop Chrome)
-      const { BrowserMultiFormatReader } = await import("@zxing/library");
-      const zxing = new BrowserMultiFormatReader();
+  // ── Barcode scan handler ────────────────────────────────────────────────────
+  const onBarcodeScanned = (barcode: string) => {
+    setDraft((d) => ({ ...d, barcode }));
+    toast.success(`Barcode scanned: ${barcode}`);
+  };
 
-      if (imgRef.current) {
-        try {
-          const result = await zxing.decodeFromImageElement(imgRef.current);
-          const code = result.getText();
-          setUploadProcessing(false);
-          toast.success(`Barcode: ${code}`);
-          onScanned(code); onOpenChange(false); return;
-        } catch (e) {
-          console.warn("ZXing img element failed:", e);
-        }
-      }
-
-      // 3. ZXing via canvas at multiple scales
-      const img = new Image();
-      img.src = dataUrl;
-      await new Promise<void>((res) => { img.onload = () => res(); });
-
-      for (const scale of [1, 2, 1.5, 0.75]) {
-        try {
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.round(img.naturalWidth * scale);
-          canvas.height = Math.round(img.naturalHeight * scale);
-          const ctx = canvas.getContext("2d")!;
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-          // Put canvas in DOM briefly so ZXing can access it
-          canvas.style.display = "none";
-          document.body.appendChild(canvas);
-
-          try {
-            const result = await zxing.decodeFromCanvas(canvas);
-            document.body.removeChild(canvas);
-            const code = result.getText();
-            setUploadProcessing(false);
-            toast.success(`Barcode: ${code}`);
-            onScanned(code); onOpenChange(false); return;
-          } catch {
-            document.body.removeChild(canvas);
-          }
-        } catch { /* try next scale */ }
-      }
-
-      // All methods failed
-      setUploadProcessing(false);
-      setError("Could not read a barcode. Try a clearer photo — flat surface, good lighting, barcode fills the frame.");
-
-    } catch (e: any) {
-      setUploadProcessing(false);
-      setError("Decode failed: " + (e?.message || "unknown error"));
+  // ── Barcode search handler (Inventory search bar) ───────────────────────────
+  const onBarcodeSearch = (barcode: string) => {
+    const match = products.find((p) => p.barcode === barcode);
+    if (match) {
+      setQ(match.name);
+      toast.success(`Found: ${match.name}`);
+    } else {
+      setQ(barcode);
+      toast.info(`Barcode ${barcode} — no exact match, showing search results`);
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith("image/")) { toast.error("Please select an image file"); return; }
-    decodeImageFile(file);
-    e.target.value = "";
+  // ── Expiry scan handler ─────────────────────────────────────────────────────
+  const onExpiryScanConfirmed = (result: {
+    expiryDate: string;
+    productName?: string;
+    nafdac?: string;
+    batchNo?: string;
+  }) => {
+    setDraft((d) => ({
+      ...d,
+      expiry: result.expiryDate,
+      ...(result.productName && !d.name ? { name: result.productName } : {}),
+      ...(result.nafdac && !d.nafdac ? { nafdac: result.nafdac } : {}),
+      ...(result.batchNo && !d.batch ? { batch: result.batchNo } : {}),
+    }));
+    toast.success("Expiry date filled from scan");
   };
 
-  useEffect(() => {
-    if (open && tab === "camera") startCamera(facingMode);
-    else stopCamera();
-    if (!open) { setError(null); setUploadPreview(null); setUploadProcessing(false); }
-    return () => stopCamera();
-  }, [open, tab]);
+  const exportCSV = () => {
+    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled"];
+    const rows = products.map((p) => headers.map((h) => JSON.stringify((p as any)[h] ?? "")).join(","));
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `inventory-${format(new Date(), "yyyy-MM-dd")}.csv`; a.click();
+  };
+  const importCSV = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const [head, ...lines] = text.split(/\r?\n/).filter(Boolean);
+      const headers = head.split(",").map((s) => s.replace(/(^"|"$)/g, ""));
+      const rows = lines.map((ln) => {
+        const cols = ln.match(/(\"([^\"]|\"\")*\"|[^,]*)(,|$)/g)?.map((c) => c.replace(/,$/,"").replace(/^\"|\"$/g,"").replace(/""/g,'"')) || [];
+        const obj: any = { ...empty };
+        headers.forEach((h, i) => obj[h] = cols[i] ?? "");
+        ["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"].forEach((k) => obj[k] = Number(obj[k]) || 0);
+        if (headers.includes("controlled")) {
+          obj.controlled = ["true", "1", "yes"].includes(String(obj.controlled).trim().toLowerCase());
+        } else {
+          obj.controlled = obj.category === "Controlled Substances";
+        }
+        return obj as Omit<Product, "id">;
+      });
+      store.importProducts(rows);
+      toast.success(`Imported ${rows.length} products`);
+    };
+    reader.readAsText(file);
+  };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) stopCamera(); onOpenChange(o); }}>
-      <DialogContent className="max-w-sm p-0 overflow-hidden">
-        <DialogHeader className="px-4 pt-4 pb-2">
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <ScanLine className="h-4 w-4 text-primary" />
-            {title}
-          </DialogTitle>
-        </DialogHeader>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Inventory</h1>
+          <p className="text-sm text-muted-foreground">Manage products, batches, stock and expiry</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <label className="cursor-pointer">
+            <input type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files && importCSV(e.target.files[0])} />
+            <Button variant="outline" size="sm" asChild><span><Upload className="mr-2 h-4 w-4" />Import CSV</span></Button>
+          </label>
+          <Button variant="outline" size="sm" onClick={exportCSV}><Download className="mr-2 h-4 w-4" />Export CSV</Button>
+          <Button size="sm" onClick={openNew}><Plus className="mr-2 h-4 w-4" />Add Product</Button>
+        </div>
+      </div>
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as "camera" | "upload")} className="w-full">
-          <TabsList className="w-full rounded-none border-b grid grid-cols-2 h-9">
-            <TabsTrigger value="camera" className="text-xs">📷 Camera</TabsTrigger>
-            <TabsTrigger value="upload" className="text-xs">🖼️ Upload Image</TabsTrigger>
-          </TabsList>
-
-          {/* ── Camera tab ── */}
-          <TabsContent value="camera" className="mt-0">
-            <div className="relative bg-black" style={{ aspectRatio: "4/3" }}>
-              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline autoPlay />
-              {scanning && !error && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="relative w-56 h-36">
-                    <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-primary rounded-tl" />
-                    <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-primary rounded-tr" />
-                    <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-primary rounded-bl" />
-                    <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-primary rounded-br" />
-                    <div className="absolute left-1 right-1 h-0.5 bg-primary/80 animate-bounce" style={{ top: "50%" }} />
-                  </div>
-                  <div className="absolute bottom-3 left-0 right-0 text-center">
-                    <span className="text-xs text-white/80 bg-black/40 px-2 py-1 rounded">Point at barcode</span>
-                  </div>
-                </div>
-              )}
-              {error && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 gap-3 p-4">
-                  <CameraOff className="h-10 w-10 text-destructive" />
-                  <p className="text-center text-sm text-white">{error}</p>
-                  <Button size="sm" variant="outline" onClick={() => startCamera(facingMode)}>Try again</Button>
-                </div>
-              )}
+      <Card className="shadow-card">
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+              <div className="relative flex-1">
+                <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input placeholder="Search by name, generic, NAFDAC, batch..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+              </div>
+              <Button variant="outline" size="icon" title="Scan barcode to search" onClick={() => setBarcodeSearchOpen(true)}>
+                <ScanLine className="h-4 w-4" />
+              </Button>
             </div>
-            <div className="flex items-center justify-between px-4 py-3">
-              <p className="text-xs text-muted-foreground">{scanning ? "Scanning…" : "Camera stopped"}</p>
+            <Select value={cat} onValueChange={setCat}>
+              <SelectTrigger className="w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={supFilter} onValueChange={setSupFilter}>
+              <SelectTrigger className="w-[160px]"><SelectValue placeholder="Supplier" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Suppliers</SelectItem>
+                {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={expFilter} onValueChange={setExpFilter}>
+              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Expiry" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All expiry</SelectItem>
+                <SelectItem value="green">Safe (&gt;6mo)</SelectItem>
+                <SelectItem value="yellow">1–6 months</SelectItem>
+                <SelectItem value="red">≤30 days / Expired</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={moveFilter} onValueChange={setMoveFilter}>
+              <SelectTrigger className="w-[140px]"><SelectValue placeholder="Movement" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All movement</SelectItem>
+                <SelectItem value="Fast">Fast</SelectItem>
+                <SelectItem value="Medium">Medium</SelectItem>
+                <SelectItem value="Slow">Slow</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={filter} onValueChange={(v) => setParams(v === "all" ? {} : { filter: v })}>
+              <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All items</SelectItem>
+                <SelectItem value="low">Low stock</SelectItem>
+                <SelectItem value="near">Near expiry</SelectItem>
+                <SelectItem value="expired">Expired</SelectItem>
+                <SelectItem value="controlled">Controlled drugs</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto rounded-b-lg">
+            <Table className="min-w-[1100px]">
+              <TableHeader>
+                <TableRow>
+                  {(() => {
+                    const SortBtn = ({ k, label, align = "left" }: { k: SortKey; label: string; align?: "left" | "right" }) => (
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(k)}
+                        className={cn(
+                          "inline-flex items-center gap-1 hover:text-foreground transition-colors",
+                          align === "right" && "justify-end w-full",
+                          sortKey === k && "text-foreground font-semibold"
+                        )}
+                      >
+                        {label}
+                        {sortKey === k
+                          ? (sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)
+                          : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+                      </button>
+                    );
+                    return <>
+                      <TableHead className="w-[52px] pl-4">Img</TableHead>
+                      <TableHead className="min-w-[180px]"><SortBtn k="name" label="Product" /></TableHead>
+                      <TableHead className="min-w-[90px]"><SortBtn k="batch" label="Batch" /></TableHead>
+                      <TableHead className="min-w-[110px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
+                      <TableHead className="min-w-[80px]">Status</TableHead>
+                      <TableHead className="text-right min-w-[70px]"><SortBtn k="quantity" label="Stock" align="right" /></TableHead>
+                      <TableHead className="text-right min-w-[70px]"><SortBtn k="reorderLevel" label="Reorder" align="right" /></TableHead>
+                      <TableHead className="min-w-[90px]">Movement</TableHead>
+                      <TableHead className="text-right min-w-[90px]"><SortBtn k="costPrice" label="Cost" align="right" /></TableHead>
+                      <TableHead className="text-right min-w-[90px]"><SortBtn k="sellingPrice" label="Price" align="right" /></TableHead>
+                      <TableHead className="min-w-[100px]"><SortBtn k="supplier" label="Supplier" /></TableHead>
+                      <TableHead className="w-[100px]"></TableHead>
+                    </>;
+                  })()}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {list.length === 0 && (
+                  <TableRow><TableCell colSpan={16} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
+                )}
+                {list.map((p) => {
+                  const tier = expiryTier(p.expiry);
+                  const days = daysUntil(p.expiry);
+                  const low = p.quantity <= p.reorderLevel;
+                  const sold30 = velocity.get(p.id) || 0;
+                  const speed = movementSpeed(sold30);
+                  const tierLabel = tier === "red" ? (days < 0 ? "Expired" : "Critical") : tier === "yellow" ? "Warning" : "Safe";
+                  return (
+                    <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
+                      <TableCell className="pl-4">
+                        {p.image ? (
+                          <img src={p.image} alt={p.name} className="h-9 w-9 rounded-md object-cover border" />
+                        ) : (
+                          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-4 w-4" /></div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium flex items-center gap-1.5 leading-tight">
+                          {p.name}
+                          {p.controlled && <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive" title="Controlled drug" />}
+                          {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5 space-x-2">
+                          <span>{p.category}</span>
+                          {p.generic && <span>· {p.generic}</span>}
+                          {p.nafdac && <span>· {p.nafdac}</span>}
+                          {p.packSize && <span>· {p.packSize}</span>}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{p.batch}</TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">
+                        <div>{format(new Date(p.expiry), "dd MMM yyyy")}</div>
+                        <div className="text-[11px] text-muted-foreground">{days < 0 ? `${-days}d ago` : `${days}d left`}</div>
+                      </TableCell>
+                      <TableCell>
+                        <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold", expiryBadgeClass(tier))}>
+                          <span className={cn("h-2 w-2 rounded-full", tier === "red" ? "bg-destructive" : tier === "yellow" ? "bg-warning" : "bg-success")} />
+                          {tierLabel}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={cn("font-semibold", low && "text-destructive")}>{p.quantity}</span>
+                        {low && <div className="text-[10px] text-destructive">LOW STOCK</div>}
+                      </TableCell>
+                      <TableCell className="text-right text-xs">{p.reorderLevel}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={movementBadgeClass(speed)}>{speed}</Badge>
+                        <div className="text-[10px] text-muted-foreground">{sold30}/30d</div>
+                      </TableCell>
+                      <TableCell className="text-right text-xs">{p.costPrice != null ? NGN(p.costPrice) : <span className="text-muted-foreground">—</span>}</TableCell>
+                      <TableCell className="text-right font-medium">{NGN(p.sellingPrice)}</TableCell>
+                      <TableCell className="text-xs">{p.supplier}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button size="icon" variant="ghost" title="Receive stock" onClick={() => { setReceiveFor(p); setReceiveQty(p.reorderQuantity || 0); }}><PackagePlus className="h-4 w-4" /></Button>
+                          <Button size="icon" variant="ghost" title="Edit" onClick={() => openEdit(p)}><Pencil className="h-4 w-4" /></Button>
+                          <Button size="icon" variant="ghost" title="Delete" onClick={() => setConfirmDelete(p)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Add / Edit Product Dialog ── */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editing ? "Edit Product" : "Add Product"}</DialogTitle></DialogHeader>
+
+          <div className="mb-3 flex items-center gap-4 rounded-lg border bg-muted/30 p-3">
+            {draft.image ? (
+              <img src={draft.image} alt="preview" className="h-20 w-20 rounded-md object-cover border" />
+            ) : (
+              <div className="flex h-20 w-20 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-6 w-6" /></div>
+            )}
+            <div className="flex-1">
+              <Label className="text-xs">Product Image</Label>
+              <div className="flex gap-2 mt-1">
+                <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onImageChange(e.target.files?.[0])} />
+                <Button type="button" size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                  <Upload className="mr-1.5 h-3.5 w-3.5" />Upload image
+                </Button>
+                {draft.image && <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, image: "" })}>Remove</Button>}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">JPG/PNG, under 5MB. Auto-resized.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Product name *" v={draft.name} on={(v) => setDraft({ ...draft, name: v })} />
+            <Field label="Generic name" v={draft.generic} on={(v) => setDraft({ ...draft, generic: v })} />
+            <Field label="NAFDAC Registration No." v={draft.nafdac} on={(v) => setDraft({ ...draft, nafdac: v })} />
+            <Field label="Batch / Lot No." v={draft.batch} on={(v) => setDraft({ ...draft, batch: v })} />
+
+            {/* ── Expiry date field with scan button ── */}
+            <div>
+              <Label>Expiry date *</Label>
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={switchCamera}>
-                  <RefreshCw className="h-3.5 w-3.5 mr-1" /> Flip
+                <Input
+                  type="date"
+                  value={draft.expiry}
+                  onChange={(e) => setDraft({ ...draft, expiry: e.target.value })}
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  title="Scan expiry date with camera"
+                  onClick={() => setExpiryScanOpen(true)}
+                  className="shrink-0"
+                >
+                  <Camera className="h-4 w-4" />
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+              </div>
+              {draft.expiry && (
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {daysUntil(draft.expiry) < 0
+                    ? `Expired ${-daysUntil(draft.expiry)}d ago`
+                    : `${daysUntil(draft.expiry)} days remaining`}
+                </p>
+              )}
+            </div>
+
+            <Field label="Last restocked" type="date" v={draft.lastRestocked || ""} on={(v) => setDraft({ ...draft, lastRestocked: v })} />
+            <div>
+              <Label>Therapeutic Category</Label>
+              <Select
+                value={CATEGORIES.includes(draft.category) ? draft.category : "Others"}
+                onValueChange={(v) => {
+                  if (v === "Others") { setDraft({ ...draft, category: "" }); setNewCat(""); }
+                  else setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" ? true : draft.controlled });
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+              {(!CATEGORIES.includes(draft.category) || (draft.category === "" )) && (
+                <div className="mt-2 flex gap-2">
+                  <Input placeholder="Enter custom category" value={newCat || draft.category} onChange={(e) => { setNewCat(e.target.value); setDraft({ ...draft, category: e.target.value }); }} />
+                  <Button type="button" size="sm" variant="outline" onClick={() => {
+                    const v = (newCat || draft.category).trim();
+                    if (!v) return;
+                    if (!customCats.includes(v) && !DEFAULT_CATEGORIES.includes(v)) {
+                      const next = [...customCats, v]; setCustomCats(next); saveCustom(CAT_KEY, next);
+                    }
+                    setDraft({ ...draft, category: v }); setNewCat("");
+                    toast.success("Category saved");
+                  }}>Save</Button>
+                </div>
+              )}
+            </div>
+            <div className="col-span-2 flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+              <div className="flex items-start gap-2.5">
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <div>
+                  <Label className="cursor-pointer" htmlFor="controlled-toggle">Controlled Drug (Poisons Register)</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Tracks this product in the Poisons / Controlled Register and requires a dispensing form (patient, prescriber, Rx ref) at POS checkout.
+                  </p>
+                </div>
+              </div>
+              <Switch
+                id="controlled-toggle"
+                checked={!!draft.controlled}
+                onCheckedChange={(v) => setDraft({ ...draft, controlled: v })}
+              />
+            </div>
+            <div>
+              <Label>Pack Size / Unit</Label>
+              <Select
+                value={PACK_SIZES.includes(draft.packSize) ? draft.packSize : "Others"}
+                onValueChange={(v) => {
+                  if (v === "Others") { setDraft({ ...draft, packSize: "" }); setNewPack(""); }
+                  else setDraft({ ...draft, packSize: v });
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{PACK_SIZES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+              {(!PACK_SIZES.includes(draft.packSize) || draft.packSize === "") && (
+                <div className="mt-2 flex gap-2">
+                  <Input placeholder="Enter custom pack size" value={newPack || draft.packSize} onChange={(e) => { setNewPack(e.target.value); setDraft({ ...draft, packSize: e.target.value }); }} />
+                  <Button type="button" size="sm" variant="outline" onClick={() => {
+                    const v = (newPack || draft.packSize).trim();
+                    if (!v) return;
+                    if (!customPacks.includes(v) && !DEFAULT_PACK_SIZES.includes(v)) {
+                      const next = [...customPacks, v]; setCustomPacks(next); saveCustom(PACK_KEY, next);
+                    }
+                    setDraft({ ...draft, packSize: v }); setNewPack("");
+                    toast.success("Pack size saved");
+                  }}>Save</Button>
+                </div>
+              )}
+            </div>
+            <Field label="Quantity in stock" type="number" v={String(draft.quantity)} on={(v) => setDraft({ ...draft, quantity: +v })} />
+            <Field label="Reorder Level" type="number" v={String(draft.reorderLevel)} on={(v) => setDraft({ ...draft, reorderLevel: +v })} />
+            <Field label="Reorder Quantity" type="number" v={String(draft.reorderQuantity)} on={(v) => setDraft({ ...draft, reorderQuantity: +v })} />
+            <Field label="Cost price (₦)" type="number" v={draft.costPrice != null ? String(draft.costPrice) : ""} on={(v) => setDraft({ ...draft, costPrice: +v })} disabled={draft.costPrice == null} />
+            <Field label="Selling price (₦)" type="number" v={String(draft.sellingPrice)} on={(v) => setDraft({ ...draft, sellingPrice: +v })} />
+            <div>
+              <Label>Supplier</Label>
+              <Select value={draft.supplierId || ""} onValueChange={(v) => setDraft({ ...draft, supplierId: v })}>
+                <SelectTrigger><SelectValue placeholder={draft.supplier || "Select supplier"} /></SelectTrigger>
+                <SelectContent>
+                  {suppliers.length === 0 && <div className="px-2 py-1 text-xs text-muted-foreground">Add suppliers first</div>}
+                  {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* ── Barcode field with scan button ── */}
+            <div>
+              <Label>Barcode (optional)</Label>
+              <div className="flex gap-2">
+                <Input
+                  value={draft.barcode || ""}
+                  onChange={(e) => setDraft({ ...draft, barcode: e.target.value })}
+                  placeholder="Scan or type barcode"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  title="Scan barcode with camera"
+                  onClick={() => setBarcodeScanOpen(true)}
+                  className="shrink-0"
+                >
+                  <ScanLine className="h-4 w-4" />
+                </Button>
               </div>
             </div>
-          </TabsContent>
 
-          {/* ── Upload tab ── */}
-          <TabsContent value="upload" className="mt-0 px-4 py-4">
-            <input ref={fileInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileChange} />
+            <div className="col-span-2">
+              <Label>Description</Label>
+              <Textarea rows={2} value={draft.description || ""} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button onClick={save}>{editing ? "Save changes" : "Add product"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-            {/* Hidden img element used by ZXing for DOM-based decode */}
-            {uploadPreview && (
-              <img ref={imgRef} src={uploadPreview} alt="" className="hidden" crossOrigin="anonymous" />
-            )}
+      {/* ── Receive Stock Dialog ── */}
+      <Dialog open={!!receiveFor} onOpenChange={(o) => !o && setReceiveFor(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Receive stock — {receiveFor?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            <Label>Quantity received</Label>
+            <Input type="number" value={receiveQty} onChange={(e) => setReceiveQty(+e.target.value)} />
+            <div className="text-xs text-muted-foreground">Current: {receiveFor?.quantity} · New total: {(receiveFor?.quantity || 0) + receiveQty}</div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiveFor(null)}>Cancel</Button>
+            <Button onClick={() => { if (receiveFor && receiveQty > 0) { store.receiveStock(receiveFor.id, receiveQty); toast.success("Stock received"); setReceiveFor(null); } }}>Confirm</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-            {!uploadPreview && !uploadProcessing && (
-              <div
-                className="border-2 border-dashed border-muted-foreground/30 rounded-lg p-8 flex flex-col items-center gap-3 cursor-pointer hover:border-primary/50 transition-colors"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
-                <div className="text-center">
-                  <p className="text-sm font-medium">Tap to snap or upload</p>
-                  <p className="text-xs text-muted-foreground mt-1">Take a photo of the barcode or select from gallery</p>
+      {/* ── Delete Confirm ── */}
+      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this product?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Permanently delete <span className="font-semibold">{confirmDelete?.name}</span> (Batch {confirmDelete?.batch})? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => { if (confirmDelete) { store.deleteProduct(confirmDelete.id); toast.success("Product deleted"); setConfirmDelete(null); } }}
+            >Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Duplicate Warning ── */}
+      <AlertDialog open={!!dupWarn} onOpenChange={(o) => !o && setDupWarn(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-warning" />Possible duplicate product</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>A product named <span className="font-semibold">{draft.name}</span> already exists:</p>
+                <div className="rounded-md border bg-muted/40 p-2 text-xs space-y-1">
+                  {dupWarn?.map((p) => (
+                    <div key={p.id} className="flex flex-wrap gap-x-3">
+                      <span>Batch: <span className="font-medium">{p.batch || "—"}</span></span>
+                      <span>Expiry: <span className="font-medium">{p.expiry || "—"}</span></span>
+                      <span>Stock: <span className="font-medium">{p.quantity}</span></span>
+                    </div>
+                  ))}
                 </div>
-                <Button size="sm" variant="outline" className="mt-1">
-                  <Upload className="h-3.5 w-3.5 mr-1" /> Choose Image
-                </Button>
+                <p className="text-xs">If this is the same drug, use <span className="font-medium">Receive Stock</span> instead of creating a new entry.</p>
               </div>
-            )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Go back</AlertDialogCancel>
+            <AlertDialogAction onClick={performSave}>Add anyway</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-            {uploadProcessing && (
-              <div className="flex flex-col items-center gap-3 py-8">
-                <div className="h-8 w-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                <p className="text-sm text-muted-foreground">Reading barcode…</p>
-              </div>
-            )}
+      {/* ── Barcode Scanner ── */}
+      <BarcodeScanner
+        open={barcodeScanOpen}
+        onOpenChange={setBarcodeScanOpen}
+        onScanned={onBarcodeScanned}
+        title="Scan Product Barcode"
+      />
 
-            {uploadPreview && !uploadProcessing && (
-              <div className="flex flex-col items-center gap-3">
-                <img src={uploadPreview} alt="Uploaded" className="max-h-48 rounded-lg object-contain border" />
-                {error && <p className="text-sm text-destructive text-center">{error}</p>}
-                <div className="flex gap-2 w-full">
-                  <Button size="sm" variant="outline" className="flex-1"
-                    onClick={() => { setUploadPreview(null); setError(null); fileInputRef.current?.click(); }}>
-                    Try another image
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-                </div>
-              </div>
-            )}
-          </TabsContent>
-        </Tabs>
-      </DialogContent>
-    </Dialog>
+      {/* ── Barcode Search Scanner ── */}
+      <BarcodeScanner
+        open={barcodeSearchOpen}
+        onOpenChange={setBarcodeSearchOpen}
+        onScanned={onBarcodeSearch}
+        title="Scan to Search Inventory"
+      />
+
+      {/* ── Expiry Scanner ── */}
+      <ExpiryScanner
+        open={expiryScanOpen}
+        onOpenChange={setExpiryScanOpen}
+        onConfirm={onExpiryScanConfirmed}
+      />
+    </div>
+  );
+}
+
+function Field({ label, v, on, type = "text", disabled }: { label: string; v: string; on: (v: string) => void; type?: string; disabled?: boolean }) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      <Input type={type} value={v} onChange={(e) => on(e.target.value)} disabled={disabled}
+        className={disabled ? "opacity-40 cursor-not-allowed" : ""} placeholder={disabled ? "Hidden" : ""} />
+    </div>
   );
 }
