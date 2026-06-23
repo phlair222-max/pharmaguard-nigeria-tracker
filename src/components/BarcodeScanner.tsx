@@ -14,7 +14,6 @@ interface BarcodeScannerProps {
 
 export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Barcode" }: BarcodeScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -40,10 +39,7 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
         video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
       setScanning(true);
 
       if ("BarcodeDetector" in window) {
@@ -51,15 +47,11 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
           formats: ["ean_13", "ean_8", "code_128", "code_39", "qr_code", "upc_a", "upc_e", "itf", "data_matrix"],
         });
         const detect = async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) {
-            rafRef.current = requestAnimationFrame(detect); return;
-          }
+          if (!videoRef.current || videoRef.current.readyState < 2) { rafRef.current = requestAnimationFrame(detect); return; }
           try {
             const barcodes = await detector.detect(videoRef.current);
-            if (barcodes.length > 0) {
-              stopCamera(); onScanned(barcodes[0].rawValue); onOpenChange(false); return;
-            }
-          } catch { /* frame not ready */ }
+            if (barcodes.length > 0) { stopCamera(); onScanned(barcodes[0].rawValue); onOpenChange(false); return; }
+          } catch { }
           rafRef.current = requestAnimationFrame(detect);
         };
         rafRef.current = requestAnimationFrame(detect);
@@ -72,7 +64,7 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
             if (err && !(err instanceof NotFoundException)) console.warn("ZXing:", err);
           });
         } catch {
-          setError("Camera scanning not supported on this browser. Use the Upload tab.");
+          setError("Camera scanning not supported. Use the Upload tab.");
           setScanning(false);
         }
       }
@@ -90,12 +82,11 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
     startCamera(next);
   };
 
-  // ── Image upload decode ───────────────────────────────────────────────────
+  // ── Image upload decode via Quagga2 ──────────────────────────────────────
   const decodeImageFile = async (file: File) => {
     setUploadProcessing(true);
     setError(null);
 
-    // Read file as data URL and set preview
     const dataUrl = await new Promise<string>((res, rej) => {
       const fr = new FileReader();
       fr.onload = () => res(fr.result as string);
@@ -104,79 +95,85 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
     });
     setUploadPreview(dataUrl);
 
-    // Wait a tick for the img element to render with the new src
-    await new Promise((r) => setTimeout(r, 100));
-
     try {
-      // 1. Try native BarcodeDetector on the img element (Chrome Android — fast & reliable)
-      if ("BarcodeDetector" in window && imgRef.current) {
+      // 1. Try native BarcodeDetector first (Chrome/Android — instant)
+      if ("BarcodeDetector" in window) {
         const detector = new (window as any).BarcodeDetector({
           formats: ["ean_13", "ean_8", "code_128", "code_39", "qr_code", "upc_a", "upc_e", "itf", "data_matrix"],
         });
+        const img = new Image();
+        await new Promise<void>((res) => { img.onload = () => res(); img.src = dataUrl; });
         try {
-          const barcodes = await detector.detect(imgRef.current);
+          const barcodes = await detector.detect(img);
           if (barcodes.length > 0) {
-            const code = barcodes[0].rawValue;
             setUploadProcessing(false);
-            toast.success(`Barcode: ${code}`);
-            onScanned(code); onOpenChange(false); return;
+            toast.success(`Barcode: ${barcodes[0].rawValue}`);
+            onScanned(barcodes[0].rawValue); onOpenChange(false); return;
           }
-        } catch (e) {
-          console.warn("BarcodeDetector failed:", e);
-        }
+        } catch (e) { console.warn("BarcodeDetector:", e); }
       }
 
-      // 2. ZXing via DOM img element (Firefox, Safari, desktop Chrome)
-      const { BrowserMultiFormatReader } = await import("@zxing/library");
-      const zxing = new BrowserMultiFormatReader();
+      // 2. Quagga2 — purpose-built for still image barcode detection
+      const Quagga = (await import("@ericblade/quagga2")).default;
 
-      if (imgRef.current) {
-        try {
-          const result = await zxing.decodeFromImageElement(imgRef.current);
-          const code = result.getText();
-          setUploadProcessing(false);
-          toast.success(`Barcode: ${code}`);
-          onScanned(code); onOpenChange(false); return;
-        } catch (e) {
-          console.warn("ZXing img element failed:", e);
-        }
-      }
-
-      // 3. ZXing via canvas at multiple scales
-      const img = new Image();
-      img.src = dataUrl;
-      await new Promise<void>((res) => { img.onload = () => res(); });
-
-      for (const scale of [1, 2, 1.5, 0.75]) {
-        try {
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.round(img.naturalWidth * scale);
-          canvas.height = Math.round(img.naturalHeight * scale);
-          const ctx = canvas.getContext("2d")!;
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-          // Put canvas in DOM briefly so ZXing can access it
-          canvas.style.display = "none";
-          document.body.appendChild(canvas);
-
-          try {
-            const result = await zxing.decodeFromCanvas(canvas);
-            document.body.removeChild(canvas);
-            const code = result.getText();
-            setUploadProcessing(false);
-            toast.success(`Barcode: ${code}`);
-            onScanned(code); onOpenChange(false); return;
-          } catch {
-            document.body.removeChild(canvas);
+      const result = await new Promise<string | null>((resolve) => {
+        Quagga.decodeSingle(
+          {
+            src: dataUrl,
+            numOfWorkers: 0,
+            inputStream: { size: 800 },
+            decoder: {
+              readers: [
+                "ean_reader", "ean_8_reader", "code_128_reader",
+                "code_39_reader", "upc_reader", "upc_e_reader",
+                "i2of5_reader", "2of5_reader", "code_93_reader",
+              ],
+            },
+            locate: true,
+          },
+          (res) => {
+            if (res?.codeResult?.code) resolve(res.codeResult.code);
+            else resolve(null);
           }
-        } catch { /* try next scale */ }
+        );
+      });
+
+      if (result) {
+        setUploadProcessing(false);
+        toast.success(`Barcode: ${result}`);
+        onScanned(result); onOpenChange(false); return;
       }
 
-      // All methods failed
+      // 3. Quagga2 retry at higher resolution
+      const result2 = await new Promise<string | null>((resolve) => {
+        Quagga.decodeSingle(
+          {
+            src: dataUrl,
+            numOfWorkers: 0,
+            inputStream: { size: 1600 },
+            decoder: {
+              readers: ["ean_reader", "ean_8_reader", "code_128_reader", "upc_reader"],
+            },
+            locate: true,
+          },
+          (res) => {
+            if (res?.codeResult?.code) resolve(res.codeResult.code);
+            else resolve(null);
+          }
+        );
+      });
+
+      if (result2) {
+        setUploadProcessing(false);
+        toast.success(`Barcode: ${result2}`);
+        onScanned(result2); onOpenChange(false); return;
+      }
+
       setUploadProcessing(false);
-      setError("Could not read a barcode. Try a clearer photo — flat surface, good lighting, barcode fills the frame.");
+      setError("Could not read a barcode. Try a clearer photo — barcode fills the frame, good lighting, flat surface.");
 
     } catch (e: any) {
+      console.error("Decode error:", e);
       setUploadProcessing(false);
       setError("Decode failed: " + (e?.message || "unknown error"));
     }
@@ -213,7 +210,7 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
             <TabsTrigger value="upload" className="text-xs">🖼️ Upload Image</TabsTrigger>
           </TabsList>
 
-          {/* ── Camera tab ── */}
+          {/* Camera tab */}
           <TabsContent value="camera" className="mt-0">
             <div className="relative bg-black" style={{ aspectRatio: "4/3" }}>
               <video ref={videoRef} className="w-full h-full object-cover" muted playsInline autoPlay />
@@ -250,14 +247,9 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
             </div>
           </TabsContent>
 
-          {/* ── Upload tab ── */}
+          {/* Upload tab */}
           <TabsContent value="upload" className="mt-0 px-4 py-4">
             <input ref={fileInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileChange} />
-
-            {/* Hidden img element used by ZXing for DOM-based decode */}
-            {uploadPreview && (
-              <img ref={imgRef} src={uploadPreview} alt="" className="hidden" crossOrigin="anonymous" />
-            )}
 
             {!uploadPreview && !uploadProcessing && (
               <div
@@ -267,7 +259,7 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
                 <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
                 <div className="text-center">
                   <p className="text-sm font-medium">Tap to snap or upload</p>
-                  <p className="text-xs text-muted-foreground mt-1">Take a photo of the barcode or select from gallery</p>
+                  <p className="text-xs text-muted-foreground mt-1">Take a photo or select from gallery</p>
                 </div>
                 <Button size="sm" variant="outline" className="mt-1">
                   <Upload className="h-3.5 w-3.5 mr-1" /> Choose Image
