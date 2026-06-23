@@ -39,13 +39,11 @@ function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 px-2 py-3">
-          {settings.logo ? (
-            <img src={settings.logo} alt="logo" className="h-9 w-9 rounded-lg object-cover border bg-white shadow-elevated" />
-          ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-elevated">
-              <Pill className="h-5 w-5" />
-            </div>
-          )}
+          <img
+            src={settings.logo || "/logo.jpg"}
+            alt="logo"
+            className="h-9 w-9 rounded-lg object-cover border bg-white shadow-elevated"
+          />
           {!collapsed && (
             <div className="leading-tight min-w-0">
               <div className="font-semibold text-sidebar-foreground truncate">{settings.name || "PharmaGuard NG"}</div>
