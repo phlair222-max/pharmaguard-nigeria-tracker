@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { ScanLine, CameraOff, RefreshCw } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScanLine, CameraOff, RefreshCw, Upload, ImageIcon } from "lucide-react";
+import { toast } from "sonner";
 
 interface BarcodeScannerProps {
   open: boolean;
@@ -14,9 +16,13 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const [tab, setTab] = useState<"camera" | "upload">("camera");
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [uploadProcessing, setUploadProcessing] = useState(false);
 
   const stopCamera = () => {
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
@@ -42,7 +48,6 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
 
       setScanning(true);
 
-      // Use BarcodeDetector if available (Chrome Android, Safari 17+)
       if ("BarcodeDetector" in window) {
         const detector = new (window as any).BarcodeDetector({
           formats: ["ean_13", "ean_8", "code_128", "code_39", "qr_code", "upc_a", "upc_e", "itf", "data_matrix"],
@@ -68,12 +73,9 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
         rafRef.current = requestAnimationFrame(detect);
 
       } else {
-        // Fallback: dynamically import ZXing only if BarcodeDetector not available
         try {
           const { BrowserMultiFormatReader, NotFoundException } = await import("@zxing/library");
           const reader = new BrowserMultiFormatReader();
-
-          // decodeFromStream works without listVideoInputDevices
           reader.decodeFromStream(stream, videoRef.current!, (result, err) => {
             if (result) {
               reader.reset();
@@ -85,16 +87,16 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
               console.warn("ZXing decode error:", err);
             }
           });
-        } catch (zxingErr: any) {
-          setError("Barcode scanning is not supported on this browser. Try Chrome on Android.");
+        } catch {
+          setError("Barcode scanning is not supported on this browser. Try Chrome on Android or use the Upload tab.");
           setScanning(false);
         }
       }
     } catch (e: any) {
       if (e?.name === "NotAllowedError") {
-        setError("Camera permission denied. Please allow camera access in your browser settings.");
+        setError("Camera permission denied. Use the Upload tab instead.");
       } else if (e?.name === "NotFoundError") {
-        setError("No camera found on this device.");
+        setError("No camera found. Use the Upload tab instead.");
       } else {
         setError("Could not start camera: " + (e?.message || "unknown error"));
       }
@@ -108,15 +110,82 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
     startCamera(next);
   };
 
+  // ── Image upload decode ───────────────────────────────────────────────────
+  const decodeImageFile = async (file: File) => {
+    setUploadProcessing(true);
+    setError(null);
+
+    // Show preview
+    const reader = new FileReader();
+    reader.onload = (e) => setUploadPreview(e.target?.result as string);
+    reader.readAsDataURL(file);
+
+    try {
+      // Try BarcodeDetector first (fastest)
+      if ("BarcodeDetector" in window) {
+        const detector = new (window as any).BarcodeDetector({
+          formats: ["ean_13", "ean_8", "code_128", "code_39", "qr_code", "upc_a", "upc_e", "itf", "data_matrix"],
+        });
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        await new Promise<void>((res) => { img.onload = () => res(); img.src = url; });
+        const barcodes = await detector.detect(img);
+        URL.revokeObjectURL(url);
+        if (barcodes.length > 0) {
+          const code = barcodes[0].rawValue;
+          setUploadProcessing(false);
+          toast.success(`Barcode decoded: ${code}`);
+          onScanned(code);
+          onOpenChange(false);
+          return;
+        }
+      }
+
+      // Fallback: ZXing on canvas
+      const { BrowserMultiFormatReader } = await import("@zxing/library");
+      const zxing = new BrowserMultiFormatReader();
+      const url = URL.createObjectURL(file);
+      try {
+        const result = await zxing.decodeFromImageUrl(url);
+        URL.revokeObjectURL(url);
+        const code = result.getText();
+        setUploadProcessing(false);
+        toast.success(`Barcode decoded: ${code}`);
+        onScanned(code);
+        onOpenChange(false);
+      } catch {
+        URL.revokeObjectURL(url);
+        setUploadProcessing(false);
+        setError("Could not read a barcode from this image. Try a clearer photo with better lighting.");
+      }
+    } catch (e: any) {
+      setUploadProcessing(false);
+      setError("Decode failed: " + (e?.message || "unknown error"));
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { toast.error("Please select an image file"); return; }
+    decodeImageFile(file);
+    // Reset so same file can be selected again
+    e.target.value = "";
+  };
+
   useEffect(() => {
-    if (open) {
+    if (open && tab === "camera") {
       startCamera(facingMode);
     } else {
       stopCamera();
+    }
+    if (!open) {
       setError(null);
+      setUploadPreview(null);
+      setUploadProcessing(false);
     }
     return () => stopCamera();
-  }, [open]);
+  }, [open, tab]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) stopCamera(); onOpenChange(o); }}>
@@ -128,42 +197,103 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
           </DialogTitle>
         </DialogHeader>
 
-        <div className="relative bg-black" style={{ aspectRatio: "4/3" }}>
-          <video ref={videoRef} className="w-full h-full object-cover" muted playsInline autoPlay />
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "camera" | "upload")} className="w-full">
+          <TabsList className="w-full rounded-none border-b grid grid-cols-2 h-9">
+            <TabsTrigger value="camera" className="text-xs">📷 Camera</TabsTrigger>
+            <TabsTrigger value="upload" className="text-xs">🖼️ Upload Image</TabsTrigger>
+          </TabsList>
 
-          {scanning && !error && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="relative w-56 h-36">
-                <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-primary rounded-tl" />
-                <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-primary rounded-tr" />
-                <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-primary rounded-bl" />
-                <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-primary rounded-br" />
-                <div className="absolute left-1 right-1 h-0.5 bg-primary/80 animate-bounce" style={{ top: "50%" }} />
-              </div>
-              <div className="absolute bottom-3 left-0 right-0 text-center">
-                <span className="text-xs text-white/80 bg-black/40 px-2 py-1 rounded">Point at barcode</span>
+          {/* ── Camera tab ── */}
+          <TabsContent value="camera" className="mt-0">
+            <div className="relative bg-black" style={{ aspectRatio: "4/3" }}>
+              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline autoPlay />
+
+              {scanning && !error && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="relative w-56 h-36">
+                    <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-primary rounded-tl" />
+                    <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-primary rounded-tr" />
+                    <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-primary rounded-bl" />
+                    <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-primary rounded-br" />
+                    <div className="absolute left-1 right-1 h-0.5 bg-primary/80 animate-bounce" style={{ top: "50%" }} />
+                  </div>
+                  <div className="absolute bottom-3 left-0 right-0 text-center">
+                    <span className="text-xs text-white/80 bg-black/40 px-2 py-1 rounded">Point at barcode</span>
+                  </div>
+                </div>
+              )}
+
+              {error && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 gap-3 p-4">
+                  <CameraOff className="h-10 w-10 text-destructive" />
+                  <p className="text-center text-sm text-white">{error}</p>
+                  <Button size="sm" variant="outline" onClick={() => startCamera(facingMode)}>Try again</Button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between px-4 py-3">
+              <p className="text-xs text-muted-foreground">{scanning ? "Scanning…" : "Camera stopped"}</p>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={switchCamera}>
+                  <RefreshCw className="h-3.5 w-3.5 mr-1" /> Flip
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 gap-3 p-4">
-              <CameraOff className="h-10 w-10 text-destructive" />
-              <p className="text-center text-sm text-white">{error}</p>
-              <Button size="sm" variant="outline" onClick={() => startCamera(facingMode)}>Try again</Button>
-            </div>
-          )}
-        </div>
+          {/* ── Upload tab ── */}
+          <TabsContent value="upload" className="mt-0 px-4 py-4">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handleFileChange}
+            />
 
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-muted-foreground">{scanning ? "Scanning…" : "Camera stopped"}</p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={switchCamera}>
-              <RefreshCw className="h-3.5 w-3.5 mr-1" /> Flip
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          </div>
-        </div>
+            {!uploadPreview && !uploadProcessing && (
+              <div
+                className="border-2 border-dashed border-muted-foreground/30 rounded-lg p-8 flex flex-col items-center gap-3 cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
+                <div className="text-center">
+                  <p className="text-sm font-medium">Tap to snap or upload</p>
+                  <p className="text-xs text-muted-foreground mt-1">Take a photo of the barcode or select from gallery</p>
+                </div>
+                <Button size="sm" variant="outline" className="mt-1">
+                  <Upload className="h-3.5 w-3.5 mr-1" /> Choose Image
+                </Button>
+              </div>
+            )}
+
+            {uploadProcessing && (
+              <div className="flex flex-col items-center gap-3 py-8">
+                <div className="h-8 w-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                <p className="text-sm text-muted-foreground">Reading barcode…</p>
+              </div>
+            )}
+
+            {uploadPreview && !uploadProcessing && (
+              <div className="flex flex-col items-center gap-3">
+                <img src={uploadPreview} alt="Uploaded" className="max-h-48 rounded-lg object-contain border" />
+                {error && <p className="text-sm text-destructive text-center">{error}</p>}
+                <div className="flex gap-2 w-full">
+                  <Button
+                    size="sm" variant="outline" className="flex-1"
+                    onClick={() => { setUploadPreview(null); setError(null); fileInputRef.current?.click(); }}
+                  >
+                    Try another image
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+                </div>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   );
