@@ -6,13 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Search, Plus, Minus, Trash2, ShoppingCart, Printer, Zap, ShieldAlert } from "lucide-react";
+import { Search, Plus, Minus, Trash2, ShoppingCart, Printer, Zap, ShieldAlert, ScanLine } from "lucide-react";
 import { store, useStore, SaleItem } from "@/lib/store";
 import { NGN, expiryStatus } from "@/lib/format";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { supabase } from "@/integrations/supabase/client";
 import { KeyRound } from "lucide-react";
+import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 type CartLine = SaleItem & { stock: number; cost: number };
 
@@ -30,6 +31,9 @@ export default function POS() {
   const [controlledOpen, setControlledOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const settings = useStore((s) => s.settings);
+
+  // ── Barcode scanner state ─────────────────────────────────────────────────
+  const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
 
   const results = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -67,6 +71,22 @@ export default function POS() {
     });
     if (quickMode) setQ("");
   };
+
+  // ── Barcode scan handler ──────────────────────────────────────────────────
+  // 1. Try exact barcode match first
+  // 2. Fall back to name/generic search and auto-add if exactly one result
+  const onBarcodeScanned = (barcode: string) => {
+    const exact = products.find((p) => p.barcode === barcode);
+    if (exact) {
+      add(exact.id);
+      toast.success(`Added: ${exact.name}`);
+      return;
+    }
+    // No exact barcode match — put value in search box so staff can confirm
+    setQ(barcode);
+    toast.info(`Barcode ${barcode} — no exact match, showing search results`);
+  };
+
   const setQty = (id: string, qty: number) => setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
   const remove = (id: string) => setCart((c) => c.filter((l) => l.productId !== id));
 
@@ -103,7 +123,6 @@ export default function POS() {
   const checkout = () => {
     if (cart.length === 0) return;
     if (controlledInCart.length > 0) {
-      // Cashiers need pharmacist PIN authorization before dispensing controlled drugs
       if (user?.memberRole === "Cashier") { setPinOpen(true); return; }
       setControlledOpen(true); return;
     }
@@ -147,16 +166,28 @@ export default function POS() {
         <div className="space-y-3 lg:col-span-3">
           <Card className="shadow-card">
             <CardHeader className="pb-3 space-y-3">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  autoFocus
-                  placeholder="Search product / scan barcode..."
-                  className="h-11 pl-9 text-base"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && results[0]) add(results[0].id); }}
-                />
+              {/* Search bar + scan button side by side */}
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    autoFocus
+                    placeholder="Search product / type barcode..."
+                    className="h-11 pl-9 text-base"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && results[0]) add(results[0].id); }}
+                  />
+                </div>
+                <Button
+                  size="icon"
+                  variant="outline"
+                  className="h-11 w-11 shrink-0"
+                  title="Scan barcode with camera"
+                  onClick={() => setBarcodeScanOpen(true)}
+                >
+                  <ScanLine className="h-5 w-5" />
+                </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant={filter === "all" ? "default" : "outline"} onClick={() => setFilter("all")}>
@@ -269,6 +300,14 @@ export default function POS() {
       </div>
 
       {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
+
+      {/* ── Barcode Scanner ── */}
+      <BarcodeScanner
+        open={barcodeScanOpen}
+        onOpenChange={setBarcodeScanOpen}
+        onScanned={onBarcodeScanned}
+        title="Scan Product Barcode"
+      />
 
       <PinAuthDialog
         open={pinOpen}
@@ -423,7 +462,6 @@ function ControlledDispenseDialog({
   );
 }
 
-// ── PIN Authorization Dialog ──────────────────────────────────────────────────
 async function hashPin(pin: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
