@@ -113,60 +113,61 @@ export function BarcodeScanner({ open, onOpenChange, onScanned, title = "Scan Ba
         } catch (e) { console.warn("BarcodeDetector:", e); }
       }
 
-      // 2. Quagga2 — purpose-built for still image barcode detection
+      // 2. Quagga2 — try original, inverted, and cropped versions
       const Quagga = (await import("@ericblade/quagga2")).default;
 
-      const result = await new Promise<string | null>((resolve) => {
-        Quagga.decodeSingle(
-          {
-            src: dataUrl,
-            numOfWorkers: 0,
-            inputStream: { size: 800 },
-            decoder: {
-              readers: [
-                "ean_reader", "ean_8_reader", "code_128_reader",
-                "code_39_reader", "upc_reader", "upc_e_reader",
-                "i2of5_reader", "2of5_reader", "code_93_reader",
-              ],
-            },
-            locate: true,
-          },
-          (res) => {
-            if (res?.codeResult?.code) resolve(res.codeResult.code);
-            else resolve(null);
+      // Helper: run Quagga on a dataUrl
+      const tryQuagga = (src: string, size: number): Promise<string | null> =>
+        new Promise((resolve) => {
+          Quagga.decodeSingle(
+            { src, numOfWorkers: 0, inputStream: { size }, decoder: { readers: ["ean_reader","ean_8_reader","code_128_reader","code_39_reader","upc_reader","upc_e_reader","i2of5_reader","code_93_reader"] }, locate: true },
+            (res) => resolve(res?.codeResult?.code ?? null)
+          );
+        });
+
+      // Helper: preprocess image on canvas and return new dataUrl
+      const preprocessImage = async (src: string, invert: boolean, cropFraction?: number): Promise<string> => {
+        const img = new Image();
+        await new Promise<void>((res) => { img.onload = () => res(); img.src = src; });
+        const canvas = document.createElement("canvas");
+        let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
+        if (cropFraction) {
+          sx = sw * cropFraction; sy = sh * cropFraction;
+          sw = sw * (1 - cropFraction * 2); sh = sh * (1 - cropFraction * 2);
+        }
+        canvas.width = sw; canvas.height = sh;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        if (invert) {
+          const d = ctx.getImageData(0, 0, sw, sh);
+          for (let i = 0; i < d.data.length; i += 4) {
+            d.data[i] = 255 - d.data[i];
+            d.data[i+1] = 255 - d.data[i+1];
+            d.data[i+2] = 255 - d.data[i+2];
           }
-        );
-      });
+          ctx.putImageData(d, 0, 0);
+        }
+        return canvas.toDataURL("image/png");
+      };
 
-      if (result) {
-        setUploadProcessing(false);
-        toast.success(`Barcode: ${result}`);
-        onScanned(result); onOpenChange(false); return;
-      }
+      // Try: original → inverted → cropped 15% → cropped+inverted
+      const attempts: Array<[boolean, number?]> = [
+        [false, undefined],
+        [true, undefined],
+        [false, 0.15],
+        [true, 0.15],
+        [false, 0.25],
+        [true, 0.25],
+      ];
 
-      // 3. Quagga2 retry at higher resolution
-      const result2 = await new Promise<string | null>((resolve) => {
-        Quagga.decodeSingle(
-          {
-            src: dataUrl,
-            numOfWorkers: 0,
-            inputStream: { size: 1600 },
-            decoder: {
-              readers: ["ean_reader", "ean_8_reader", "code_128_reader", "upc_reader"],
-            },
-            locate: true,
-          },
-          (res) => {
-            if (res?.codeResult?.code) resolve(res.codeResult.code);
-            else resolve(null);
-          }
-        );
-      });
-
-      if (result2) {
-        setUploadProcessing(false);
-        toast.success(`Barcode: ${result2}`);
-        onScanned(result2); onOpenChange(false); return;
+      for (const [invert, crop] of attempts) {
+        const processed = await preprocessImage(dataUrl, invert, crop);
+        const r = await tryQuagga(processed, 800) ?? await tryQuagga(processed, 1600);
+        if (r) {
+          setUploadProcessing(false);
+          toast.success(`Barcode: ${r}`);
+          onScanned(r); onOpenChange(false); return;
+        }
       }
 
       setUploadProcessing(false);
