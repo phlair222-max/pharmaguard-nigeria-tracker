@@ -14,12 +14,14 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { BarcodeScanner } from "@/components/BarcodeScanner";
+import { ExpiryScanner } from "@/components/ExpiryScanner";
 
 const DEFAULT_CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances"];
 const DEFAULT_PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
@@ -42,7 +44,6 @@ async function fileToDataUrl(file: File, max = 400): Promise<string> {
     r.onerror = rej;
     r.readAsDataURL(file);
   });
-  // resize via canvas
   return await new Promise<string>((res) => {
     const img = new Image();
     img.onload = () => {
@@ -80,6 +81,11 @@ export default function Inventory() {
   const [customPacks, setCustomPacks] = useState<string[]>(() => loadCustom(PACK_KEY));
   const [newCat, setNewCat] = useState("");
   const [newPack, setNewPack] = useState("");
+
+  // ── Scanner states ──────────────────────────────────────────────────────────
+  const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
+  const [expiryScanOpen, setExpiryScanOpen] = useState(false);
+
   type SortKey = "name" | "generic" | "nafdac" | "packSize" | "batch" | "expiry" | "quantity" | "reorderLevel" | "reorderQuantity" | "costPrice" | "sellingPrice" | "supplier";
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -156,6 +162,29 @@ export default function Inventory() {
     setDraft((d) => ({ ...d, image: url }));
   };
 
+  // ── Barcode scan handler ────────────────────────────────────────────────────
+  const onBarcodeScanned = (barcode: string) => {
+    setDraft((d) => ({ ...d, barcode }));
+    toast.success(`Barcode scanned: ${barcode}`);
+  };
+
+  // ── Expiry scan handler ─────────────────────────────────────────────────────
+  const onExpiryScanConfirmed = (result: {
+    expiryDate: string;
+    productName?: string;
+    nafdac?: string;
+    batchNo?: string;
+  }) => {
+    setDraft((d) => ({
+      ...d,
+      expiry: result.expiryDate,
+      ...(result.productName && !d.name ? { name: result.productName } : {}),
+      ...(result.nafdac && !d.nafdac ? { nafdac: result.nafdac } : {}),
+      ...(result.batchNo && !d.batch ? { batch: result.batchNo } : {}),
+    }));
+    toast.success("Expiry date filled from scan");
+  };
+
   const exportCSV = () => {
     const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled"];
     const rows = products.map((p) => headers.map((h) => JSON.stringify((p as any)[h] ?? "")).join(","));
@@ -171,7 +200,7 @@ export default function Inventory() {
       const [head, ...lines] = text.split(/\r?\n/).filter(Boolean);
       const headers = head.split(",").map((s) => s.replace(/(^"|"$)/g, ""));
       const rows = lines.map((ln) => {
-        const cols = ln.match(/("([^"]|"")*"|[^,]*)(,|$)/g)?.map((c) => c.replace(/,$/,"").replace(/^"|"$/g,"").replace(/""/g,'"')) || [];
+        const cols = ln.match(/(\"([^\"]|\"\")*\"|[^,]*)(,|$)/g)?.map((c) => c.replace(/,$/,"").replace(/^\"|\"$/g,"").replace(/""/g,'"')) || [];
         const obj: any = { ...empty };
         headers.forEach((h, i) => obj[h] = cols[i] ?? "");
         ["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"].forEach((k) => obj[k] = Number(obj[k]) || 0);
@@ -367,6 +396,7 @@ export default function Inventory() {
         </CardContent>
       </Card>
 
+      {/* ── Add / Edit Product Dialog ── */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Edit Product" : "Add Product"}</DialogTitle></DialogHeader>
@@ -395,7 +425,37 @@ export default function Inventory() {
             <Field label="Generic name" v={draft.generic} on={(v) => setDraft({ ...draft, generic: v })} />
             <Field label="NAFDAC Registration No." v={draft.nafdac} on={(v) => setDraft({ ...draft, nafdac: v })} />
             <Field label="Batch / Lot No." v={draft.batch} on={(v) => setDraft({ ...draft, batch: v })} />
-            <Field label="Expiry date *" type="date" v={draft.expiry} on={(v) => setDraft({ ...draft, expiry: v })} />
+
+            {/* ── Expiry date field with scan button ── */}
+            <div>
+              <Label>Expiry date *</Label>
+              <div className="flex gap-2">
+                <Input
+                  type="date"
+                  value={draft.expiry}
+                  onChange={(e) => setDraft({ ...draft, expiry: e.target.value })}
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  title="Scan expiry date with camera"
+                  onClick={() => setExpiryScanOpen(true)}
+                  className="shrink-0"
+                >
+                  <Camera className="h-4 w-4" />
+                </Button>
+              </div>
+              {draft.expiry && (
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {daysUntil(draft.expiry) < 0
+                    ? `Expired ${-daysUntil(draft.expiry)}d ago`
+                    : `${daysUntil(draft.expiry)} days remaining`}
+                </p>
+              )}
+            </div>
+
             <Field label="Last restocked" type="date" v={draft.lastRestocked || ""} on={(v) => setDraft({ ...draft, lastRestocked: v })} />
             <div>
               <Label>Therapeutic Category</Label>
@@ -482,7 +542,30 @@ export default function Inventory() {
                 </SelectContent>
               </Select>
             </div>
-            <Field label="Barcode (optional)" v={draft.barcode || ""} on={(v) => setDraft({ ...draft, barcode: v })} />
+
+            {/* ── Barcode field with scan button ── */}
+            <div>
+              <Label>Barcode (optional)</Label>
+              <div className="flex gap-2">
+                <Input
+                  value={draft.barcode || ""}
+                  onChange={(e) => setDraft({ ...draft, barcode: e.target.value })}
+                  placeholder="Scan or type barcode"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  title="Scan barcode with camera"
+                  onClick={() => setBarcodeScanOpen(true)}
+                  className="shrink-0"
+                >
+                  <ScanLine className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
             <div className="col-span-2">
               <Label>Description</Label>
               <Textarea rows={2} value={draft.description || ""} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
@@ -495,6 +578,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Receive Stock Dialog ── */}
       <Dialog open={!!receiveFor} onOpenChange={(o) => !o && setReceiveFor(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Receive stock — {receiveFor?.name}</DialogTitle></DialogHeader>
@@ -510,6 +594,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Delete Confirm ── */}
       <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -528,6 +613,7 @@ export default function Inventory() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* ── Duplicate Warning ── */}
       <AlertDialog open={!!dupWarn} onOpenChange={(o) => !o && setDupWarn(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -554,6 +640,21 @@ export default function Inventory() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ── Barcode Scanner ── */}
+      <BarcodeScanner
+        open={barcodeScanOpen}
+        onOpenChange={setBarcodeScanOpen}
+        onScanned={onBarcodeScanned}
+        title="Scan Product Barcode"
+      />
+
+      {/* ── Expiry Scanner ── */}
+      <ExpiryScanner
+        open={expiryScanOpen}
+        onOpenChange={setExpiryScanOpen}
+        onConfirm={onExpiryScanConfirmed}
+      />
     </div>
   );
 }
