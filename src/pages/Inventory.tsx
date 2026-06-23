@@ -84,6 +84,7 @@ export default function Inventory() {
 
   // ── Scanner states ──────────────────────────────────────────────────────────
   const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
+  const [barcodeSearchOpen, setBarcodeSearchOpen] = useState(false);
   const [expiryScanOpen, setExpiryScanOpen] = useState(false);
 
   type SortKey = "name" | "generic" | "nafdac" | "packSize" | "batch" | "expiry" | "quantity" | "reorderLevel" | "reorderQuantity" | "costPrice" | "sellingPrice" | "supplier";
@@ -168,6 +169,18 @@ export default function Inventory() {
     toast.success(`Barcode scanned: ${barcode}`);
   };
 
+  // ── Barcode search handler (Inventory search bar) ───────────────────────────
+  const onBarcodeSearch = (barcode: string) => {
+    const match = products.find((p) => p.barcode === barcode);
+    if (match) {
+      setQ(match.name);
+      toast.success(`Found: ${match.name}`);
+    } else {
+      setQ(barcode);
+      toast.info(`Barcode ${barcode} — no exact match, showing search results`);
+    }
+  };
+
   // ── Expiry scan handler ─────────────────────────────────────────────────────
   const onExpiryScanConfirmed = (result: {
     expiryDate: string;
@@ -237,9 +250,14 @@ export default function Inventory() {
       <Card className="shadow-card">
         <CardHeader className="pb-3">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[220px]">
-              <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="Search by name, generic, NAFDAC, batch..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+            <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+              <div className="relative flex-1">
+                <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input placeholder="Search by name, generic, NAFDAC, batch..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+              </div>
+              <Button variant="outline" size="icon" title="Scan barcode to search" onClick={() => setBarcodeSearchOpen(true)}>
+                <ScanLine className="h-4 w-4" />
+              </Button>
             </div>
             <Select value={cat} onValueChange={setCat}>
               <SelectTrigger className="w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
@@ -647,6 +665,14 @@ export default function Inventory() {
         onOpenChange={setBarcodeScanOpen}
         onScanned={onBarcodeScanned}
         title="Scan Product Barcode"
+      />
+
+      {/* ── Barcode Search Scanner ── */}
+      <BarcodeScanner
+        open={barcodeSearchOpen}
+        onOpenChange={setBarcodeSearchOpen}
+        onScanned={onBarcodeSearch}
+        title="Scan to Search Inventory"
       />
 
       {/* ── Expiry Scanner ── */}
