@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useStore, salesVelocityMap, movementSpeed, usePlan } from "@/lib/store";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
-import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, X, FileText, Loader2 } from "lucide-react";
+import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, X, FileText, Loader2, Printer } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 import { format, startOfDay } from "date-fns";
 import { Link } from "react-router-dom";
@@ -63,10 +63,11 @@ function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
 }
 
 // ── AI Disposal Report Card ───────────────────────────────────────────────────
-function DisposalReportCard({ near30 }: { near30: any[] }) {
+function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any }) {
   const plan = usePlan();
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<string | null>(null);
+  const [refNo, setRefNo] = useState<string>("");
 
   const generate = async () => {
     setLoading(true);
@@ -77,10 +78,17 @@ function DisposalReportCard({ near30 }: { near30: any[] }) {
             name: p.name, batch: p.batch, expiry: p.expiry,
             quantity: p.quantity, nafdac: p.nafdac,
           })),
+          // Pass pharmacy details so they get filled in the report
+          pharmacyName: settings.name || "Pharmacy Name",
+          pharmacyAddress: settings.address || "Pharmacy Address",
+          pharmacyPhone: settings.phone || "N/A",
+          pharmacyEmail: settings.email || "",
+          premiseLicense: settings.premiseLicense || "",
         },
       });
       if (error) throw error;
       setReport(data.report);
+      if (data.refNo) setRefNo(data.refNo);
     } catch (e: any) {
       toast.error("Failed to generate report: " + e.message);
     } finally {
@@ -90,10 +98,40 @@ function DisposalReportCard({ near30 }: { near30: any[] }) {
 
   const print = () => {
     const w = window.open("", "_blank");
-    if (w) {
-      w.document.write(`<pre style="font-family:monospace;padding:2rem;white-space:pre-wrap;font-size:13px">${report}</pre>`);
-      w.print();
-    }
+    if (!w) return;
+    w.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>NAFDAC Disposal Report ${refNo}</title>
+        <style>
+          body {
+            font-family: "Times New Roman", Times, serif;
+            font-size: 12pt;
+            line-height: 1.6;
+            margin: 2cm;
+            color: #000;
+          }
+          pre {
+            font-family: "Times New Roman", Times, serif;
+            font-size: 12pt;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 0;
+          }
+          @media print {
+            body { margin: 1.5cm; }
+          }
+        </style>
+      </head>
+      <body>
+        <pre>${report?.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+      </body>
+      </html>
+    `);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 300);
   };
 
   return (
@@ -127,23 +165,29 @@ function DisposalReportCard({ near30 }: { near30: any[] }) {
           </div>
         ) : report ? (
           <div className="space-y-3">
-            <pre className="whitespace-pre-wrap rounded-lg bg-muted/50 p-4 text-xs leading-relaxed max-h-80 overflow-y-auto font-mono border">
-              {report}
-            </pre>
+            {/* Clean document preview */}
+            <div className="rounded-lg border bg-white dark:bg-zinc-950 p-4 max-h-96 overflow-y-auto">
+              <pre className="whitespace-pre-wrap text-xs leading-relaxed font-mono text-foreground">
+                {report}
+              </pre>
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={print}
-                className="flex-1 rounded-md bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
               >
-                Print Report
+                <Printer className="h-3.5 w-3.5" /> Print Report
               </button>
               <button
-                onClick={() => setReport(null)}
+                onClick={() => { setReport(null); setRefNo(""); }}
                 className="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-muted transition-colors"
               >
                 Clear
               </button>
             </div>
+            {refNo && (
+              <p className="text-[11px] text-muted-foreground text-center">Ref: {refNo}</p>
+            )}
           </div>
         ) : (
           <div className="py-4 text-center space-y-1">
@@ -330,7 +374,7 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* Near Expiry + AI Disposal Report side by side */}
+        {/* Near Expiry + AI Disposal Report */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card className="shadow-card">
             <CardHeader><CardTitle className="text-base">Near Expiry — Next 30 Days</CardTitle></CardHeader>
@@ -357,7 +401,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <DisposalReportCard near30={near30} />
+          <DisposalReportCard near30={near30} settings={settings} />
         </div>
 
         {/* Low Stock */}
