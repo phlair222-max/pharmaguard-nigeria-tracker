@@ -341,7 +341,7 @@ export const store = {
   updateSettings(p: Partial<PharmacySettings>) {
     db.settings = { ...db.settings, ...p };
     persist();
-    void supabasePush.updateProfile(p);
+    void supabasePush.updateOrgSettings(p);
   },
   audit(action: string, target: string, detail?: string) {
     const entry = { id: crypto.randomUUID(), user: db.user?.username ?? "system", action, target, detail, at: new Date().toISOString() };
@@ -514,7 +514,7 @@ export const store = {
       (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
       (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
-      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at").eq("id", orgId).maybeSingle(),
+      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
       (supabase.from as any)("plan_config").select("*"),
     ]);
 
@@ -526,7 +526,8 @@ export const store = {
     db.suppliers = (supR.data || []).map(rowToSupplier);
     db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
     db.audit = ((audR as any).data || []).map(rowToAudit);
-    if ((profR as any).data) db.settings = { ...db.settings, ...rowToSettings((profR as any).data) };
+    // Load pharmacy identity from org row (shared by all staff in the org)
+    if ((orgR as any)?.data) db.settings = { ...db.settings, ...rowToSettings((orgR as any).data) };
 
     // ── subscription tier ──
     const orgTier: string = (orgR as any)?.data?.subscription_tier ?? "free";
@@ -654,14 +655,21 @@ function rowToAudit(r: any): AuditEntry {
 }
 function rowToSettings(r: any): Partial<PharmacySettings> {
   return {
-    name: r.pharmacy_name || undefined, address: r.address || undefined, phone: r.phone || undefined,
-    email: r.email || undefined, premiseLicense: r.premise_license || undefined,
-    logo: r.logo || undefined, ownerPhoto: r.owner_photo || undefined, ownerName: r.owner_name || undefined,
+    // org table uses "name" directly (not "pharmacy_name")
+    name: r.name || undefined,
+    address: r.address || undefined,
+    phone: r.phone || undefined,
+    email: r.email || undefined,
+    premiseLicense: r.premise_license || undefined,
+    logo: r.logo || undefined,
+    ownerPhoto: r.owner_photo || undefined,
+    ownerName: r.owner_name || undefined,
   };
 }
 function settingsPatchToRow(p: Partial<PharmacySettings>) {
   const out: any = {};
-  if (p.name !== undefined) out.pharmacy_name = p.name;
+  // org table uses "name" directly (not "pharmacy_name")
+  if (p.name !== undefined) out.name = p.name;
   if (p.address !== undefined) out.address = p.address;
   if (p.phone !== undefined) out.phone = p.phone;
   if (p.email !== undefined) out.email = p.email;
@@ -763,11 +771,12 @@ const supabasePush = {
     });
     if (error) console.error(error);
   },
-  async updateProfile(p: Partial<PharmacySettings>) {
+  // Writes pharmacy identity to organizations table — shared by all staff in the org
+  async updateOrgSettings(p: Partial<PharmacySettings>) {
     const ctx = await this._context(); if (!ctx) return;
     const row = settingsPatchToRow(p);
     if (!Object.keys(row).length) return;
-    const { error } = await supabase.from("profiles").update(row).eq("id", ctx.uid);
+    const { error } = await (supabase.from as any)("organizations").update(row).eq("id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not save pharmacy settings"); }
   },
 };
