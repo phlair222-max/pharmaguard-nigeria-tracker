@@ -304,9 +304,9 @@ export default function Inventory() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto rounded-b-lg">
+          <div className="overflow-x-auto rounded-b-lg" style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }}>
             <Table className="min-w-[1100px]">
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   {(() => {
                     const SortBtn = ({ k, label, align = "left" }: { k: SortKey; label: string; align?: "left" | "right" }) => (
