@@ -442,24 +442,29 @@ export const store = {
   startRealtime(orgId: string) {
     this.stopRealtime();
 
+    // NOTE: No row-level filters here — filters require REPLICA IDENTITY FULL on each table.
+    // Instead we subscribe to all events on each table; RLS on the re-fetch query scopes data to this org.
     const ch = supabase
       .channel(`org-sync-${orgId}`)
-      // Sales: new sale created by anyone in the org
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sales", filter: `organization_id=eq.${orgId}` },
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sales" },
         async () => {
           const { data } = await supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false });
           if (data) { db.sales = data.map(rowToSale); notify(); }
         }
       )
-      // Products: quantity changes (after a sale deducts stock)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "products", filter: `organization_id=eq.${orgId}` },
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "products" },
         async () => {
           const { data } = await supabase.from("products_safe_view").select("*").eq("organization_id", orgId);
           if (data) { db.products = data.map(rowToProduct); notify(); }
         }
       )
-      // Organizations: name/logo/settings changes
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "organizations", filter: `id=eq.${orgId}` },
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "products" },
+        async () => {
+          const { data } = await supabase.from("products_safe_view").select("*").eq("organization_id", orgId);
+          if (data) { db.products = data.map(rowToProduct); notify(); }
+        }
+      )
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "organizations" },
         async () => {
           const { data } = await (supabase.from as any)("organizations")
             .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
@@ -467,7 +472,9 @@ export const store = {
           if (data) { db.settings = { ...db.settings, ...rowToSettings(data) }; notify(); }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("[realtime] channel status:", status);
+      });
 
     this._realtimeChannel = ch;
   },
