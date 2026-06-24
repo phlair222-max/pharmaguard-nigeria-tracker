@@ -1,181 +1,207 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import {
-  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
-  SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
-  SidebarHeader, SidebarFooter, useSidebar,
-} from "@/components/ui/sidebar";
-import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles, ShieldCheck, Lock } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { store, useStore, usePlan } from "@/lib/store";
-import { useTheme } from "next-themes";
-import HeaderTicker from "./HeaderTicker";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { ThemeProvider } from "next-themes";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Route, Routes, Navigate, useNavigate } from "react-router-dom";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { Toaster } from "@/components/ui/toaster";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import AppLayout from "@/components/layout/AppLayout";
+import Login from "@/pages/Login";
+import Landing from "@/pages/Landing";
+import Dashboard from "@/pages/Dashboard";
+import Inventory from "@/pages/Inventory";
+import POS from "@/pages/POS";
+import Reports from "@/pages/Reports";
+import Audit from "@/pages/Audit";
+import Poisons from "@/pages/Poisons";
+import Suppliers from "@/pages/Suppliers";
+import SalesHistory from "@/pages/SalesHistory";
+import Settings from "@/pages/Settings";
+import Forecast from "@/pages/Forecast";
+import AdminDashboard from "@/pages/AdminDashboard";
+import NotFound from "@/pages/NotFound";
+import { store } from "@/lib/store";
+import { supabase } from "@/integrations/supabase/client";
+import type { Session } from "@supabase/supabase-js";
+import { Loader2 } from "lucide-react";
 
-const ADMIN_EMAIL = "phlair222@gmail.com";
+const queryClient = new QueryClient();
 
-const ALL_ITEMS = [
-  { title: "Dashboard",       url: "/",          icon: LayoutDashboard, planKey: null,                   cashierAllowed: true  },
-  { title: "Inventory",       url: "/inventory", icon: Package,         planKey: null,                   cashierAllowed: true  },
-  { title: "POS / Sales",     url: "/pos",       icon: ShoppingCart,    planKey: null,                   cashierAllowed: true  },
-  { title: "Sales History",   url: "/sales",     icon: ReceiptText,     planKey: null,                   cashierAllowed: true  },
-  { title: "Suppliers",       url: "/suppliers", icon: Truck,           planKey: "canSuppliers",         cashierAllowed: false },
-  { title: "Reports",         url: "/reports",   icon: FileBarChart2,   planKey: "canReports",           cashierAllowed: false },
-  { title: "AI Forecast",     url: "/forecast",  icon: Sparkles,        planKey: "canAiForecast",        cashierAllowed: false },
-  // Poisons Register: legally required — Cashiers must access it when dispensing controlled drugs
-  { title: "Poisons Register",url: "/poisons",   icon: ShieldAlert,     planKey: "canPoisonsRegister",   cashierAllowed: true  },
-  { title: "Audit Trail",     url: "/audit",     icon: History,         planKey: "canAuditTrail",        cashierAllowed: false },
-  { title: "Settings",        url: "/settings",  icon: SettingsIcon,    planKey: null,                   cashierAllowed: false },
-] as const;
-
-function AppSidebar() {
-  const { state } = useSidebar();
-  const collapsed = state === "collapsed";
-  const settings = useStore((s) => s.settings);
-  const user = useStore((s) => s.user);
-  const isPlatformAdmin = user?.username?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-  const planGates = usePlan();
-
-  const adminItem = { title: "Platform Admin", url: "/admin", icon: ShieldCheck };
-
-  return (
-    <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b border-sidebar-border">
-        <div className="flex items-center gap-2 px-2 py-3">
-          <img
-            src={settings.logo || "/logo.jpg"}
-            alt="logo"
-            className="h-9 w-9 rounded-lg object-cover border bg-white shadow-elevated"
-          />
-          {!collapsed && (
-            <div className="leading-tight min-w-0">
-              <div className="font-semibold text-sidebar-foreground truncate">{settings.name || "PharmaGuard NG"}</div>
-              <div className="text-[11px] text-sidebar-foreground/70">Nigeria Pharma Tracker</div>
-            </div>
-          )}
-        </div>
-      </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Main</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {ALL_ITEMS.map((item) => {
-                const isCashier = user?.memberRole === "Cashier";
-                // Role-hidden: Cashier can't see items where cashierAllowed is false — hide entirely
-                if (isCashier && !item.cashierAllowed) return null;
-                // Plan-locked: plan gate fails AND it's not a Cashier bypassing for legal access
-                const planLocked = item.planKey ? !planGates[item.planKey as keyof typeof planGates] : false;
-                return (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild>
-                      {planLocked ? (
-                        <div
-                          className="flex items-center gap-2 opacity-40 cursor-not-allowed select-none"
-                          title="Upgrade your plan to unlock this feature"
-                        >
-                          <item.icon className="h-4 w-4" />
-                          {!collapsed && <span className="flex-1">{item.title}</span>}
-                          {!collapsed && <Lock className="h-3 w-3 ml-auto" />}
-                        </div>
-                      ) : (
-                        <NavLink
-                          to={item.url}
-                          end={item.url === "/"}
-                          className={({ isActive }) =>
-                            `flex items-center gap-2 ${isActive ? "bg-sidebar-accent text-sidebar-primary font-medium" : ""}`
-                          }
-                        >
-                          <item.icon className="h-4 w-4" />
-                          {!collapsed && <span>{item.title}</span>}
-                        </NavLink>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-              {isPlatformAdmin && (
-                <SidebarMenuItem key="admin">
-                  <SidebarMenuButton asChild>
-                    <NavLink
-                      to={adminItem.url}
-                      className={({ isActive }) =>
-                        `flex items-center gap-2 ${isActive ? "bg-sidebar-accent text-sidebar-primary font-medium" : ""}`
-                      }
-                    >
-                      <adminItem.icon className="h-4 w-4 text-violet-400" />
-                      {!collapsed && <span className="text-violet-400">{adminItem.title}</span>}
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-      <SidebarFooter className="border-t border-sidebar-border">
-        <UserBadge collapsed={collapsed} />
-      </SidebarFooter>
-    </Sidebar>
-  );
-}
-
-function UserBadge({ collapsed }: { collapsed: boolean }) {
-  const user = useStore((s) => s.user);
+// Handles magic link / invite redirects — Supabase appends #access_token=... to the URL
+function AuthCallback() {
   const navigate = useNavigate();
-  if (!user) return null;
-  return (
-    <div className="flex items-center justify-between p-2">
-      {!collapsed && (
-        <div className="text-xs">
-          <div className="font-medium text-sidebar-foreground">{user.username}</div>
-          <div className="text-sidebar-foreground/60">{user.memberRole ?? user.role}</div>
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) {
+        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+        // Check if user has no password set (invited via magic link)
+        // Supabase sets identities with provider "email" for magic link users
+        const identities = data.session.user.identities || [];
+        const hasPassword = identities.some(i => i.provider === "email" && i.identity_data?.email_verified);
+        const createdRecently = Date.now() - new Date(data.session.user.created_at).getTime() < 5 * 60 * 1000;
+        if (createdRecently) {
+          setNeedsPassword(true);
+        } else {
+          void store.hydrateFromSupabase();
+          navigate("/dashboard", { replace: true });
+        }
+      } else {
+        navigate("/login", { replace: true });
+      }
+    });
+  }, [navigate]);
+
+  const savePassword = async () => {
+    if (password.length < 8) { toast.error("Password must be at least 8 characters"); return; }
+    if (password !== confirm) { toast.error("Passwords don't match"); return; }
+    setSaving(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) {
+      toast.error("Failed to set password: " + error.message);
+      setSaving(false);
+      return;
+    }
+    toast.success("Password set successfully — welcome to PharmaGuard NG!");
+    void store.hydrateFromSupabase();
+    navigate("/dashboard", { replace: true });
+  };
+
+  if (needsPassword) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <div className="w-full max-w-sm space-y-6">
+          <div className="text-center space-y-2">
+            <div className="flex justify-center">
+              <div className="rounded-xl bg-primary/10 p-3">
+                <svg className="h-8 w-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </div>
+            </div>
+            <h1 className="text-2xl font-bold">Set your password</h1>
+            <p className="text-sm text-muted-foreground">Create a password to secure your PharmaGuard NG account</p>
+          </div>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="At least 8 characters"
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Confirm password</label>
+              <input
+                type="password"
+                value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                placeholder="Repeat your password"
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                onKeyDown={e => e.key === "Enter" && savePassword()}
+              />
+            </div>
+            <button
+              onClick={savePassword}
+              disabled={saving}
+              className="w-full rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {saving ? "Setting password…" : "Set password & continue →"}
+            </button>
+          </div>
         </div>
-      )}
-      <Button
-        variant="ghost" size="icon"
-        className="h-8 w-8 text-sidebar-foreground hover:bg-sidebar-accent"
-        onClick={async () => {
-          const { supabase } = await import("@/integrations/supabase/client");
-          await supabase.auth.signOut();
-          store.logout();
-          navigate("/login");
-        }}
-      >
-        <LogOut className="h-4 w-4" />
-      </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center flex-col gap-3">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <p className="text-sm text-muted-foreground">Signing you in…</p>
     </div>
   );
 }
 
-function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  return (
-    <Button variant="ghost" size="icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-      <Sun className="h-4 w-4 dark:hidden" />
-      <Moon className="hidden h-4 w-4 dark:block" />
-    </Button>
-  );
-}
+const SessionGate = ({ children }: { children: JSX.Element }) => {
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
 
-export default function AppLayout() {
-  return (
-    <SidebarProvider>
-      <div className="flex min-h-screen w-full bg-background">
-        <AppSidebar />
-        <div className="flex min-w-0 flex-1 flex-col">
-          {/* Header: fixed height, never grows, ticker is sandwiched between trigger and theme toggle */}
-          <header className="sticky top-0 z-30 flex h-12 w-full items-center gap-2 border-b bg-card/80 px-3 backdrop-blur overflow-hidden">
-            <SidebarTrigger className="shrink-0" />
-            {/* Ticker occupies only the middle space — flex-1 with min-w-0 ensures it never overflows */}
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <HeaderTicker />
-            </div>
-            <ThemeToggle />
-          </header>
-          <main className="flex-1 overflow-auto p-4 md:p-6">
-            <Outlet />
-          </main>
-        </div>
+  useEffect(() => {
+    // Clean up any OAuth error fragments from URL
+    if (window.location.hash.includes("error")) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      if (s?.user) {
+        store.setAuthUser({ id: s.user.id, email: s.user.email || "user" });
+        void store.hydrateFromSupabase();
+      } else {
+        store.setAuthUser(null);
+      }
+    });
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (data.session?.user) {
+        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+        void store.hydrateFromSupabase();
+      }
+    });
+
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (session === undefined) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
-    </SidebarProvider>
-  );
-}
+    );
+  }
+
+  if (!session) return <Navigate to="/login" replace />;
+  return children;
+};
+
+const App = () => (
+  <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route element={<SessionGate><AppLayout /></SessionGate>}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/inventory" element={<Inventory />} />
+              <Route path="/pos" element={<POS />} />
+              <Route path="/sales" element={<SalesHistory />} />
+              <Route path="/suppliers" element={<Suppliers />} />
+              <Route path="/reports" element={<Reports />} />
+              <Route path="/forecast" element={<Forecast />} />
+              <Route path="/audit" element={<Audit />} />
+              <Route path="/poisons" element={<Poisons />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/admin" element={<AdminDashboard />} />
+            </Route>
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </ThemeProvider>
+);
+
+export default App;
