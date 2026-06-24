@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useStore } from "@/lib/store";
-import { Sparkles, Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle, Package, Search, RefreshCw } from "lucide-react";
+import { daysUntil } from "@/lib/format";
+import { Sparkles, Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle, Package, Search, RefreshCw, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { num } from "@/lib/format";
 import { startOfDay, format } from "date-fns";
@@ -24,6 +25,7 @@ type Forecast = {
   suggestedReorderQty: number;
   reason: string;
   hasSalesData: boolean;
+  expiryFlag: "expired" | "expiring-soon" | null;
 };
 
 function urgencyRank(u: string) { return u === "urgent" ? 0 : u === "soon" ? 1 : 2; }
@@ -51,7 +53,17 @@ function TrendBadge({ trend }: { trend: string }) {
   );
 }
 
-function UrgencyPill({ urgency }: { urgency: string }) {
+function UrgencyPill({ urgency, expiryFlag }: { urgency: string; expiryFlag: "expired" | "expiring-soon" | null }) {
+  if (expiryFlag === "expired") return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2.5 py-1 text-[11px] font-semibold text-destructive border border-destructive/30">
+      <ShieldAlert className="h-3 w-3" /> Expired
+    </span>
+  );
+  if (expiryFlag === "expiring-soon") return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2.5 py-1 text-[11px] font-semibold text-warning border border-warning/30">
+      <AlertTriangle className="h-3 w-3" /> Expiring
+    </span>
+  );
   if (urgency === "urgent") return (
     <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2.5 py-1 text-[11px] font-semibold text-destructive border border-destructive/30">
       <AlertTriangle className="h-3 w-3" /> Urgent
@@ -97,9 +109,6 @@ export default function Forecast() {
       }
     }
 
-    // Include ALL products — not just those with sales.
-    // Products with no recent sales are included with zeroed daily arrays
-    // so the forecast can flag them as potentially slow-moving or no-data.
     return products.map((p) => {
       const m = perProduct.get(p.id);
       const daily = dayKeys.map((k) => m?.get(k) || 0);
@@ -111,6 +120,7 @@ export default function Forecast() {
         quantity: p.quantity,
         reorderLevel: p.reorderLevel,
         reorderQuantity: p.reorderQuantity,
+        expiry: p.expiry,
         daily,
         hasSalesData: total > 0,
       };
@@ -119,13 +129,40 @@ export default function Forecast() {
 
   const computeForecasts = (): Forecast[] => {
     return payload.map((p) => {
+      const d = p.expiry ? daysUntil(p.expiry) : null;
+
+      // ── Expiry overrides everything ───────────────────────────────────
+      // Expired stock physically cannot be sold — treat as zero sellable
+      // stock regardless of quantity on shelf.
+      if (d !== null && d < 0) {
+        return {
+          id: p.id,
+          name: p.name,
+          generic: p.generic,
+          currentStock: p.quantity,
+          predictedUnits14d: 0,
+          avgDailyDemand: 0,
+          trend: "no-data",
+          daysOfStock: 0,
+          urgency: "urgent",
+          suggestedReorderQty: p.reorderQuantity || p.reorderLevel * 3,
+          reason: `Stock expired ${Math.abs(d)} day(s) ago. Quarantine and remove from inventory immediately. Restock with fresh batch.`,
+          hasSalesData: false,
+          expiryFlag: "expired",
+        };
+      }
+
+      // Expiring within 30 days — flag but still run demand analysis
+      const expiryFlag: Forecast["expiryFlag"] = (d !== null && d <= 30) ? "expiring-soon" : null;
+
       const daily = p.daily;
       const n = daily.length;
       const total = daily.reduce((a, b) => a + b, 0);
 
-      // Products with no sales data in last 30 days
+      // ── No sales data ─────────────────────────────────────────────────
       if (!p.hasSalesData) {
         const isLowStock = p.quantity <= p.reorderLevel;
+        const urgency: Forecast["urgency"] = expiryFlag === "expiring-soon" ? "soon" : isLowStock ? "soon" : "ok";
         return {
           id: p.id,
           name: p.name,
@@ -135,15 +172,19 @@ export default function Forecast() {
           avgDailyDemand: 0,
           trend: "no-data",
           daysOfStock: Infinity,
-          urgency: isLowStock ? "soon" : "ok",
-          suggestedReorderQty: isLowStock ? (p.reorderQuantity || p.reorderLevel * 3) : 0,
-          reason: isLowStock
+          urgency,
+          suggestedReorderQty: urgency !== "ok" ? (p.reorderQuantity || p.reorderLevel * 3) : 0,
+          reason: expiryFlag === "expiring-soon"
+            ? `No sales in last 30 days but stock expires in ${d} day(s). Sell or return remaining ${p.quantity} units urgently.`
+            : isLowStock
             ? `No sales in last 30 days but stock is at or below reorder level (${p.quantity} remaining). Consider restocking.`
             : `No sales recorded in the last 30 days. Stock appears sufficient (${p.quantity} units).`,
           hasSalesData: false,
+          expiryFlag,
         };
       }
 
+      // ── Normal demand analysis ────────────────────────────────────────
       const half = Math.floor(n / 2);
       const firstHalf = daily.slice(0, half);
       const secondHalf = daily.slice(half);
@@ -164,11 +205,17 @@ export default function Forecast() {
       const trendFactor = trend === "rising" ? 1.15 : trend === "falling" ? 0.85 : 1;
       const predictedUnits14d = weightedDailyDemand * 14 * trendFactor;
       const safeDailyDemand = Math.max(weightedDailyDemand, 0.01);
-      const daysOfStock = p.quantity / safeDailyDemand;
+
+      // If expiring soon, cap days-of-stock at remaining days before expiry
+      // so we don't say "216 days of stock" when product expires in 20 days.
+      const rawDaysOfStock = p.quantity / safeDailyDemand;
+      const daysOfStock = expiryFlag === "expiring-soon" && d !== null
+        ? Math.min(rawDaysOfStock, d)
+        : rawDaysOfStock;
 
       let urgency: Forecast["urgency"] = "ok";
       if (daysOfStock <= 5) urgency = "urgent";
-      else if (daysOfStock <= 14) urgency = "soon";
+      else if (daysOfStock <= 14 || expiryFlag === "expiring-soon") urgency = "soon";
 
       const projectedNeed = Math.max(0, predictedUnits14d * 1.2 - p.quantity);
       const suggestedReorderQty = urgency === "ok" ? 0 : Math.max(Math.round(projectedNeed), p.reorderQuantity || 0);
@@ -178,7 +225,10 @@ export default function Forecast() {
         : trend === "falling"
         ? `Sales down ${Math.round(Math.abs(pctChange))}% over last 2 weeks.`
         : `Sales steady over last 30 days.`;
-      const stockPhrase = daysOfStock <= 5
+
+      const stockPhrase = expiryFlag === "expiring-soon"
+        ? `Expires in ${d} day(s) — sell remaining ${p.quantity} units before then or arrange return.`
+        : daysOfStock <= 5
         ? `Runs out in ~${Math.max(0, Math.round(daysOfStock))} day(s) — reorder now.`
         : daysOfStock <= 14
         ? `~${Math.round(daysOfStock)} days of stock left — reorder soon.`
@@ -197,6 +247,7 @@ export default function Forecast() {
         suggestedReorderQty,
         reason: `${trendPhrase} ${stockPhrase}`,
         hasSalesData: true,
+        expiryFlag,
       };
     });
   };
@@ -271,7 +322,7 @@ export default function Forecast() {
         >
           <div className="text-3xl font-bold text-destructive">{urgentCount}</div>
           <div className="mt-1 text-xs font-semibold text-destructive/80">Urgent Restock</div>
-          <div className="text-[11px] text-muted-foreground">≤ 5 days of stock</div>
+          <div className="text-[11px] text-muted-foreground">≤ 5 days or expired</div>
         </button>
 
         <button
@@ -280,7 +331,7 @@ export default function Forecast() {
         >
           <div className="text-3xl font-bold text-warning">{soonCount}</div>
           <div className="mt-1 text-xs font-semibold text-warning/80">Order Soon</div>
-          <div className="text-[11px] text-muted-foreground">6–14 days of stock</div>
+          <div className="text-[11px] text-muted-foreground">6–14 days or expiring</div>
         </button>
 
         <button
@@ -342,13 +393,13 @@ export default function Forecast() {
                         <div className="font-semibold text-sm">{f.name}</div>
                         <div className="text-[11px] text-muted-foreground">{f.generic}</div>
                       </div>
-                      <UrgencyPill urgency={f.urgency} />
+                      <UrgencyPill urgency={f.urgency} expiryFlag={f.expiryFlag} />
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {[
                         { label: "Stock", value: num(f.currentStock) },
                         { label: "Next 14d", value: f.hasSalesData ? num(Math.round(f.predictedUnits14d)) : "—" },
-                        { label: "Days Left", value: f.daysOfStock === Infinity ? "∞" : `${Math.round(f.daysOfStock)}d` },
+                        { label: "Days Left", value: f.daysOfStock === Infinity ? "∞" : f.daysOfStock === 0 ? "0" : `${Math.round(f.daysOfStock)}d` },
                       ].map(({ label, value }) => (
                         <div key={label} className="rounded-lg bg-muted/40 p-2 text-center">
                           <div className="text-[10px] text-muted-foreground">{label}</div>
@@ -408,9 +459,15 @@ export default function Forecast() {
                         </td>
                         <td className="px-4 py-3"><TrendBadge trend={f.trend} /></td>
                         <td className="px-4 py-3 text-right tabular-nums font-medium">
-                          {f.daysOfStock === Infinity ? <span className="text-muted-foreground">∞</span> : `${Math.round(f.daysOfStock)}d`}
+                          {f.daysOfStock === Infinity
+                            ? <span className="text-muted-foreground">∞</span>
+                            : f.daysOfStock === 0
+                            ? <span className="text-destructive font-bold">0</span>
+                            : `${Math.round(f.daysOfStock)}d`}
                         </td>
-                        <td className="px-4 py-3"><UrgencyPill urgency={f.urgency} /></td>
+                        <td className="px-4 py-3">
+                          <UrgencyPill urgency={f.urgency} expiryFlag={f.expiryFlag} />
+                        </td>
                         <td className="px-4 py-3 text-right font-semibold tabular-nums">
                           {f.suggestedReorderQty > 0 ? num(Math.round(f.suggestedReorderQty)) : <span className="text-muted-foreground">—</span>}
                         </td>
@@ -426,7 +483,7 @@ export default function Forecast() {
       </Card>
 
       <p className="text-xs text-muted-foreground">
-        Forecasts are based on weighted moving average + trend analysis from your last 30 days of sales. Review against seasonality, promotions, and supplier lead times before ordering.
+        Forecasts are based on weighted moving average + trend analysis from your last 30 days of sales. Expired products are flagged regardless of stock quantity. Review against seasonality, promotions, and supplier lead times before ordering.
       </p>
     </div>
   );
