@@ -262,6 +262,10 @@ function persist() {
   listeners.forEach((l) => l());
 }
 
+function notify() {
+  listeners.forEach((l) => l());
+}
+
 export const store = {
   get: () => db,
   subscribe(l: () => void) { listeners.add(l); return () => listeners.delete(l); },
@@ -417,11 +421,55 @@ export const store = {
       db.products = []; db.sales = []; db.suppliers = [];
       db.controlledDispense = []; db.audit = [];
       persist();
+      this.stopRealtime();
       return;
     }
     // role/org resolved properly in hydrateFromSupabase; set a placeholder here
     db.user = { username: u.email, role: "Admin" };
     persist();
+  },
+
+  // ── Realtime sync ─────────────────────────────────────────────────────────
+  _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
+
+  stopRealtime() {
+    if (this._realtimeChannel) {
+      supabase.removeChannel(this._realtimeChannel);
+      this._realtimeChannel = null;
+    }
+  },
+
+  startRealtime(orgId: string) {
+    this.stopRealtime();
+
+    const ch = supabase
+      .channel(`org-sync-${orgId}`)
+      // Sales: new sale created by anyone in the org
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sales", filter: `organization_id=eq.${orgId}` },
+        async () => {
+          const { data } = await supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false });
+          if (data) { db.sales = data.map(rowToSale); notify(); }
+        }
+      )
+      // Products: quantity changes (after a sale deducts stock)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "products", filter: `organization_id=eq.${orgId}` },
+        async () => {
+          const { data } = await supabase.from("products_safe_view").select("*").eq("organization_id", orgId);
+          if (data) { db.products = data.map(rowToProduct); notify(); }
+        }
+      )
+      // Organizations: name/logo/settings changes
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "organizations", filter: `id=eq.${orgId}` },
+        async () => {
+          const { data } = await (supabase.from as any)("organizations")
+            .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
+            .eq("id", orgId).maybeSingle();
+          if (data) { db.settings = { ...db.settings, ...rowToSettings(data) }; notify(); }
+        }
+      )
+      .subscribe();
+
+    this._realtimeChannel = ch;
   },
 
   async hydrateFromSupabase() {
@@ -570,6 +618,9 @@ export const store = {
       persist();
       toast.success("Demo data loaded into your admin pharmacy");
     }
+
+    // ── Start realtime sync so all staff see live updates ──────────────────
+    this.startRealtime(orgId);
   },
 };
 
