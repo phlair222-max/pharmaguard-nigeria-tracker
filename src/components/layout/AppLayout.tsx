@@ -13,16 +13,17 @@ import HeaderTicker from "./HeaderTicker";
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const ALL_ITEMS = [
-  { title: "Dashboard", url: "/", icon: LayoutDashboard, planKey: null },
-  { title: "Inventory", url: "/inventory", icon: Package, planKey: null },
-  { title: "POS / Sales", url: "/pos", icon: ShoppingCart, planKey: null },
-  { title: "Sales History", url: "/sales", icon: ReceiptText, planKey: null },
-  { title: "Suppliers", url: "/suppliers", icon: Truck, planKey: "canSuppliers" },
-  { title: "Reports", url: "/reports", icon: FileBarChart2, planKey: "canReports" },
-  { title: "AI Forecast", url: "/forecast", icon: Sparkles, planKey: "canAiForecast" },
-  { title: "Poisons Register", url: "/poisons", icon: ShieldAlert, planKey: "canPoisonsRegister" },
-  { title: "Audit Trail", url: "/audit", icon: History, planKey: "canAuditTrail" },
-  { title: "Settings", url: "/settings", icon: SettingsIcon, planKey: null },
+  { title: "Dashboard",       url: "/",          icon: LayoutDashboard, planKey: null,                   cashierAllowed: true  },
+  { title: "Inventory",       url: "/inventory", icon: Package,         planKey: null,                   cashierAllowed: true  },
+  { title: "POS / Sales",     url: "/pos",       icon: ShoppingCart,    planKey: null,                   cashierAllowed: true  },
+  { title: "Sales History",   url: "/sales",     icon: ReceiptText,     planKey: null,                   cashierAllowed: true  },
+  { title: "Suppliers",       url: "/suppliers", icon: Truck,           planKey: "canSuppliers",         cashierAllowed: false },
+  { title: "Reports",         url: "/reports",   icon: FileBarChart2,   planKey: "canReports",           cashierAllowed: false },
+  { title: "AI Forecast",     url: "/forecast",  icon: Sparkles,        planKey: "canAiForecast",        cashierAllowed: false },
+  // Poisons Register: legally required — Cashiers must access it when dispensing controlled drugs
+  { title: "Poisons Register",url: "/poisons",   icon: ShieldAlert,     planKey: "canPoisonsRegister",   cashierAllowed: true  },
+  { title: "Audit Trail",     url: "/audit",     icon: History,         planKey: "canAuditTrail",        cashierAllowed: false },
+  { title: "Settings",        url: "/settings",  icon: SettingsIcon,    planKey: null,                   cashierAllowed: false },
 ] as const;
 
 function AppSidebar() {
@@ -58,11 +59,15 @@ function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {ALL_ITEMS.map((item) => {
-                const locked = item.planKey ? !planGates[item.planKey as keyof typeof planGates] : false;
+                const isCashier = user?.memberRole === "Cashier";
+                // Role-hidden: Cashier can't see items where cashierAllowed is false — hide entirely
+                if (isCashier && !item.cashierAllowed) return null;
+                // Plan-locked: plan gate fails AND it's not a Cashier bypassing for legal access
+                const planLocked = item.planKey ? !planGates[item.planKey as keyof typeof planGates] : false;
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
-                      {locked ? (
+                      {planLocked ? (
                         <div
                           className="flex items-center gap-2 opacity-40 cursor-not-allowed select-none"
                           title="Upgrade your plan to unlock this feature"
