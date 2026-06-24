@@ -429,54 +429,80 @@ export const store = {
     persist();
   },
 
-  // ── Realtime sync ─────────────────────────────────────────────────────────
+  // ── Live sync: Realtime + polling fallback ───────────────────────────────
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
+  _pollInterval: null as ReturnType<typeof setInterval> | null,
 
   stopRealtime() {
     if (this._realtimeChannel) {
       supabase.removeChannel(this._realtimeChannel);
       this._realtimeChannel = null;
     }
+    if (this._pollInterval) {
+      clearInterval(this._pollInterval);
+      this._pollInterval = null;
+    }
+  },
+
+  async _syncFromServer(orgId: string) {
+    try {
+      const [salesR, prodsR, orgR] = await Promise.all([
+        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+        supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
+        (supabase.from as any)("organizations")
+          .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
+          .eq("id", orgId).maybeSingle(),
+      ]);
+      let changed = false;
+      if (salesR.data) {
+        const fresh = JSON.stringify(salesR.data.map((s: any) => s.id + s.created_at));
+        const current = JSON.stringify(db.sales.map((s) => s.id + s.createdAt));
+        if (fresh !== current) { db.sales = salesR.data.map(rowToSale); changed = true; }
+      }
+      if (prodsR.data) {
+        const fresh = JSON.stringify(prodsR.data.map((p: any) => p.id + p.quantity));
+        const current = JSON.stringify(db.products.map((p) => p.id + p.quantity));
+        if (fresh !== current) { db.products = prodsR.data.map(rowToProduct); changed = true; }
+      }
+      if (orgR.data) {
+        const freshName = orgR.data.name;
+        if (freshName !== db.settings.name) {
+          db.settings = { ...db.settings, ...rowToSettings(orgR.data) };
+          changed = true;
+        }
+      }
+      if (changed) notify();
+    } catch (e) {
+      // silent — polling failure is non-critical
+    }
   },
 
   startRealtime(orgId: string) {
     this.stopRealtime();
 
-    // NOTE: No row-level filters here — filters require REPLICA IDENTITY FULL on each table.
-    // Instead we subscribe to all events on each table; RLS on the re-fetch query scopes data to this org.
+    // Realtime (fires instantly when Replica Identity is set)
     const ch = supabase
       .channel(`org-sync-${orgId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "sales" },
-        async () => {
-          const { data } = await supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false });
-          if (data) { db.sales = data.map(rowToSale); notify(); }
-        }
+        () => { void this._syncFromServer(orgId); }
       )
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "products" },
-        async () => {
-          const { data } = await supabase.from("products_safe_view").select("*").eq("organization_id", orgId);
-          if (data) { db.products = data.map(rowToProduct); notify(); }
-        }
+        () => { void this._syncFromServer(orgId); }
       )
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "products" },
-        async () => {
-          const { data } = await supabase.from("products_safe_view").select("*").eq("organization_id", orgId);
-          if (data) { db.products = data.map(rowToProduct); notify(); }
-        }
+        () => { void this._syncFromServer(orgId); }
       )
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "organizations" },
-        async () => {
-          const { data } = await (supabase.from as any)("organizations")
-            .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
-            .eq("id", orgId).maybeSingle();
-          if (data) { db.settings = { ...db.settings, ...rowToSettings(data) }; notify(); }
-        }
+        () => { void this._syncFromServer(orgId); }
       )
-      .subscribe((status) => {
-        console.log("[realtime] channel status:", status);
-      });
+      .subscribe();
 
     this._realtimeChannel = ch;
+
+    // Polling fallback every 30s — guarantees sync even if realtime drops
+    this._pollInterval = setInterval(() => {
+      void this._syncFromServer(orgId);
+    }, 30_000);
   },
 
   async hydrateFromSupabase() {
