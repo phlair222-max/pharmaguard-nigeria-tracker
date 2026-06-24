@@ -60,10 +60,12 @@ function AppSidebar() {
             <SidebarMenu>
               {ALL_ITEMS.map((item) => {
                 const isCashier = user?.memberRole === "Cashier";
-                // Role-hidden: Cashier can't see items where cashierAllowed is false — hide entirely
-                if (isCashier && !item.cashierAllowed) return null;
-                // Plan-locked: plan gate fails AND it's not a Cashier bypassing for legal access
+                // Plan gate check (same for all roles — plan belongs to the org, not the user)
                 const planLocked = item.planKey ? !planGates[item.planKey as keyof typeof planGates] : false;
+                // Cashier: hide items not meant for them entirely
+                if (isCashier && !item.cashierAllowed) return null;
+                // Cashier: if item is cashierAllowed but plan-locked, hide it (no lock icon — they can't upgrade)
+                if (isCashier && item.cashierAllowed && planLocked) return null;
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
