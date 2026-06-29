@@ -37,13 +37,13 @@ async function fileToDataUrl(file: File, max = 400): Promise<string> {
   });
 }
 
+// CompliancePrefs holds non-VAT local preferences only.
+// VAT is now stored in the org settings (Supabase) via the store.
 type CompliancePrefs = {
   expiryAlertDays: number;
   lowStockAlerts: boolean;
   controlledRequirePrescriber: boolean;
   receiptFooter: string;
-  vatEnabled: boolean;
-  vatRate: number;
 };
 const PREF_KEY = "pharmaguard_prefs";
 const loadPrefs = (): CompliancePrefs => {
@@ -53,12 +53,15 @@ const loadPrefs = (): CompliancePrefs => {
       lowStockAlerts: true,
       controlledRequirePrescriber: true,
       receiptFooter: "Thank you for your patronage. Goods sold are not returnable except defective.",
-      vatEnabled: false,
-      vatRate: 0,
       ...(JSON.parse(localStorage.getItem(PREF_KEY) || "{}")),
     };
   } catch {
-    return { expiryAlertDays: 30, lowStockAlerts: true, controlledRequirePrescriber: true, receiptFooter: "Thank you for your patronage.", vatEnabled: false, vatRate: 0 };
+    return {
+      expiryAlertDays: 30,
+      lowStockAlerts: true,
+      controlledRequirePrescriber: true,
+      receiptFooter: "Thank you for your patronage.",
+    };
   }
 };
 
@@ -66,8 +69,8 @@ export default function Settings() {
   const settings = useStore((s) => s.settings);
   const user = useStore((s) => s.user);
   const loginActivity = useStore((s) => s.loginActivity);
-  // Normalize settings so draft fields are never undefined — prevents a
-  // stale undefined field from clobbering a freshly-uploaded image on save.
+
+  // Normalize settings so draft fields are never undefined
   const normalize = (s: typeof settings) => ({
     ...s,
     logo: s.logo ?? "",
@@ -75,6 +78,8 @@ export default function Settings() {
     ownerName: s.ownerName ?? "",
     email: s.email ?? "",
     premiseLicense: s.premiseLicense ?? "",
+    vatEnabled: s.vatEnabled ?? false,
+    vatRate: s.vatRate ?? 7.5,
   });
 
   const [draft, setDraft] = useState(() => normalize(settings));
@@ -88,7 +93,7 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
 
-  // ── Upload handler: "logo" → draft.logo | "ownerPhoto" → draft.ownerPhoto ──
+  // ── Upload handlers ───────────────────────────────────────────────────────
   const uploadLogo = async (file: File | undefined) => {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
@@ -103,7 +108,7 @@ export default function Settings() {
     setDraft((d) => ({ ...d, ownerPhoto: url }));
   };
 
-  // ── Save branding — explicitly passes both fields to updateSettings ──
+  // ── Save branding ─────────────────────────────────────────────────────────
   const saveBranding = () => {
     const payload = {
       ...draft,
@@ -118,7 +123,17 @@ export default function Settings() {
     toast.success("Branding saved");
   };
 
-  const savePrefs = () => { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); toast.success("Preferences saved"); };
+  // ── Save compliance prefs (non-VAT to localStorage; VAT to store) ─────────
+  const savePrefs = () => {
+    // Save non-VAT prefs to localStorage
+    localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+    // Save VAT settings to store → persists to Supabase organizations table
+    store.updateSettings({
+      vatEnabled: draft.vatEnabled,
+      vatRate: draft.vatRate,
+    });
+    toast.success("Preferences saved");
+  };
 
   return (
     <div className="space-y-4">
@@ -161,7 +176,7 @@ export default function Settings() {
         <TabsContent value="branding">
           <div className="grid gap-4 md:grid-cols-2">
 
-            {/* Pharmacy Logo → saves to settings.logo */}
+            {/* Pharmacy Logo */}
             <Card className="shadow-card">
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-center gap-2 pb-1 text-sm font-medium">
@@ -196,7 +211,7 @@ export default function Settings() {
               </CardContent>
             </Card>
 
-            {/* Owner Photo → saves to settings.ownerPhoto */}
+            {/* Owner Photo */}
             <Card className="shadow-card">
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-center gap-2 pb-1 text-sm font-medium">
@@ -257,43 +272,72 @@ export default function Settings() {
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Expiry alert window (days)</Label>
-                  <Input type="number" min={1} max={365} value={prefs.expiryAlertDays} onChange={(e) => setPrefs({ ...prefs, expiryAlertDays: parseInt(e.target.value) || 30 })} />
+                  <Input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={prefs.expiryAlertDays}
+                    onChange={(e) => setPrefs({ ...prefs, expiryAlertDays: parseInt(e.target.value) || 30 })}
+                  />
                   <p className="text-xs text-muted-foreground">Drugs expiring within this many days are flagged red.</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Receipt footer message</Label>
-                  <Textarea rows={3} value={prefs.receiptFooter} onChange={(e) => setPrefs({ ...prefs, receiptFooter: e.target.value })} />
+                  <Textarea
+                    rows={3}
+                    value={prefs.receiptFooter}
+                    onChange={(e) => setPrefs({ ...prefs, receiptFooter: e.target.value })}
+                  />
                 </div>
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <div>
                     <div className="text-sm font-medium">Low-stock alerts</div>
                     <div className="text-xs text-muted-foreground">Highlight items at or below reorder level</div>
                   </div>
-                  <Switch checked={prefs.lowStockAlerts} onCheckedChange={(v) => setPrefs({ ...prefs, lowStockAlerts: v })} />
+                  <Switch
+                    checked={prefs.lowStockAlerts}
+                    onCheckedChange={(v) => setPrefs({ ...prefs, lowStockAlerts: v })}
+                  />
                 </div>
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <div>
                     <div className="text-sm font-medium">Require prescriber for controlled drugs</div>
                     <div className="text-xs text-muted-foreground">Enforce doctor name + Rx ref at dispensing</div>
                   </div>
-                  <Switch checked={prefs.controlledRequirePrescriber} onCheckedChange={(v) => setPrefs({ ...prefs, controlledRequirePrescriber: v })} />
+                  <Switch
+                    checked={prefs.controlledRequirePrescriber}
+                    onCheckedChange={(v) => setPrefs({ ...prefs, controlledRequirePrescriber: v })}
+                  />
                 </div>
+
+                {/* ── VAT — now bound to draft (store-backed), not prefs ── */}
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <div>
                     <div className="text-sm font-medium">Charge VAT at checkout</div>
                     <div className="text-xs text-muted-foreground">FIRS requires VAT only if turnover ≥ ₦25M/year. Off by default.</div>
                   </div>
-                  <Switch checked={prefs.vatEnabled} onCheckedChange={(v) => setPrefs({ ...prefs, vatEnabled: v })} />
+                  <Switch
+                    checked={draft.vatEnabled ?? false}
+                    onCheckedChange={(v) => setDraft({ ...draft, vatEnabled: v })}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label>VAT rate (%)</Label>
-                  <Input type="number" min={0} max={100} step={0.5} disabled={!prefs.vatEnabled}
-                    value={prefs.vatRate}
-                    onChange={(e) => setPrefs({ ...prefs, vatRate: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })} />
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    disabled={!(draft.vatEnabled ?? false)}
+                    value={draft.vatRate ?? 7.5}
+                    onChange={(e) => setDraft({ ...draft, vatRate: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })}
+                  />
                   <p className="text-xs text-muted-foreground">Nigeria standard rate is 7.5%. Applied at checkout and shown as a line on receipts.</p>
                 </div>
               </div>
-              <div className="flex justify-end"><Button onClick={savePrefs}>Save preferences</Button></div>
+              <div className="flex justify-end">
+                <Button onClick={savePrefs}>Save preferences</Button>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -321,7 +365,6 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
   const [confirmPwd, setConfirmPwd] = useState("");
   const [show, setShow] = useState(false);
 
-  // PIN setup state
   const user = useStore((s) => s.user);
   const [newPin, setNewPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
@@ -331,22 +374,16 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
   useEffect(() => {
     if (!user?.organizationId || !user?.memberRole) return;
     if (!["Owner", "Pharmacist"].includes(user.memberRole)) return;
-    (supabase.from as any)("pharmacist_pins")
-      .select("id")
-      .eq("organization_id", user.organizationId)
-      .eq("user_id", (supabase.auth as any).getUser ? undefined : undefined)
-      .maybeSingle()
-      .then(async () => {
-        // check by current user id
-        const { data: authData } = await supabase.auth.getUser();
-        if (!authData.user) return;
-        const { data } = await (supabase.from as any)("pharmacist_pins")
-          .select("id")
-          .eq("organization_id", user.organizationId)
-          .eq("user_id", authData.user.id)
-          .maybeSingle();
-        setHasPin(!!data);
-      });
+    (async () => {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) return;
+      const { data } = await (supabase.from as any)("pharmacist_pins")
+        .select("id")
+        .eq("organization_id", user.organizationId)
+        .eq("user_id", authData.user.id)
+        .maybeSingle();
+      setHasPin(!!data);
+    })();
   }, [user?.organizationId, user?.memberRole]);
 
   const savePin = async () => {
@@ -562,7 +599,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
 
   const fetchMembers = async () => {
-    if (!organizationId) return;          // wait until hydration lands
+    if (!organizationId) return;
     setLoading(true);
     const { data, error } = await (supabase.from as any)("memberships")
       .select("*")
