@@ -89,9 +89,8 @@ export default function Settings() {
 
   // Resync draft when Supabase hydration lands (settings reference changes)
   useEffect(() => {
-    setDraft(normalize(settings));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings]);
+  setDraft(normalize(settings));
+}, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Upload handlers ───────────────────────────────────────────────────────
   const uploadLogo = async (file: File | undefined) => {
