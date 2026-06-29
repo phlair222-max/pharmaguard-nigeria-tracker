@@ -143,27 +143,34 @@ export default function POS() {
 
   return (
     <div className="space-y-4">
-      {/* ── 80mm thermal print styles — only active during window.print() ── */}
+      {/* ── 80mm thermal print styles ── */}
       <style>{`
         @media print {
           @page {
             size: 80mm auto;
-            margin: 0mm;
+            margin: 0;
+          }
+          html, body {
+            width: 80mm !important;
+            margin: 0 !important;
+            padding: 0 !important;
           }
           body * { visibility: hidden !important; }
           .receipt-print,
           .receipt-print * { visibility: visible !important; }
           .receipt-print {
             display: block !important;
-            position: fixed !important;
+            position: absolute !important;
             left: 0 !important;
             top: 0 !important;
-            width: 80mm !important;
+            width: 72mm !important;
+            max-width: 72mm !important;
             font-family: 'Courier New', Courier, monospace !important;
             font-size: 11px !important;
             color: #000 !important;
             background: #fff !important;
             padding: 4mm !important;
+            overflow: visible !important;
           }
         }
       `}</style>
@@ -334,6 +341,7 @@ export default function POS() {
         </Card>
       </div>
 
+      {/* Receipt — hidden on screen, visible only when printing */}
       {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
 
       {/* ── Barcode Scanner ── */}
@@ -360,10 +368,11 @@ export default function POS() {
   );
 }
 
-// ── Receipt component (hidden on screen, visible only when printing) ──────────
+// ── Receipt component ─────────────────────────────────────────────────────────
+// Hidden on screen via CSS. Print styles above make it the only visible element.
 function Receipt({ sale, settings }: { sale: any; settings: any }) {
   return (
-    <div className="receipt-print hidden print:block">
+    <div className="receipt-print hidden">
       {/* Header */}
       <div style={{ textAlign: "center", marginBottom: 6 }}>
         {settings.logo && (
@@ -408,14 +417,14 @@ function Receipt({ sale, settings }: { sale: any; settings: any }) {
 
       {/* Totals */}
       <div style={{ borderTop: "1px dashed #000", marginTop: 4, paddingTop: 4, fontSize: 11 }}>
-        {/* Subtotal — always show when VAT is applied so customer can see breakdown */}
+        {/* Subtotal — shown when VAT is applied so customer sees breakdown */}
         {sale.vatEnabled && (
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <span>Subtotal</span>
             <span>{Number(sale.subtotal).toFixed(2)}</span>
           </div>
         )}
-        {/* VAT line — only shown when VAT is enabled */}
+        {/* VAT line — only when VAT is enabled */}
         {sale.vatEnabled && (
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <span>VAT ({sale.vatRate}%)</span>
