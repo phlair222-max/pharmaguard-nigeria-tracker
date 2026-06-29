@@ -17,6 +17,8 @@ import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 type CartLine = SaleItem & { stock: number; cost: number };
 
+const LAST_RECEIPT_KEY = "pharmaguard_last_receipt";
+
 // ── Build receipt HTML string (used by both auto-print and manual reprint) ────
 function buildReceiptHtml(sale: any, settings: any): string {
   const logoHtml = settings.logo
@@ -96,7 +98,6 @@ function buildReceiptHtml(sale: any, settings: any): string {
 
 // ── Print using a hidden iframe — stays inside the SaaS, no popup ────────────
 function printReceiptViaIframe(sale: any, settings: any) {
-  // Remove any existing print iframe
   const existing = document.getElementById("receipt-print-frame");
   if (existing) existing.remove();
 
@@ -112,7 +113,6 @@ function printReceiptViaIframe(sale: any, settings: any) {
   doc.write(buildReceiptHtml(sale, settings));
   doc.close();
 
-  // Wait for iframe to render then print
   setTimeout(() => {
     try {
       iframe.contentWindow?.focus();
@@ -120,7 +120,6 @@ function printReceiptViaIframe(sale: any, settings: any) {
     } catch {
       toast.error("Print failed — please try again");
     }
-    // Clean up after print dialog closes
     setTimeout(() => iframe.remove(), 2000);
   }, 300);
 }
@@ -135,9 +134,24 @@ export default function POS() {
   const [payment, setPayment] = useState<"Cash" | "POS" | "Bank Transfer" | "Mobile Money">("Cash");
   const [customer, setCustomer] = useState("");
   const [tendered, setTendered] = useState(0);
-  // Use a ref to hold last receipt so it never triggers re-renders or state bugs
-  const lastReceiptRef = useRef<any>(null);
-  const [hasReceipt, setHasReceipt] = useState(false);
+
+  // ── Persist last receipt across page navigation ───────────────────────────
+  // Initialise ref from localStorage so it survives unmount/remount
+  const lastReceiptRef = useRef<any>(
+    (() => {
+      try {
+        const saved = localStorage.getItem(LAST_RECEIPT_KEY);
+        return saved ? JSON.parse(saved) : null;
+      } catch { return null; }
+    })()
+  );
+  // Initialise hasReceipt from localStorage so button is clickable on return
+  const [hasReceipt, setHasReceipt] = useState<boolean>(
+    () => {
+      try { return !!localStorage.getItem(LAST_RECEIPT_KEY); } catch { return false; }
+    }
+  );
+
   const [quickMode, setQuickMode] = useState(false);
   const [controlledOpen, setControlledOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -227,8 +241,6 @@ export default function POS() {
       }
     }
 
-    // Snapshot receipt data — capture current settings.vatEnabled at time of sale
-    // so sync events cannot alter it after the fact
     const receiptSnapshot = {
       ...sale,
       customer,
@@ -237,17 +249,18 @@ export default function POS() {
       subtotal,
       vatAmount,
       vatRate,
-      vatEnabled,  // captured from settings at moment of sale
+      vatEnabled,
     };
 
-    // Store in ref (no re-render, no state update that could interfere)
+    // Persist to localStorage so button stays clickable after navigation
+    try { localStorage.setItem(LAST_RECEIPT_KEY, JSON.stringify(receiptSnapshot)); } catch {}
+
     lastReceiptRef.current = receiptSnapshot;
     setHasReceipt(true);
 
     setCart([]); setCustomer(""); setTendered(0); setControlledOpen(false);
     toast.success("Sale recorded");
 
-    // Auto-print after short delay to let state settle
     setTimeout(() => {
       printReceiptViaIframe(receiptSnapshot, settings);
     }, 150);
@@ -434,7 +447,6 @@ export default function POS() {
             <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
               Complete Sale · {NGN(total)}
             </Button>
-            {/* Button enabled only when a receipt exists in the ref */}
             <Button variant="outline" className="w-full" size="sm"
               onClick={printReceipt}
               disabled={!hasReceipt}>
