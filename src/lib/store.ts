@@ -115,6 +115,9 @@ export type PharmacySettings = {
   logo?: string;
   ownerPhoto?: string;
   ownerName?: string;
+  // ── VAT ──────────────────────────────────────────────────────────────────
+  vatEnabled?: boolean;   // true = apply VAT to sales
+  vatRate?: number;       // percentage, e.g. 7.5 means 7.5%
 };
 
 type DB = {
@@ -154,6 +157,8 @@ const defaultSettings: PharmacySettings = {
   phone: "+234 800 742 762",
   email: "info@pharmaguard.ng",
   premiseLicense: "PCN/LAG/RP/12345",
+  vatEnabled: false,
+  vatRate: 7.5,
 };
 
 function makeSeed(): DB {
@@ -245,6 +250,9 @@ function load(): DB {
     const parsed = JSON.parse(raw) as DB;
     parsed.suppliers = parsed.suppliers || [];
     parsed.settings = parsed.settings || defaultSettings;
+    // Backfill VAT defaults for existing installs that predate this field
+    if (parsed.settings.vatEnabled === undefined) parsed.settings.vatEnabled = false;
+    if (parsed.settings.vatRate === undefined) parsed.settings.vatRate = 7.5;
     parsed.controlledDispense = parsed.controlledDispense || [];
     parsed.loginActivity = parsed.loginActivity || [];
     parsed.credentials = parsed.credentials || [];
@@ -424,7 +432,6 @@ export const store = {
       this.stopRealtime();
       return;
     }
-    // role/org resolved properly in hydrateFromSupabase; set a placeholder here
     db.user = { username: u.email, role: "Admin" };
     persist();
   },
@@ -450,7 +457,7 @@ export const store = {
         supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
         (supabase.from as any)("organizations")
-          .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
+          .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo, vat_enabled, vat_rate")
           .eq("id", orgId).maybeSingle(),
       ]);
       let changed = false;
@@ -480,7 +487,6 @@ export const store = {
   startRealtime(orgId: string) {
     this.stopRealtime();
 
-    // Realtime (fires instantly when Replica Identity is set)
     const ch = supabase
       .channel(`org-sync-${orgId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "sales" },
@@ -499,7 +505,6 @@ export const store = {
 
     this._realtimeChannel = ch;
 
-    // Polling fallback every 30s — guarantees sync even if realtime drops
     this._pollInterval = setInterval(() => {
       void this._syncFromServer(orgId);
     }, 30_000);
@@ -511,7 +516,6 @@ export const store = {
     const uid = auth.user.id;
     const email = auth.user.email || "";
 
-    // ── 1. Resolve organization membership ───────────────────────────────
     const { data: membership, error: membershipError } = await (supabase.from as any)("memberships")
       .select("organization_id, role, can_view_margins, status")
       .eq("user_id", uid)
@@ -521,15 +525,12 @@ export const store = {
     console.log("[hydrate] uid:", uid, "email:", email);
     console.log("[hydrate] membership result:", membership, "error:", membershipError);
 
-    // Check if this is an invited user whose membership hasn't been activated yet
     if (!membership) {
-      // If the query errored (RLS/permissions) — bail out, do NOT create a new org
       if (membershipError) {
         console.error("[hydrate] membership query failed, aborting:", membershipError.message);
         return;
       }
 
-      // Try matching by invited_email — activate the membership on first login
       const { data: invited, error: invitedError } = await (supabase.from as any)("memberships")
         .select("id, organization_id, role, can_view_margins")
         .eq("invited_email", email.toLowerCase())
@@ -542,16 +543,13 @@ export const store = {
       }
 
       if (invited) {
-        // Activate: attach user_id and flip to active
         await (supabase.from as any)("memberships")
           .update({ user_id: uid, status: "active" })
           .eq("id", invited.id);
         toast.success("Welcome! You've been connected to your pharmacy.");
-        // Re-run hydration now that membership is activated
         return this.hydrateFromSupabase();
       }
 
-      // No membership at all — create a new org for this user (first-time signup)
       const { data: newOrg } = await (supabase.from as any)("organizations")
         .insert({ owner_id: uid, name: "My Pharmacy" })
         .select("id")
@@ -574,7 +572,6 @@ export const store = {
     const memberRole: "Owner" | "Pharmacist" | "Cashier" = membership.role;
     const canViewMargins: boolean = membership.can_view_margins ?? false;
 
-    // Map memberRole to legacy role field (kept for UI compat)
     const legacyRole: "Admin" | "Pharmacist" =
       memberRole === "Owner" ? "Admin" : "Pharmacist";
 
@@ -587,7 +584,6 @@ export const store = {
     };
     persist();
 
-    // ── 2. Load all org data — RLS enforces access, no manual user_id filter ──
     const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
       supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
       supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
@@ -595,7 +591,7 @@ export const store = {
       (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
       (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
-      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
+      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo, vat_enabled, vat_rate").eq("id", orgId).maybeSingle(),
       (supabase.from as any)("plan_config").select("*"),
     ]);
 
@@ -607,15 +603,12 @@ export const store = {
     db.suppliers = (supR.data || []).map(rowToSupplier);
     db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
     db.audit = ((audR as any).data || []).map(rowToAudit);
-    // Load pharmacy identity from org row (shared by all staff in the org)
     if ((orgR as any)?.data) db.settings = { ...db.settings, ...rowToSettings((orgR as any).data) };
 
-    // ── subscription tier ──
     const orgTier: string = (orgR as any)?.data?.subscription_tier ?? "free";
     const orgExpiry: string | null = (orgR as any)?.data?.subscription_expires_at ?? null;
     db.user = { ...db.user!, subscriptionTier: orgTier, subscriptionExpiresAt: orgExpiry };
 
-    // ── plan config ──
     const plans: any[] = (planR as any)?.data || [];
     const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
     db.plan = thisPlan ? {
@@ -633,7 +626,6 @@ export const store = {
     } : null;
     persist();
 
-    // ── 3. Seed demo data for platform admin only ─────────────────────────
     if (
       email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
       db.products.length === 0 &&
@@ -652,7 +644,6 @@ export const store = {
       toast.success("Demo data loaded into your admin pharmacy");
     }
 
-    // ── Start realtime sync so all staff see live updates ──────────────────
     this.startRealtime(orgId);
   },
 };
@@ -739,7 +730,6 @@ function rowToAudit(r: any): AuditEntry {
 }
 function rowToSettings(r: any): Partial<PharmacySettings> {
   return {
-    // org table uses "name" directly (not "pharmacy_name")
     name: r.name || undefined,
     address: r.address || undefined,
     phone: r.phone || undefined,
@@ -748,11 +738,13 @@ function rowToSettings(r: any): Partial<PharmacySettings> {
     logo: r.logo || undefined,
     ownerPhoto: r.owner_photo || undefined,
     ownerName: r.owner_name || undefined,
+    // VAT — gracefully undefined if columns don't exist yet in org table
+    vatEnabled: r.vat_enabled ?? undefined,
+    vatRate: r.vat_rate != null ? Number(r.vat_rate) : undefined,
   };
 }
 function settingsPatchToRow(p: Partial<PharmacySettings>) {
   const out: any = {};
-  // org table uses "name" directly (not "pharmacy_name")
   if (p.name !== undefined) out.name = p.name;
   if (p.address !== undefined) out.address = p.address;
   if (p.phone !== undefined) out.phone = p.phone;
@@ -761,6 +753,9 @@ function settingsPatchToRow(p: Partial<PharmacySettings>) {
   if (p.logo !== undefined) out.logo = p.logo;
   if (p.ownerPhoto !== undefined) out.owner_photo = p.ownerPhoto;
   if (p.ownerName !== undefined) out.owner_name = p.ownerName;
+  // Only write VAT columns if they exist — Supabase will ignore unknown columns
+  if (p.vatEnabled !== undefined) out.vat_enabled = p.vatEnabled;
+  if (p.vatRate !== undefined) out.vat_rate = p.vatRate;
   return out;
 }
 
@@ -855,7 +850,6 @@ const supabasePush = {
     });
     if (error) console.error(error);
   },
-  // Writes pharmacy identity to organizations table — shared by all staff in the org
   async updateOrgSettings(p: Partial<PharmacySettings>) {
     const ctx = await this._context(); if (!ctx) return;
     const row = settingsPatchToRow(p);
@@ -930,20 +924,17 @@ export function usePlan() {
     ? new Date(user.subscriptionExpiresAt) < new Date()
     : false;
 
-  // If expired, treat as free
   const effectivePlan = isExpired ? null : plan;
 
   return {
     plan: effectivePlan,
     tier: isExpired ? "free" : (user?.subscriptionTier ?? "free"),
     isExpired,
-    // Feature gates
     canAiForecast: effectivePlan?.canAiForecast ?? false,
     canPoisonsRegister: effectivePlan?.canPoisonsRegister ?? false,
     canReports: effectivePlan?.canReports ?? false,
     canSuppliers: effectivePlan?.canSuppliers ?? false,
     canAuditTrail: effectivePlan?.canAuditTrail ?? false,
-    // Limit checks
     atProductLimit: effectivePlan
       ? (effectivePlan.maxProducts !== -1 && products.length >= effectivePlan.maxProducts)
       : products.length >= 50,
