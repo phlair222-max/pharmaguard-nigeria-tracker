@@ -17,6 +17,111 @@ import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 type CartLine = SaleItem & { stock: number; cost: number };
 
+// ── Print receipt in an isolated popup window (guarantees 1 page, 80mm) ──────
+function printReceiptInPopup(sale: any, settings: any) {
+  const win = window.open("", "_blank", "width=320,height=600");
+  if (!win) { toast.error("Pop-up blocked — allow pop-ups and try again"); return; }
+
+  const logoHtml = settings.logo
+    ? `<div style="margin-bottom:4px"><img src="${settings.logo}" style="height:50px;width:50px;object-fit:contain"/></div>`
+    : "";
+
+  const itemRows = (sale.items as SaleItem[]).map((it: SaleItem) =>
+    `<tr>
+      <td style="padding-bottom:1px">${it.name}</td>
+      <td style="text-align:center;padding-bottom:1px">${it.qty}</td>
+      <td style="text-align:right;padding-bottom:1px">${(it.qty * it.price).toFixed(2)}</td>
+    </tr>`
+  ).join("");
+
+  const subtotalLine = sale.vatEnabled
+    ? `<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${Number(sale.subtotal).toFixed(2)}</span></div>`
+    : "";
+
+  const vatLine = sale.vatEnabled
+    ? `<div style="display:flex;justify-content:space-between"><span>VAT (${sale.vatRate}%)</span><span>${Number(sale.vatAmount).toFixed(2)}</span></div>`
+    : "";
+
+  const cashLines = sale.payment === "Cash"
+    ? `<div style="display:flex;justify-content:space-between"><span>Tendered</span><span>${Number(sale.tendered).toFixed(2)}</span></div>
+       <div style="display:flex;justify-content:space-between"><span>Change</span><span>${Number(sale.change).toFixed(2)}</span></div>`
+    : "";
+
+  const customerLine = sale.customer ? `<div>Customer: ${sale.customer}</div>` : "";
+  const emailLine = settings.email ? `<div style="font-size:10px">${settings.email}</div>` : "";
+  const licLine = settings.premiseLicense ? `<div style="font-size:10px">Lic: ${settings.premiseLicense}</div>` : "";
+  const dateStr = format(new Date(sale.createdAt), "dd MMM yyyy HH:mm");
+
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Receipt</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  @page { size: 80mm auto; margin: 0; }
+  body {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 11px;
+    color: #000;
+    background: #fff;
+    width: 80mm;
+    padding: 4mm;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 4px; }
+  th { text-align: left; padding-bottom: 2px; }
+  th:nth-child(2) { text-align: center; }
+  th:nth-child(3) { text-align: right; }
+</style>
+</head>
+<body>
+  <div style="text-align:center;margin-bottom:6px">
+    ${logoHtml}
+    <div style="font-weight:700;font-size:13px;text-transform:uppercase">${settings.name || ""}</div>
+    <div style="font-size:10px">${settings.address || ""}</div>
+    <div style="font-size:10px">Tel: ${settings.phone || ""}</div>
+    ${emailLine}
+    ${licLine}
+  </div>
+  <div style="border-top:1px dashed #000;border-bottom:1px dashed #000;padding:4px 0;font-size:10px">
+    <div>Receipt: ${sale.id.slice(0, 8).toUpperCase()}</div>
+    <div>Date: ${dateStr}</div>
+    <div>Cashier: ${sale.cashier}</div>
+    ${customerLine}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th style="text-align:center">Qty</th>
+        <th style="text-align:right">Amt</th>
+      </tr>
+    </thead>
+    <tbody>${itemRows}</tbody>
+  </table>
+  <div style="border-top:1px dashed #000;margin-top:4px;padding-top:4px;font-size:11px">
+    ${subtotalLine}
+    ${vatLine}
+    <div style="display:flex;justify-content:space-between;font-weight:700;font-size:12px;margin-top:2px">
+      <span>TOTAL (NGN)</span>
+      <span>${Number(sale.total).toFixed(2)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:2px">
+      <span>Payment</span><span>${sale.payment}</span>
+    </div>
+    ${cashLines}
+  </div>
+  <div style="text-align:center;margin-top:8px;font-size:10px">
+    Thank you for your patronage<br/>Goods sold are not returnable
+  </div>
+</body>
+</html>`);
+
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); win.close(); }, 400);
+}
+
 export default function POS() {
   const products = useStore((s) => s.products);
   const user = useStore((s) => s.user);
@@ -31,8 +136,6 @@ export default function POS() {
   const [quickMode, setQuickMode] = useState(false);
   const [controlledOpen, setControlledOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
-
-  // ── Barcode scanner state ─────────────────────────────────────────────────
   const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
 
   const results = useMemo(() => {
@@ -72,14 +175,9 @@ export default function POS() {
     if (quickMode) setQ("");
   };
 
-  // ── Barcode scan handler ──────────────────────────────────────────────────
   const onBarcodeScanned = (barcode: string) => {
     const exact = products.find((p) => p.barcode === barcode);
-    if (exact) {
-      add(exact.id);
-      toast.success(`Added: ${exact.name}`);
-      return;
-    }
+    if (exact) { add(exact.id); toast.success(`Added: ${exact.name}`); return; }
     setQ(barcode);
     toast.info(`Barcode ${barcode} — no exact match, showing search results`);
   };
@@ -87,7 +185,6 @@ export default function POS() {
   const setQty = (id: string, qty: number) => setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
   const remove = (id: string) => setCart((c) => c.filter((l) => l.productId !== id));
 
-  // ── Totals with VAT ───────────────────────────────────────────────────────
   const subtotal = cart.reduce((a, l) => a + l.qty * l.price, 0);
   const vatEnabled = settings.vatEnabled ?? false;
   const vatRate = settings.vatRate ?? 7.5;
@@ -117,9 +214,11 @@ export default function POS() {
         });
       }
     }
-    setLastReceipt({ ...sale, customer, tendered, change, subtotal, vatAmount, vatRate, vatEnabled });
+    const receipt = { ...sale, customer, tendered, change, subtotal, vatAmount, vatRate, vatEnabled };
+    setLastReceipt(receipt);
     setCart([]); setCustomer(""); setTendered(0); setControlledOpen(false);
     toast.success("Sale recorded");
+    printReceiptInPopup(receipt, settings);
   };
 
   const checkout = () => {
@@ -131,50 +230,15 @@ export default function POS() {
     finalizeSale();
   };
 
-  const onPinAuthorized = () => {
-    setPinOpen(false);
-    setControlledOpen(true);
-  };
+  const onPinAuthorized = () => { setPinOpen(false); setControlledOpen(true); };
 
   const printReceipt = () => {
     if (!lastReceipt) { toast.error("No receipt to print"); return; }
-    setTimeout(() => window.print(), 100);
+    printReceiptInPopup(lastReceipt, settings);
   };
 
   return (
     <div className="space-y-4">
-      {/* ── 80mm thermal print styles ── */}
-      <style>{`
-        @media print {
-          @page {
-            size: 80mm auto;
-            margin: 0;
-          }
-          html, body {
-            width: 80mm !important;
-            margin: 0 !important;
-            padding: 0 !important;
-          }
-          body * { visibility: hidden !important; }
-          .receipt-print,
-          .receipt-print * { visibility: visible !important; }
-          .receipt-print {
-            display: block !important;
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 72mm !important;
-            max-width: 72mm !important;
-            font-family: 'Courier New', Courier, monospace !important;
-            font-size: 11px !important;
-            color: #000 !important;
-            background: #fff !important;
-            padding: 4mm !important;
-            overflow: visible !important;
-          }
-        }
-      `}</style>
-
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Sales Counter</h1>
@@ -212,13 +276,7 @@ export default function POS() {
                     onKeyDown={(e) => { if (e.key === "Enter" && results[0]) add(results[0].id); }}
                   />
                 </div>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-11 w-11 shrink-0"
-                  title="Scan barcode with camera"
-                  onClick={() => setBarcodeScanOpen(true)}
-                >
+                <Button size="icon" variant="outline" className="h-11 w-11 shrink-0" title="Scan barcode with camera" onClick={() => setBarcodeScanOpen(true)}>
                   <ScanLine className="h-5 w-5" />
                 </Button>
               </div>
@@ -287,7 +345,6 @@ export default function POS() {
               ))}
             </div>
 
-            {/* ── Totals ── */}
             <div className="space-y-1.5 border-t pt-3">
               <div className="flex justify-between text-sm">
                 <span>Subtotal</span><span>{NGN(subtotal)}</span>
@@ -335,128 +392,15 @@ export default function POS() {
               Complete Sale · {NGN(total)}
             </Button>
             <Button variant="outline" className="w-full" size="sm" onClick={printReceipt} disabled={!lastReceipt}>
-              <Printer className="mr-2 h-4 w-4" /> Print receipt
+              <Printer className="mr-2 h-4 w-4" /> Print last receipt
             </Button>
           </CardContent>
         </Card>
       </div>
 
-      {/* Receipt — hidden on screen, visible only when printing */}
-      {lastReceipt && <Receipt sale={lastReceipt} settings={settings} />}
-
-      {/* ── Barcode Scanner ── */}
-      <BarcodeScanner
-        open={barcodeScanOpen}
-        onOpenChange={setBarcodeScanOpen}
-        onScanned={onBarcodeScanned}
-        title="Scan Product Barcode"
-      />
-
-      <PinAuthDialog
-        open={pinOpen}
-        onOpenChange={setPinOpen}
-        organizationId={user?.organizationId ?? ""}
-        onAuthorized={onPinAuthorized}
-      />
-      <ControlledDispenseDialog
-        open={controlledOpen}
-        onOpenChange={setControlledOpen}
-        items={controlledInCart}
-        onConfirm={finalizeSale}
-      />
-    </div>
-  );
-}
-
-// ── Receipt component ─────────────────────────────────────────────────────────
-// Hidden on screen via CSS. Print styles above make it the only visible element.
-function Receipt({ sale, settings }: { sale: any; settings: any }) {
-  return (
-    <div className="receipt-print hidden">
-      {/* Header */}
-      <div style={{ textAlign: "center", marginBottom: 6 }}>
-        {settings.logo && (
-          <div style={{ marginBottom: 4 }}>
-            <img src={settings.logo} alt="logo" style={{ height: 50, width: 50, objectFit: "contain", display: "inline-block" }} />
-          </div>
-        )}
-        <div style={{ fontWeight: 700, fontSize: 13, textTransform: "uppercase" }}>{settings.name}</div>
-        <div style={{ fontSize: 10 }}>{settings.address}</div>
-        <div style={{ fontSize: 10 }}>Tel: {settings.phone}</div>
-        {settings.email && <div style={{ fontSize: 10 }}>{settings.email}</div>}
-        {settings.premiseLicense && <div style={{ fontSize: 10 }}>Lic: {settings.premiseLicense}</div>}
-      </div>
-
-      {/* Transaction info */}
-      <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "4px 0", fontSize: 10 }}>
-        <div>Receipt: {sale.id.slice(0, 8).toUpperCase()}</div>
-        <div>Date: {format(new Date(sale.createdAt), "dd MMM yyyy HH:mm")}</div>
-        <div>Cashier: {sale.cashier}</div>
-        {sale.customer && <div>Customer: {sale.customer}</div>}
-      </div>
-
-      {/* Items */}
-      <table style={{ width: "100%", fontSize: 10, marginTop: 4, borderCollapse: "collapse" }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: "left", paddingBottom: 2 }}>Item</th>
-            <th style={{ textAlign: "center", paddingBottom: 2 }}>Qty</th>
-            <th style={{ textAlign: "right", paddingBottom: 2 }}>Amt</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sale.items.map((it: SaleItem, i: number) => (
-            <tr key={i}>
-              <td style={{ paddingBottom: 1 }}>{it.name}</td>
-              <td style={{ textAlign: "center", paddingBottom: 1 }}>{it.qty}</td>
-              <td style={{ textAlign: "right", paddingBottom: 1 }}>{(it.qty * it.price).toFixed(2)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {/* Totals */}
-      <div style={{ borderTop: "1px dashed #000", marginTop: 4, paddingTop: 4, fontSize: 11 }}>
-        {/* Subtotal — shown when VAT is applied so customer sees breakdown */}
-        {sale.vatEnabled && (
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span>Subtotal</span>
-            <span>{Number(sale.subtotal).toFixed(2)}</span>
-          </div>
-        )}
-        {/* VAT line — only when VAT is enabled */}
-        {sale.vatEnabled && (
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span>VAT ({sale.vatRate}%)</span>
-            <span>{Number(sale.vatAmount).toFixed(2)}</span>
-          </div>
-        )}
-        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 12, marginTop: 2 }}>
-          <span>TOTAL (NGN)</span>
-          <span>{Number(sale.total).toFixed(2)}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
-          <span>Payment</span>
-          <span>{sale.payment}</span>
-        </div>
-        {sale.payment === "Cash" && (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>Tendered</span>
-              <span>{Number(sale.tendered).toFixed(2)}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>Change</span>
-              <span>{Number(sale.change).toFixed(2)}</span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div style={{ textAlign: "center", marginTop: 8, fontSize: 10 }}>
-        Thank you for your patronage<br />Goods sold are not returnable
-      </div>
+      <BarcodeScanner open={barcodeScanOpen} onOpenChange={setBarcodeScanOpen} onScanned={onBarcodeScanned} title="Scan Product Barcode" />
+      <PinAuthDialog open={pinOpen} onOpenChange={setPinOpen} organizationId={user?.organizationId ?? ""} onAuthorized={onPinAuthorized} />
+      <ControlledDispenseDialog open={controlledOpen} onOpenChange={setControlledOpen} items={controlledInCart} onConfirm={finalizeSale} />
     </div>
   );
 }
@@ -477,8 +421,7 @@ function ControlledDispenseDialog({
     for (const it of items) {
       const f = forms[it.productId] || {};
       if (!f.patientName?.trim() || !f.prescriber?.trim() || !f.prescriptionRef?.trim()) {
-        toast.error(`Fill required fields for ${it.name}`);
-        return;
+        toast.error(`Fill required fields for ${it.name}`); return;
       }
     }
     const clean: any = {};
@@ -515,35 +458,18 @@ function ControlledDispenseDialog({
                 <Badge variant="outline" className="border-destructive text-destructive">Qty {it.qty}</Badge>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-                <div>
-                  <Label className="text-xs">Patient name *</Label>
-                  <Input value={forms[it.productId]?.patientName || ""} onChange={(e) => update(it.productId, "patientName", e.target.value)} />
-                </div>
-                <div>
-                  <Label className="text-xs">Patient phone</Label>
-                  <Input value={forms[it.productId]?.patientPhone || ""} onChange={(e) => update(it.productId, "patientPhone", e.target.value)} />
-                </div>
-                <div>
-                  <Label className="text-xs">Prescriber (Doctor) *</Label>
-                  <Input value={forms[it.productId]?.prescriber || ""} onChange={(e) => update(it.productId, "prescriber", e.target.value)} />
-                </div>
-                <div>
-                  <Label className="text-xs">MDCN / Reg No</Label>
-                  <Input value={forms[it.productId]?.prescriberRegNo || ""} onChange={(e) => update(it.productId, "prescriberRegNo", e.target.value)} />
-                </div>
-                <div className="md:col-span-2">
-                  <Label className="text-xs">Prescription Ref *</Label>
-                  <Input value={forms[it.productId]?.prescriptionRef || ""} onChange={(e) => update(it.productId, "prescriptionRef", e.target.value)} placeholder="e.g. RX-2026-00123" />
-                </div>
+                <div><Label className="text-xs">Patient name *</Label><Input value={forms[it.productId]?.patientName || ""} onChange={(e) => update(it.productId, "patientName", e.target.value)} /></div>
+                <div><Label className="text-xs">Patient phone</Label><Input value={forms[it.productId]?.patientPhone || ""} onChange={(e) => update(it.productId, "patientPhone", e.target.value)} /></div>
+                <div><Label className="text-xs">Prescriber (Doctor) *</Label><Input value={forms[it.productId]?.prescriber || ""} onChange={(e) => update(it.productId, "prescriber", e.target.value)} /></div>
+                <div><Label className="text-xs">MDCN / Reg No</Label><Input value={forms[it.productId]?.prescriberRegNo || ""} onChange={(e) => update(it.productId, "prescriberRegNo", e.target.value)} /></div>
+                <div className="md:col-span-2"><Label className="text-xs">Prescription Ref *</Label><Input value={forms[it.productId]?.prescriptionRef || ""} onChange={(e) => update(it.productId, "prescriptionRef", e.target.value)} placeholder="e.g. RX-2026-00123" /></div>
               </div>
             </div>
           ))}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
-            Save & complete sale
-          </Button>
+          <Button onClick={submit} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Save & complete sale</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -567,27 +493,18 @@ function PinAuthDialog({
   const [loading, setLoading] = useState(false);
 
   const verify = async () => {
-    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-      toast.error("Enter a valid 4-digit PIN"); return;
-    }
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) { toast.error("Enter a valid 4-digit PIN"); return; }
     setLoading(true);
     try {
       const hashed = await hashPin(pin);
       const { data, error } = await (supabase.from as any)("pharmacist_pins")
-        .select("id")
-        .eq("organization_id", organizationId)
-        .eq("pin_hash", hashed)
-        .maybeSingle();
-
+        .select("id").eq("organization_id", organizationId).eq("pin_hash", hashed).maybeSingle();
       if (error) { toast.error("Verification failed — try again"); return; }
       if (!data) { toast.error("Incorrect PIN"); setPin(""); return; }
-
       toast.success("Pharmacist authorized ✓");
       setPin("");
       onAuthorized();
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   return (
@@ -598,22 +515,13 @@ function PinAuthDialog({
             <KeyRound className="h-5 w-5" /> Pharmacist Authorization Required
           </DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-muted-foreground">
-          This sale contains controlled substances. A registered pharmacist must enter their PIN to authorize dispensing.
-        </p>
+        <p className="text-sm text-muted-foreground">This sale contains controlled substances. A registered pharmacist must enter their PIN to authorize dispensing.</p>
         <div className="space-y-3 py-2">
           <Label className="text-xs">Pharmacist PIN (4 digits)</Label>
-          <Input
-            type="password"
-            inputMode="numeric"
-            maxLength={4}
-            placeholder="••••"
-            value={pin}
+          <Input type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pin}
             onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
             onKeyDown={(e) => e.key === "Enter" && verify()}
-            className="text-center text-2xl tracking-widest"
-            autoFocus
-          />
+            className="text-center text-2xl tracking-widest" autoFocus />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => { setPin(""); onOpenChange(false); }}>Cancel</Button>
