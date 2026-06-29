@@ -457,7 +457,7 @@ export const store = {
         supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
         (supabase.from as any)("organizations")
-          .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo, vat_enabled, vat_rate")
+          .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
           .eq("id", orgId).maybeSingle(),
       ]);
       let changed = false;
@@ -591,7 +591,7 @@ export const store = {
       (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
       (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
       supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
-      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo, vat_enabled, vat_rate").eq("id", orgId).maybeSingle(),
+      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
       (supabase.from as any)("plan_config").select("*"),
     ]);
 
