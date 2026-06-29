@@ -20,6 +20,7 @@ type CartLine = SaleItem & { stock: number; cost: number };
 export default function POS() {
   const products = useStore((s) => s.products);
   const user = useStore((s) => s.user);
+  const settings = useStore((s) => s.settings);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | "controlled" | "low">("all");
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -30,7 +31,6 @@ export default function POS() {
   const [quickMode, setQuickMode] = useState(false);
   const [controlledOpen, setControlledOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
-  const settings = useStore((s) => s.settings);
 
   // ── Barcode scanner state ─────────────────────────────────────────────────
   const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
@@ -73,8 +73,6 @@ export default function POS() {
   };
 
   // ── Barcode scan handler ──────────────────────────────────────────────────
-  // 1. Try exact barcode match first
-  // 2. Fall back to name/generic search and auto-add if exactly one result
   const onBarcodeScanned = (barcode: string) => {
     const exact = products.find((p) => p.barcode === barcode);
     if (exact) {
@@ -82,7 +80,6 @@ export default function POS() {
       toast.success(`Added: ${exact.name}`);
       return;
     }
-    // No exact barcode match — put value in search box so staff can confirm
     setQ(barcode);
     toast.info(`Barcode ${barcode} — no exact match, showing search results`);
   };
@@ -90,7 +87,12 @@ export default function POS() {
   const setQty = (id: string, qty: number) => setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
   const remove = (id: string) => setCart((c) => c.filter((l) => l.productId !== id));
 
-  const total = cart.reduce((a, l) => a + l.qty * l.price, 0);
+  // ── Totals with VAT ───────────────────────────────────────────────────────
+  const subtotal = cart.reduce((a, l) => a + l.qty * l.price, 0);
+  const vatEnabled = settings.vatEnabled ?? false;
+  const vatRate = settings.vatRate ?? 7.5;
+  const vatAmount = vatEnabled ? subtotal * (vatRate / 100) : 0;
+  const total = subtotal + vatAmount;
   const profit = cart.reduce((a, l) => a + l.qty * (l.price - l.cost), 0);
   const change = payment === "Cash" ? Math.max(0, tendered - total) : 0;
 
@@ -115,7 +117,7 @@ export default function POS() {
         });
       }
     }
-    setLastReceipt({ ...sale, customer, tendered, change });
+    setLastReceipt({ ...sale, customer, tendered, change, subtotal, vatAmount, vatRate, vatEnabled });
     setCart([]); setCustomer(""); setTendered(0); setControlledOpen(false);
     toast.success("Sale recorded");
   };
@@ -141,6 +143,31 @@ export default function POS() {
 
   return (
     <div className="space-y-4">
+      {/* ── 80mm thermal print styles — only active during window.print() ── */}
+      <style>{`
+        @media print {
+          @page {
+            size: 80mm auto;
+            margin: 0mm;
+          }
+          body * { visibility: hidden !important; }
+          .receipt-print,
+          .receipt-print * { visibility: visible !important; }
+          .receipt-print {
+            display: block !important;
+            position: fixed !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 80mm !important;
+            font-family: 'Courier New', Courier, monospace !important;
+            font-size: 11px !important;
+            color: #000 !important;
+            background: #fff !important;
+            padding: 4mm !important;
+          }
+        }
+      `}</style>
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Sales Counter</h1>
@@ -166,7 +193,6 @@ export default function POS() {
         <div className="space-y-3 lg:col-span-3">
           <Card className="shadow-card">
             <CardHeader className="pb-3 space-y-3">
-              {/* Search bar + scan button side by side */}
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -254,8 +280,17 @@ export default function POS() {
               ))}
             </div>
 
-            <div className="space-y-2 border-t pt-3">
-              <div className="flex justify-between text-sm"><span>Subtotal</span><span>{NGN(total)}</span></div>
+            {/* ── Totals ── */}
+            <div className="space-y-1.5 border-t pt-3">
+              <div className="flex justify-between text-sm">
+                <span>Subtotal</span><span>{NGN(subtotal)}</span>
+              </div>
+              {vatEnabled && (
+                <div className="flex justify-between text-sm text-muted-foreground">
+                  <span>VAT ({vatRate}%)</span>
+                  <span>{NGN(vatAmount)}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-base font-semibold">
                 <span>Total</span><span className="text-primary">{NGN(total)}</span>
               </div>
@@ -325,47 +360,91 @@ export default function POS() {
   );
 }
 
+// ── Receipt component (hidden on screen, visible only when printing) ──────────
 function Receipt({ sale, settings }: { sale: any; settings: any }) {
   return (
     <div className="receipt-print hidden print:block">
+      {/* Header */}
       <div style={{ textAlign: "center", marginBottom: 6 }}>
         {settings.logo && (
           <div style={{ marginBottom: 4 }}>
             <img src={settings.logo} alt="logo" style={{ height: 50, width: 50, objectFit: "contain", display: "inline-block" }} />
           </div>
         )}
-        <div style={{ fontWeight: 700, fontSize: 14, textTransform: "uppercase" }}>{settings.name}</div>
+        <div style={{ fontWeight: 700, fontSize: 13, textTransform: "uppercase" }}>{settings.name}</div>
         <div style={{ fontSize: 10 }}>{settings.address}</div>
         <div style={{ fontSize: 10 }}>Tel: {settings.phone}</div>
         {settings.email && <div style={{ fontSize: 10 }}>{settings.email}</div>}
         {settings.premiseLicense && <div style={{ fontSize: 10 }}>Lic: {settings.premiseLicense}</div>}
       </div>
-      <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "4px 0", fontSize: 11 }}>
+
+      {/* Transaction info */}
+      <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "4px 0", fontSize: 10 }}>
         <div>Receipt: {sale.id.slice(0, 8).toUpperCase()}</div>
         <div>Date: {format(new Date(sale.createdAt), "dd MMM yyyy HH:mm")}</div>
         <div>Cashier: {sale.cashier}</div>
         {sale.customer && <div>Customer: {sale.customer}</div>}
       </div>
-      <table style={{ width: "100%", fontSize: 11, marginTop: 4 }}>
-        <thead><tr><th style={{ textAlign: "left" }}>Item</th><th>Qty</th><th style={{ textAlign: "right" }}>Amt</th></tr></thead>
+
+      {/* Items */}
+      <table style={{ width: "100%", fontSize: 10, marginTop: 4, borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: "left", paddingBottom: 2 }}>Item</th>
+            <th style={{ textAlign: "center", paddingBottom: 2 }}>Qty</th>
+            <th style={{ textAlign: "right", paddingBottom: 2 }}>Amt</th>
+          </tr>
+        </thead>
         <tbody>
           {sale.items.map((it: SaleItem, i: number) => (
             <tr key={i}>
-              <td>{it.name}</td>
-              <td style={{ textAlign: "center" }}>{it.qty}</td>
-              <td style={{ textAlign: "right" }}>{(it.qty * it.price).toFixed(2)}</td>
+              <td style={{ paddingBottom: 1 }}>{it.name}</td>
+              <td style={{ textAlign: "center", paddingBottom: 1 }}>{it.qty}</td>
+              <td style={{ textAlign: "right", paddingBottom: 1 }}>{(it.qty * it.price).toFixed(2)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <div style={{ borderTop: "1px dashed #000", marginTop: 4, paddingTop: 4, fontSize: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}><span>TOTAL</span><span>NGN {sale.total.toFixed(2)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between" }}><span>Payment</span><span>{sale.payment}</span></div>
-        {sale.payment === "Cash" && (<>
-          <div style={{ display: "flex", justifyContent: "space-between" }}><span>Tendered</span><span>{Number(sale.tendered).toFixed(2)}</span></div>
-          <div style={{ display: "flex", justifyContent: "space-between" }}><span>Change</span><span>{Number(sale.change).toFixed(2)}</span></div>
-        </>)}
+
+      {/* Totals */}
+      <div style={{ borderTop: "1px dashed #000", marginTop: 4, paddingTop: 4, fontSize: 11 }}>
+        {/* Subtotal — always show when VAT is applied so customer can see breakdown */}
+        {sale.vatEnabled && (
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span>Subtotal</span>
+            <span>{Number(sale.subtotal).toFixed(2)}</span>
+          </div>
+        )}
+        {/* VAT line — only shown when VAT is enabled */}
+        {sale.vatEnabled && (
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span>VAT ({sale.vatRate}%)</span>
+            <span>{Number(sale.vatAmount).toFixed(2)}</span>
+          </div>
+        )}
+        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 12, marginTop: 2 }}>
+          <span>TOTAL (NGN)</span>
+          <span>{Number(sale.total).toFixed(2)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
+          <span>Payment</span>
+          <span>{sale.payment}</span>
+        </div>
+        {sale.payment === "Cash" && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Tendered</span>
+              <span>{Number(sale.tendered).toFixed(2)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Change</span>
+              <span>{Number(sale.change).toFixed(2)}</span>
+            </div>
+          </>
+        )}
       </div>
+
+      {/* Footer */}
       <div style={{ textAlign: "center", marginTop: 8, fontSize: 10 }}>
         Thank you for your patronage<br />Goods sold are not returnable
       </div>
