@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -17,61 +17,46 @@ import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 type CartLine = SaleItem & { stock: number; cost: number };
 
-// ── Print receipt in an isolated popup window (guarantees 1 page, 80mm) ──────
-function printReceiptInPopup(sale: any, settings: any) {
-  const win = window.open("", "_blank", "width=320,height=600");
-  if (!win) { toast.error("Pop-up blocked — allow pop-ups and try again"); return; }
-
+// ── Build receipt HTML string (used by both auto-print and manual reprint) ────
+function buildReceiptHtml(sale: any, settings: any): string {
   const logoHtml = settings.logo
     ? `<div style="margin-bottom:4px"><img src="${settings.logo}" style="height:50px;width:50px;object-fit:contain"/></div>`
     : "";
 
   const itemRows = (sale.items as SaleItem[]).map((it: SaleItem) =>
     `<tr>
-      <td style="padding-bottom:1px">${it.name}</td>
-      <td style="text-align:center;padding-bottom:1px">${it.qty}</td>
-      <td style="text-align:right;padding-bottom:1px">${(it.qty * it.price).toFixed(2)}</td>
+      <td style="padding-bottom:2px;padding-right:4px">${it.name}</td>
+      <td style="text-align:center;padding-bottom:2px;padding-right:4px">${it.qty}</td>
+      <td style="text-align:right;padding-bottom:2px">${(it.qty * it.price).toFixed(2)}</td>
     </tr>`
   ).join("");
 
   const subtotalLine = sale.vatEnabled
-    ? `<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${Number(sale.subtotal).toFixed(2)}</span></div>`
-    : "";
-
+    ? `<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${Number(sale.subtotal).toFixed(2)}</span></div>` : "";
   const vatLine = sale.vatEnabled
-    ? `<div style="display:flex;justify-content:space-between"><span>VAT (${sale.vatRate}%)</span><span>${Number(sale.vatAmount).toFixed(2)}</span></div>`
-    : "";
-
+    ? `<div style="display:flex;justify-content:space-between"><span>VAT (${sale.vatRate}%)</span><span>${Number(sale.vatAmount).toFixed(2)}</span></div>` : "";
   const cashLines = sale.payment === "Cash"
     ? `<div style="display:flex;justify-content:space-between"><span>Tendered</span><span>${Number(sale.tendered).toFixed(2)}</span></div>
-       <div style="display:flex;justify-content:space-between"><span>Change</span><span>${Number(sale.change).toFixed(2)}</span></div>`
-    : "";
-
+       <div style="display:flex;justify-content:space-between"><span>Change</span><span>${Number(sale.change).toFixed(2)}</span></div>` : "";
   const customerLine = sale.customer ? `<div>Customer: ${sale.customer}</div>` : "";
-  const emailLine = settings.email ? `<div style="font-size:10px">${settings.email}</div>` : "";
-  const licLine = settings.premiseLicense ? `<div style="font-size:10px">Lic: ${settings.premiseLicense}</div>` : "";
+  const emailLine = settings.email ? `<div>${settings.email}</div>` : "";
+  const licLine = settings.premiseLicense ? `<div>Lic: ${settings.premiseLicense}</div>` : "";
   const dateStr = format(new Date(sale.createdAt), "dd MMM yyyy HH:mm");
 
-  win.document.write(`<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
 <title>Receipt</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  @page { size: 80mm auto; margin: 0; }
-  body {
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 11px;
-    color: #000;
-    background: #fff;
-    width: 80mm;
-    padding: 4mm;
-  }
-  table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 4px; }
-  th { text-align: left; padding-bottom: 2px; }
-  th:nth-child(2) { text-align: center; }
-  th:nth-child(3) { text-align: right; }
+  * { margin:0;padding:0;box-sizing:border-box; }
+  @page { size:80mm auto;margin:0; }
+  body { font-family:'Courier New',Courier,monospace;font-size:11px;color:#000;background:#fff;width:80mm;padding:4mm; }
+  table { width:100%;border-collapse:collapse;font-size:10px;margin-top:4px; }
+  th { padding-bottom:2px; }
+  th:first-child { text-align:left; }
+  th:nth-child(2) { text-align:center; }
+  th:last-child { text-align:right; }
 </style>
 </head>
 <body>
@@ -80,31 +65,22 @@ function printReceiptInPopup(sale: any, settings: any) {
     <div style="font-weight:700;font-size:13px;text-transform:uppercase">${settings.name || ""}</div>
     <div style="font-size:10px">${settings.address || ""}</div>
     <div style="font-size:10px">Tel: ${settings.phone || ""}</div>
-    ${emailLine}
-    ${licLine}
+    <div style="font-size:10px">${emailLine}${licLine}</div>
   </div>
   <div style="border-top:1px dashed #000;border-bottom:1px dashed #000;padding:4px 0;font-size:10px">
-    <div>Receipt: ${sale.id.slice(0, 8).toUpperCase()}</div>
+    <div>Receipt: ${sale.id.slice(0,8).toUpperCase()}</div>
     <div>Date: ${dateStr}</div>
     <div>Cashier: ${sale.cashier}</div>
     ${customerLine}
   </div>
   <table>
-    <thead>
-      <tr>
-        <th>Item</th>
-        <th style="text-align:center">Qty</th>
-        <th style="text-align:right">Amt</th>
-      </tr>
-    </thead>
+    <thead><tr><th style="text-align:left">Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Amt</th></tr></thead>
     <tbody>${itemRows}</tbody>
   </table>
   <div style="border-top:1px dashed #000;margin-top:4px;padding-top:4px;font-size:11px">
-    ${subtotalLine}
-    ${vatLine}
+    ${subtotalLine}${vatLine}
     <div style="display:flex;justify-content:space-between;font-weight:700;font-size:12px;margin-top:2px">
-      <span>TOTAL (NGN)</span>
-      <span>${Number(sale.total).toFixed(2)}</span>
+      <span>TOTAL (NGN)</span><span>${Number(sale.total).toFixed(2)}</span>
     </div>
     <div style="display:flex;justify-content:space-between;margin-top:2px">
       <span>Payment</span><span>${sale.payment}</span>
@@ -115,11 +91,38 @@ function printReceiptInPopup(sale: any, settings: any) {
     Thank you for your patronage<br/>Goods sold are not returnable
   </div>
 </body>
-</html>`);
+</html>`;
+}
 
-  win.document.close();
-  win.focus();
-  setTimeout(() => { win.print(); win.close(); }, 400);
+// ── Print using a hidden iframe — stays inside the SaaS, no popup ────────────
+function printReceiptViaIframe(sale: any, settings: any) {
+  // Remove any existing print iframe
+  const existing = document.getElementById("receipt-print-frame");
+  if (existing) existing.remove();
+
+  const iframe = document.createElement("iframe");
+  iframe.id = "receipt-print-frame";
+  iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:80mm;height:0;border:none;visibility:hidden;";
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) { toast.error("Could not prepare receipt for printing"); return; }
+
+  doc.open();
+  doc.write(buildReceiptHtml(sale, settings));
+  doc.close();
+
+  // Wait for iframe to render then print
+  setTimeout(() => {
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } catch {
+      toast.error("Print failed — please try again");
+    }
+    // Clean up after print dialog closes
+    setTimeout(() => iframe.remove(), 2000);
+  }, 300);
 }
 
 export default function POS() {
@@ -132,7 +135,9 @@ export default function POS() {
   const [payment, setPayment] = useState<"Cash" | "POS" | "Bank Transfer" | "Mobile Money">("Cash");
   const [customer, setCustomer] = useState("");
   const [tendered, setTendered] = useState(0);
-  const [lastReceipt, setLastReceipt] = useState<any>(null);
+  // Use a ref to hold last receipt so it never triggers re-renders or state bugs
+  const lastReceiptRef = useRef<any>(null);
+  const [hasReceipt, setHasReceipt] = useState(false);
   const [quickMode, setQuickMode] = useState(false);
   const [controlledOpen, setControlledOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -182,9 +187,11 @@ export default function POS() {
     toast.info(`Barcode ${barcode} — no exact match, showing search results`);
   };
 
-  const setQty = (id: string, qty: number) => setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
+  const setQty = (id: string, qty: number) =>
+    setCart((c) => c.map((l) => l.productId === id ? { ...l, qty: Math.max(1, Math.min(l.stock, qty)) } : l));
   const remove = (id: string) => setCart((c) => c.filter((l) => l.productId !== id));
 
+  // ── Totals ────────────────────────────────────────────────────────────────
   const subtotal = cart.reduce((a, l) => a + l.qty * l.price, 0);
   const vatEnabled = settings.vatEnabled ?? false;
   const vatRate = settings.vatRate ?? 7.5;
@@ -195,10 +202,15 @@ export default function POS() {
 
   const controlledInCart = cart.filter((l) => products.find((p) => p.id === l.productId)?.controlled);
 
-  const finalizeSale = (controlledForms?: Record<string, { patientName: string; patientPhone: string; prescriber: string; prescriberRegNo: string; prescriptionRef: string }>) => {
+  const finalizeSale = (controlledForms?: Record<string, {
+    patientName: string; patientPhone: string; prescriber: string;
+    prescriberRegNo: string; prescriptionRef: string;
+  }>) => {
     const sale = store.recordSale({
       items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
-      total, profit, payment, cashier: user?.username || "user", customer: customer || undefined,
+      total, profit, payment,
+      cashier: user?.username || "user",
+      customer: customer || undefined,
     });
     if (controlledForms) {
       for (const l of controlledInCart) {
@@ -214,11 +226,31 @@ export default function POS() {
         });
       }
     }
-    const receipt = { ...sale, customer, tendered, change, subtotal, vatAmount, vatRate, vatEnabled };
-    setLastReceipt(receipt);
+
+    // Snapshot receipt data — capture current settings.vatEnabled at time of sale
+    // so sync events cannot alter it after the fact
+    const receiptSnapshot = {
+      ...sale,
+      customer,
+      tendered,
+      change,
+      subtotal,
+      vatAmount,
+      vatRate,
+      vatEnabled,  // captured from settings at moment of sale
+    };
+
+    // Store in ref (no re-render, no state update that could interfere)
+    lastReceiptRef.current = receiptSnapshot;
+    setHasReceipt(true);
+
     setCart([]); setCustomer(""); setTendered(0); setControlledOpen(false);
     toast.success("Sale recorded");
-    printReceiptInPopup(receipt, settings);
+
+    // Auto-print after short delay to let state settle
+    setTimeout(() => {
+      printReceiptViaIframe(receiptSnapshot, settings);
+    }, 150);
   };
 
   const checkout = () => {
@@ -233,8 +265,8 @@ export default function POS() {
   const onPinAuthorized = () => { setPinOpen(false); setControlledOpen(true); };
 
   const printReceipt = () => {
-    if (!lastReceipt) { toast.error("No receipt to print"); return; }
-    printReceiptInPopup(lastReceipt, settings);
+    if (!lastReceiptRef.current) { toast.error("No receipt to print"); return; }
+    printReceiptViaIframe(lastReceiptRef.current, settings);
   };
 
   return (
@@ -276,7 +308,8 @@ export default function POS() {
                     onKeyDown={(e) => { if (e.key === "Enter" && results[0]) add(results[0].id); }}
                   />
                 </div>
-                <Button size="icon" variant="outline" className="h-11 w-11 shrink-0" title="Scan barcode with camera" onClick={() => setBarcodeScanOpen(true)}>
+                <Button size="icon" variant="outline" className="h-11 w-11 shrink-0"
+                  title="Scan barcode with camera" onClick={() => setBarcodeScanOpen(true)}>
                   <ScanLine className="h-5 w-5" />
                 </Button>
               </div>
@@ -297,11 +330,14 @@ export default function POS() {
             <CardContent>
               <div className="max-h-[60vh] overflow-auto pr-1">
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-                  {results.length === 0 && <div className="col-span-full py-8 text-center text-sm text-muted-foreground">No products match</div>}
+                  {results.length === 0 && (
+                    <div className="col-span-full py-8 text-center text-sm text-muted-foreground">No products match</div>
+                  )}
                   {results.map((p) => {
                     const s = expiryStatus(p.expiry);
                     return (
-                      <button key={p.id} onClick={() => add(p.id)} disabled={p.quantity <= 0 || s === "expired"}
+                      <button key={p.id} onClick={() => add(p.id)}
+                        disabled={p.quantity <= 0 || s === "expired"}
                         className={`rounded-lg border bg-card p-3 text-left transition hover:border-primary hover:shadow-card disabled:opacity-50 ${p.controlled ? "border-l-4 border-l-destructive" : ""}`}>
                         <div className="line-clamp-1 text-sm font-medium">{p.name}</div>
                         <div className="text-[11px] text-muted-foreground line-clamp-1">{p.generic}</div>
@@ -309,8 +345,7 @@ export default function POS() {
                           <span className="text-sm font-semibold text-primary">{NGN(p.sellingPrice)}</span>
                           <Badge variant="outline" className={
                             s === "expired" || s === "critical" ? "border-destructive text-destructive" :
-                            s === "warning" ? "border-warning text-warning" :
-                            "border-success text-success"
+                            s === "warning" ? "border-warning text-warning" : "border-success text-success"
                           }>{p.quantity}</Badge>
                         </div>
                       </button>
@@ -324,11 +359,15 @@ export default function POS() {
 
         <Card className="lg:col-span-2 shadow-card">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base"><ShoppingCart className="h-4 w-4" /> Cart ({cart.length})</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShoppingCart className="h-4 w-4" /> Cart ({cart.length})
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="max-h-[280px] space-y-2 overflow-auto">
-              {cart.length === 0 && <div className="py-8 text-center text-sm text-muted-foreground">No items yet</div>}
+              {cart.length === 0 && (
+                <div className="py-8 text-center text-sm text-muted-foreground">No items yet</div>
+              )}
               {cart.map((l) => (
                 <div key={l.productId} className="flex items-center gap-2 rounded-md border p-2">
                   <div className="flex-1">
@@ -345,14 +384,14 @@ export default function POS() {
               ))}
             </div>
 
+            {/* Totals */}
             <div className="space-y-1.5 border-t pt-3">
               <div className="flex justify-between text-sm">
                 <span>Subtotal</span><span>{NGN(subtotal)}</span>
               </div>
               {vatEnabled && (
                 <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>VAT ({vatRate}%)</span>
-                  <span>{NGN(vatAmount)}</span>
+                  <span>VAT ({vatRate}%)</span><span>{NGN(vatAmount)}</span>
                 </div>
               )}
               <div className="flex items-center justify-between text-base font-semibold">
@@ -377,7 +416,11 @@ export default function POS() {
                 <div>
                   <Label className="text-xs">Cash tendered</Label>
                   <Input type="number" value={tendered} onChange={(e) => setTendered(+e.target.value)} />
-                  {tendered > 0 && <div className="mt-1 text-xs text-muted-foreground">Change: <span className="font-semibold text-success">{NGN(change)}</span></div>}
+                  {tendered > 0 && (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Change: <span className="font-semibold text-success">{NGN(change)}</span>
+                    </div>
+                  )}
                 </div>
               )}
               {!quickMode && (
@@ -391,23 +434,27 @@ export default function POS() {
             <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
               Complete Sale · {NGN(total)}
             </Button>
-            <Button variant="outline" className="w-full" size="sm" onClick={printReceipt} disabled={!lastReceipt}>
+            {/* Button enabled only when a receipt exists in the ref */}
+            <Button variant="outline" className="w-full" size="sm"
+              onClick={printReceipt}
+              disabled={!hasReceipt}>
               <Printer className="mr-2 h-4 w-4" /> Print last receipt
             </Button>
           </CardContent>
         </Card>
       </div>
 
-      <BarcodeScanner open={barcodeScanOpen} onOpenChange={setBarcodeScanOpen} onScanned={onBarcodeScanned} title="Scan Product Barcode" />
-      <PinAuthDialog open={pinOpen} onOpenChange={setPinOpen} organizationId={user?.organizationId ?? ""} onAuthorized={onPinAuthorized} />
-      <ControlledDispenseDialog open={controlledOpen} onOpenChange={setControlledOpen} items={controlledInCart} onConfirm={finalizeSale} />
+      <BarcodeScanner open={barcodeScanOpen} onOpenChange={setBarcodeScanOpen}
+        onScanned={onBarcodeScanned} title="Scan Product Barcode" />
+      <PinAuthDialog open={pinOpen} onOpenChange={setPinOpen}
+        organizationId={user?.organizationId ?? ""} onAuthorized={onPinAuthorized} />
+      <ControlledDispenseDialog open={controlledOpen} onOpenChange={setControlledOpen}
+        items={controlledInCart} onConfirm={finalizeSale} />
     </div>
   );
 }
 
-function ControlledDispenseDialog({
-  open, onOpenChange, items, onConfirm,
-}: {
+function ControlledDispenseDialog({ open, onOpenChange, items, onConfirm }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   items: CartLine[];
@@ -448,7 +495,7 @@ function ControlledDispenseDialog({
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">
-          Statutory record required (PCN / NDLEA). Complete one form per controlled item. Entry will be saved to the Poisons Register.
+          Statutory record required (PCN / NDLEA). Complete one form per controlled item.
         </p>
         <div className="space-y-4">
           {items.map((it) => (
@@ -481,9 +528,7 @@ async function hashPin(pin: string): Promise<string> {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function PinAuthDialog({
-  open, onOpenChange, organizationId, onAuthorized,
-}: {
+function PinAuthDialog({ open, onOpenChange, organizationId, onAuthorized }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   organizationId: string;
@@ -515,7 +560,9 @@ function PinAuthDialog({
             <KeyRound className="h-5 w-5" /> Pharmacist Authorization Required
           </DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-muted-foreground">This sale contains controlled substances. A registered pharmacist must enter their PIN to authorize dispensing.</p>
+        <p className="text-sm text-muted-foreground">
+          This sale contains controlled substances. A pharmacist must enter their PIN to authorize.
+        </p>
         <div className="space-y-3 py-2">
           <Label className="text-xs">Pharmacist PIN (4 digits)</Label>
           <Input type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pin}
@@ -525,7 +572,8 @@ function PinAuthDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => { setPin(""); onOpenChange(false); }}>Cancel</Button>
-          <Button onClick={verify} disabled={loading || pin.length !== 4} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
+          <Button onClick={verify} disabled={loading || pin.length !== 4}
+            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
             {loading ? "Verifying…" : "Authorize"}
           </Button>
         </DialogFooter>
