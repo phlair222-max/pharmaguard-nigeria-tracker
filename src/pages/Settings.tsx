@@ -515,6 +515,9 @@ function TeamTab({ organizationName }: { organizationName: string }) {
   const [inviteRole, setInviteRole] = useState<"Pharmacist" | "Cashier">("Pharmacist");
   const [inviting, setInviting] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
+  // FIX: seat price is no longer hardcoded — fetched from plan_config so
+  // retryPayment always charges the real, current per-seat price.
+  const [seatPriceKobo, setSeatPriceKobo] = useState<number | null>(null);
 
   usePaystack();
 
@@ -530,7 +533,25 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     setLoading(false);
   };
 
-  useEffect(() => { fetchMembers(); }, [organizationId]);
+  // FIX: load the org's current seat price once, from its actual
+  // subscription tier — used by retryPayment instead of a hardcoded value.
+  const fetchSeatPrice = async () => {
+    if (!organizationId) return;
+    const { data: org } = await (supabase.from as any)("organizations")
+      .select("subscription_tier")
+      .eq("id", organizationId)
+      .maybeSingle();
+    if (!org?.subscription_tier) return;
+    const { data: plan } = await (supabase.from as any)("plan_config")
+      .select("seat_price_monthly")
+      .eq("tier", org.subscription_tier)
+      .maybeSingle();
+    if (plan?.seat_price_monthly) {
+      setSeatPriceKobo(Math.round(plan.seat_price_monthly * 100));
+    }
+  };
+
+  useEffect(() => { fetchMembers(); fetchSeatPrice(); }, [organizationId]);
 
   const openPaystackCheckout = (
     checkout: { amount: number; metadata: any },
@@ -605,13 +626,25 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     }
   };
 
+  // FIX: was hardcoded to amount: 200000 (₦2,000) and metadata was
+  // missing invited_email/role/organization_name — meaning a successful
+  // retry charge would activate the seat but the webhook would silently
+  // skip sending the invite email (it requires those fields). Now pulls
+  // the real seat price and passes everything the webhook needs.
   const retryPayment = (member: Member) => {
+    if (!seatPriceKobo) {
+      toast.error("Seat pricing not loaded yet — refresh and try again");
+      return;
+    }
     openPaystackCheckout(
       {
-        amount: 200000,
+        amount: seatPriceKobo,
         metadata: {
           org_id: organizationId,
           membership_id: member.id,
+          invited_email: member.invited_email,
+          role: member.role,
+          organization_name: organizationName,
           type: "first_seat_charge",
         },
       },
