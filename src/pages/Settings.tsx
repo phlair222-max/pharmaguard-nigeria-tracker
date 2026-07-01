@@ -644,11 +644,14 @@ function TeamTab({ organizationName }: { organizationName: string }) {
       email: user?.email ?? inviteEmail,
       amount: checkout.amount,
       metadata: checkout.metadata,
-      callback: (_response: any) => {
-        toast.success("Payment successful! Seat is activating…");
-        // Webhook handles activation — poll after short delay
-        setTimeout(() => fetchMembers(), 3000);
-      },
+     callback: async (_response: any) => {
+  toast.success("Payment successful! Activating seat…");
+  // Activate directly from frontend (covers test mode + webhook fallback)
+  await (supabase.from as any)("memberships")
+    .update({ payment_status: "active", seat_fee_paid: true })
+    .eq("id", membershipId);
+  fetchMembers();
+}, 
       onClose: () => {
         toast.info("Payment cancelled — seat is pending until payment is completed.");
       },
