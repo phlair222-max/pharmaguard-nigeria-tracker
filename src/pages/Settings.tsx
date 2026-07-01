@@ -37,8 +37,6 @@ async function fileToDataUrl(file: File, max = 400): Promise<string> {
   });
 }
 
-// CompliancePrefs holds non-VAT local preferences only.
-// VAT is now stored in the org settings (Supabase) via the store.
 type CompliancePrefs = {
   expiryAlertDays: number;
   lowStockAlerts: boolean;
@@ -70,7 +68,6 @@ export default function Settings() {
   const user = useStore((s) => s.user);
   const loginActivity = useStore((s) => s.loginActivity);
 
-  // Normalize settings so draft fields are never undefined
   const normalize = (s: typeof settings) => ({
     ...s,
     logo: s.logo ?? "",
@@ -87,12 +84,10 @@ export default function Settings() {
   const logoRef = useRef<HTMLInputElement>(null);
   const ownerRef = useRef<HTMLInputElement>(null);
 
-  // Resync draft when Supabase hydration lands (settings reference changes)
   useEffect(() => {
-  setDraft(normalize(settings));
-}, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setDraft(normalize(settings));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Upload handlers ───────────────────────────────────────────────────────
   const uploadLogo = async (file: File | undefined) => {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
@@ -107,26 +102,18 @@ export default function Settings() {
     setDraft((d) => ({ ...d, ownerPhoto: url }));
   };
 
-  // ── Save branding ─────────────────────────────────────────────────────────
   const saveBranding = () => {
     const payload = {
       ...draft,
       logo: draft.logo ?? "",
       ownerPhoto: draft.ownerPhoto ?? "",
     };
-    console.debug("[Settings] saveBranding payload →", {
-      logo: payload.logo ? payload.logo.slice(0, 40) + "…" : "(empty)",
-      ownerPhoto: payload.ownerPhoto ? payload.ownerPhoto.slice(0, 40) + "…" : "(empty)",
-    });
     store.updateSettings(payload);
     toast.success("Branding saved");
   };
 
-  // ── Save compliance prefs (non-VAT to localStorage; VAT to store) ─────────
   const savePrefs = () => {
-    // Save non-VAT prefs to localStorage
     localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
-    // Save VAT settings to store → persists to Supabase organizations table
     store.updateSettings({
       vatEnabled: draft.vatEnabled,
       vatRate: draft.vatRate,
@@ -152,7 +139,6 @@ export default function Settings() {
           )}
         </TabsList>
 
-        {/* ── PHARMACY DETAILS ── */}
         <TabsContent value="details">
           <Card className="shadow-card">
             <CardContent className="space-y-3 p-4">
@@ -171,99 +157,68 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
-        {/* ── BRANDING ── */}
         <TabsContent value="branding">
           <div className="grid gap-4 md:grid-cols-2">
-
-            {/* Pharmacy Logo */}
             <Card className="shadow-card">
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-center gap-2 pb-1 text-sm font-medium">
                   <ImageIcon className="h-4 w-4 text-primary" /> Pharmacy Logo
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Square image. Shown in sidebar, dashboard header, and printed receipts.
-                </p>
+                <p className="text-xs text-muted-foreground">Square image. Shown in sidebar, dashboard header, and printed receipts.</p>
                 <div className="flex items-center gap-4">
                   {draft.logo
                     ? <img src={draft.logo} alt="logo" className="h-24 w-24 rounded-lg object-cover border bg-white" />
                     : <div className="flex h-24 w-24 items-center justify-center rounded-lg border bg-muted text-muted-foreground"><ImageIcon className="h-8 w-8" /></div>
                   }
                   <div className="space-y-2">
-                    <input
-                      ref={logoRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => uploadLogo(e.target.files?.[0])}
-                    />
+                    <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={(e) => uploadLogo(e.target.files?.[0])} />
                     <Button type="button" size="sm" variant="outline" onClick={() => logoRef.current?.click()}>
                       <Upload className="mr-1.5 h-3.5 w-3.5" />Upload logo
                     </Button>
                     {draft.logo && (
-                      <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, logo: "" })}>
-                        Remove
-                      </Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, logo: "" })}>Remove</Button>
                     )}
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Owner Photo */}
             <Card className="shadow-card">
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-center gap-2 pb-1 text-sm font-medium">
                   <User className="h-4 w-4 text-primary" /> Pharmacist-in-Charge
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Photo of the pharmacy owner / superintendent pharmacist. Appears top-right of the app header.
-                </p>
+                <p className="text-xs text-muted-foreground">Photo of the pharmacy owner / superintendent pharmacist. Appears top-right of the app header.</p>
                 <div className="flex items-center gap-4">
                   {draft.ownerPhoto
                     ? <img src={draft.ownerPhoto} alt="owner" className="h-24 w-24 rounded-full object-cover border" />
                     : <div className="flex h-24 w-24 items-center justify-center rounded-full border bg-muted text-muted-foreground"><User className="h-8 w-8" /></div>
                   }
                   <div className="space-y-2 flex-1">
-                    <Input
-                      placeholder="Pharmacist name"
-                      value={draft.ownerName || ""}
-                      onChange={(e) => setDraft({ ...draft, ownerName: e.target.value })}
-                    />
-                    <input
-                      ref={ownerRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => uploadOwnerPhoto(e.target.files?.[0])}
-                    />
+                    <Input placeholder="Pharmacist name" value={draft.ownerName || ""} onChange={(e) => setDraft({ ...draft, ownerName: e.target.value })} />
+                    <input ref={ownerRef} type="file" accept="image/*" className="hidden" onChange={(e) => uploadOwnerPhoto(e.target.files?.[0])} />
                     <div className="flex gap-2">
                       <Button type="button" size="sm" variant="outline" onClick={() => ownerRef.current?.click()}>
                         <Upload className="mr-1.5 h-3.5 w-3.5" />Upload photo
                       </Button>
                       {draft.ownerPhoto && (
-                        <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, ownerPhoto: "" })}>
-                          Remove
-                        </Button>
+                        <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, ownerPhoto: "" })}>Remove</Button>
                       )}
                     </div>
                   </div>
                 </div>
               </CardContent>
             </Card>
-
           </div>
           <div className="mt-3 flex justify-end">
             <Button onClick={saveBranding}>Save branding</Button>
           </div>
         </TabsContent>
 
-        {/* ── SECURITY ── */}
         <TabsContent value="security">
           <SecurityTab username={user?.username ?? ""} loginActivity={loginActivity} />
         </TabsContent>
 
-        {/* ── COMPLIANCE ── */}
         <TabsContent value="compliance">
           <Card className="shadow-card">
             <CardContent className="space-y-4 p-4">
@@ -271,66 +226,37 @@ export default function Settings() {
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Expiry alert window (days)</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={365}
-                    value={prefs.expiryAlertDays}
-                    onChange={(e) => setPrefs({ ...prefs, expiryAlertDays: parseInt(e.target.value) || 30 })}
-                  />
+                  <Input type="number" min={1} max={365} value={prefs.expiryAlertDays} onChange={(e) => setPrefs({ ...prefs, expiryAlertDays: parseInt(e.target.value) || 30 })} />
                   <p className="text-xs text-muted-foreground">Drugs expiring within this many days are flagged red.</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Receipt footer message</Label>
-                  <Textarea
-                    rows={3}
-                    value={prefs.receiptFooter}
-                    onChange={(e) => setPrefs({ ...prefs, receiptFooter: e.target.value })}
-                  />
+                  <Textarea rows={3} value={prefs.receiptFooter} onChange={(e) => setPrefs({ ...prefs, receiptFooter: e.target.value })} />
                 </div>
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <div>
                     <div className="text-sm font-medium">Low-stock alerts</div>
                     <div className="text-xs text-muted-foreground">Highlight items at or below reorder level</div>
                   </div>
-                  <Switch
-                    checked={prefs.lowStockAlerts}
-                    onCheckedChange={(v) => setPrefs({ ...prefs, lowStockAlerts: v })}
-                  />
+                  <Switch checked={prefs.lowStockAlerts} onCheckedChange={(v) => setPrefs({ ...prefs, lowStockAlerts: v })} />
                 </div>
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <div>
                     <div className="text-sm font-medium">Require prescriber for controlled drugs</div>
                     <div className="text-xs text-muted-foreground">Enforce doctor name + Rx ref at dispensing</div>
                   </div>
-                  <Switch
-                    checked={prefs.controlledRequirePrescriber}
-                    onCheckedChange={(v) => setPrefs({ ...prefs, controlledRequirePrescriber: v })}
-                  />
+                  <Switch checked={prefs.controlledRequirePrescriber} onCheckedChange={(v) => setPrefs({ ...prefs, controlledRequirePrescriber: v })} />
                 </div>
-
-                {/* ── VAT — now bound to draft (store-backed), not prefs ── */}
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <div>
                     <div className="text-sm font-medium">Charge VAT at checkout</div>
                     <div className="text-xs text-muted-foreground">FIRS requires VAT only if turnover ≥ ₦25M/year. Off by default.</div>
                   </div>
-                  <Switch
-                    checked={draft.vatEnabled ?? false}
-                    onCheckedChange={(v) => setDraft({ ...draft, vatEnabled: v })}
-                  />
+                  <Switch checked={draft.vatEnabled ?? false} onCheckedChange={(v) => setDraft({ ...draft, vatEnabled: v })} />
                 </div>
                 <div className="space-y-2">
                   <Label>VAT rate (%)</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={0.5}
-                    disabled={!(draft.vatEnabled ?? false)}
-                    value={draft.vatRate ?? 7.5}
-                    onChange={(e) => setDraft({ ...draft, vatRate: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })}
-                  />
+                  <Input type="number" min={0} max={100} step={0.5} disabled={!(draft.vatEnabled ?? false)} value={draft.vatRate ?? 7.5} onChange={(e) => setDraft({ ...draft, vatRate: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })} />
                   <p className="text-xs text-muted-foreground">Nigeria standard rate is 7.5%. Applied at checkout and shown as a line on receipts.</p>
                 </div>
               </div>
@@ -341,13 +267,11 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
-        {/* ── TEAM ── */}
         {(user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole)) && (
           <TabsContent value="team">
             <TeamTab organizationName={settings.name} />
           </TabsContent>
         )}
-
       </Tabs>
     </div>
   );
@@ -363,7 +287,6 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
   const [newPwd, setNewPwd] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
   const [show, setShow] = useState(false);
-
   const user = useStore((s) => s.user);
   const [newPin, setNewPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
@@ -394,11 +317,7 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
       if (!authData.user) { toast.error("Not authenticated"); return; }
       const hashed = await hashPin(newPin);
       const { error } = await (supabase.from as any)("pharmacist_pins")
-        .upsert({
-          user_id: authData.user.id,
-          organization_id: user!.organizationId,
-          pin_hash: hashed,
-        }, { onConflict: "user_id,organization_id" });
+        .upsert({ user_id: authData.user.id, organization_id: user!.organizationId, pin_hash: hashed }, { onConflict: "user_id,organization_id" });
       if (error) { toast.error("Failed to save PIN: " + error.message); return; }
       toast.success(hasPin ? "PIN updated successfully" : "PIN set successfully");
       setNewPin(""); setConfirmPin(""); setHasPin(true);
@@ -452,7 +371,6 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
               <Input type={show ? "text" : "password"} value={confirmPwd} onChange={(e) => setConfirmPwd(e.target.value)} />
             </div>
           </div>
-
           <div className="space-y-2 rounded-md border bg-muted/30 p-3">
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Strength</span>
@@ -470,7 +388,6 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
               <Req ok={checks.symbol}>One symbol</Req>
             </ul>
           </div>
-
           <Button className="w-full" onClick={submit}>Update password</Button>
         </CardContent>
       </Card>
@@ -487,27 +404,11 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
             <div className="space-y-2">
               <div>
                 <Label className="text-xs">{hasPin ? "New PIN" : "PIN"} (4 digits)</Label>
-                <Input
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={4}
-                  placeholder="••••"
-                  value={newPin}
-                  onChange={(e) => setNewPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
-                  className="text-center text-xl tracking-widest"
-                />
+                <Input type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={newPin} onChange={(e) => setNewPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))} className="text-center text-xl tracking-widest" />
               </div>
               <div>
                 <Label className="text-xs">Confirm PIN</Label>
-                <Input
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={4}
-                  placeholder="••••"
-                  value={confirmPin}
-                  onChange={(e) => setConfirmPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
-                  className="text-center text-xl tracking-widest"
-                />
+                <Input type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={confirmPin} onChange={(e) => setConfirmPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))} className="text-center text-xl tracking-widest" />
               </div>
             </div>
             <Button className="w-full" onClick={savePin} disabled={pinLoading || newPin.length !== 4 || confirmPin.length !== 4}>
@@ -594,7 +495,6 @@ function paymentStatusColor(status: string) {
   return "bg-red-500/15 text-red-400 border-red-500/30";
 }
 
-// Load Paystack inline script once
 function usePaystack() {
   useEffect(() => {
     if (document.getElementById("paystack-script")) return;
@@ -638,20 +538,18 @@ function TeamTab({ organizationName }: { organizationName: string }) {
   ) => {
     const PaystackPop = (window as any).PaystackPop;
     if (!PaystackPop) { toast.error("Payment system not ready — refresh and try again"); return; }
-
     const handler = PaystackPop.setup({
       key: import.meta.env.VITE_PAYSTACK_PUBLIC_KEY,
       email: user?.email ?? inviteEmail,
       amount: checkout.amount,
       metadata: checkout.metadata,
-     callback: async (_response: any) => {
-  toast.success("Payment successful! Activating seat…");
-  // Activate directly from frontend (covers test mode + webhook fallback)
-  await (supabase.from as any)("memberships")
-    .update({ payment_status: "active", seat_fee_paid: true })
-    .eq("id", membershipId);
-  fetchMembers();
-}, 
+      callback: async (_response: any) => {
+        toast.success("Payment successful! Activating seat…");
+        await (supabase.from as any)("memberships")
+          .update({ payment_status: "active", seat_fee_paid: true })
+          .eq("id", membershipId);
+        fetchMembers();
+      },
       onClose: () => {
         toast.info("Payment cancelled — seat is pending until payment is completed.");
       },
@@ -666,7 +564,6 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { toast.error("Not logged in"); return; }
-
       const res = await fetch(
         `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/create-staff-seat`,
         {
@@ -684,9 +581,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
           }),
         }
       );
-
       const result = await res.json();
-
       if (result.status === "activated") {
         toast.success(`Seat added and activated for ${inviteEmail}`);
         setInviteEmail("");
@@ -694,7 +589,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
       } else if (result.status === "pending_payment") {
         toast.info("No saved card — completing payment now…");
         setInviteEmail("");
-        fetchMembers(); // show the pending row
+        fetchMembers();
         openPaystackCheckout(result.checkout, result.membership_id);
       } else if (result.status === "charge_failed") {
         toast.error("Card charge failed — seat is pending. Use retry button to complete payment.");
@@ -710,38 +605,18 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     }
   };
 
-  const retryPayment = async (member: Member) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) { toast.error("Not logged in"); return; }
-
-    // Re-call edge function logic — for now open a fresh checkout
-    const res = await fetch(
-      `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/create-staff-seat`,
+  const retryPayment = (member: Member) => {
+    openPaystackCheckout(
       {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`,
-          "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
-        },
-        body: JSON.stringify({
+        amount: 200000,
+        metadata: {
           org_id: organizationId,
-          invitee_email: member.invited_email,
-          role: member.role,
-          owner_user_id: session.user.id,
-          existing_membership_id: member.id, // edge function will skip insert if provided
-        }),
-      }
+          membership_id: member.id,
+          type: "first_seat_charge",
+        },
+      },
+      member.id
     );
-    const result = await res.json();
-    if (result.status === "activated") {
-      toast.success("Payment successful — seat activated!");
-      fetchMembers();
-    } else if (result.checkout) {
-      openPaystackCheckout(result.checkout, member.id);
-    } else {
-      toast.error(result.error || "Retry failed");
-    }
   };
 
   const toggleMargins = async (member: Member) => {
@@ -779,7 +654,6 @@ function TeamTab({ organizationName }: { organizationName: string }) {
 
   return (
     <div className="space-y-6">
-      {/* Invite card */}
       <Card>
         <CardContent className="pt-6 space-y-4">
           <div>
@@ -801,9 +675,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
               className="flex-1"
             />
             <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as "Pharmacist" | "Cashier")}>
-              <SelectTrigger className="w-full sm:w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
+              <SelectTrigger className="w-full sm:w-[140px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="Pharmacist">Pharmacist</SelectItem>
                 <SelectItem value="Cashier">Cashier</SelectItem>
@@ -817,7 +689,6 @@ function TeamTab({ organizationName }: { organizationName: string }) {
         </CardContent>
       </Card>
 
-      {/* Members list */}
       <Card>
         <CardContent className="pt-6">
           <h3 className="font-semibold text-base mb-4">Team Members ({members.length})</h3>
@@ -890,20 +761,10 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                         <div className="flex items-center justify-end gap-1">
                           {m.role !== "Owner" && (
                             <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 text-xs text-muted-foreground"
-                                onClick={() => toggleSuspend(m)}
-                              >
+                              <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground" onClick={() => toggleSuspend(m)}>
                                 {m.status === "suspended" ? "Reactivate" : "Suspend"}
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                                onClick={() => setRemoveTarget(m)}
-                              >
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-300 hover:bg-red-500/10" onClick={() => setRemoveTarget(m)}>
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             </>
@@ -919,7 +780,6 @@ function TeamTab({ organizationName }: { organizationName: string }) {
         </CardContent>
       </Card>
 
-      {/* Remove confirm dialog */}
       <AlertDialog open={!!removeTarget} onOpenChange={() => setRemoveTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -930,10 +790,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700"
-              onClick={() => removeTarget && removeMember(removeTarget)}
-            >
+            <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={() => removeTarget && removeMember(removeTarget)}>
               Remove
             </AlertDialogAction>
           </AlertDialogFooter>
