@@ -571,6 +571,8 @@ type Member = {
   user_id: string | null;
   role: "Owner" | "Pharmacist" | "Cashier";
   status: "invited" | "active" | "suspended";
+  payment_status: "active" | "pending_payment" | "failed";
+  seat_fee_paid: boolean;
   invited_email: string | null;
   can_view_margins: boolean;
   created_at: string;
@@ -586,6 +588,23 @@ function statusColor(status: string) {
   if (status === "invited") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
   return "bg-red-500/15 text-red-400 border-red-500/30";
 }
+function paymentStatusColor(status: string) {
+  if (status === "active") return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+  if (status === "pending_payment") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+  return "bg-red-500/15 text-red-400 border-red-500/30";
+}
+
+// Load Paystack inline script once
+function usePaystack() {
+  useEffect(() => {
+    if (document.getElementById("paystack-script")) return;
+    const script = document.createElement("script");
+    script.id = "paystack-script";
+    script.src = "https://js.paystack.co/v1/inline.js";
+    script.async = true;
+    document.body.appendChild(script);
+  }, []);
+}
 
 function TeamTab({ organizationName }: { organizationName: string }) {
   const user = useStore((s) => s.user);
@@ -596,6 +615,8 @@ function TeamTab({ organizationName }: { organizationName: string }) {
   const [inviteRole, setInviteRole] = useState<"Pharmacist" | "Cashier">("Pharmacist");
   const [inviting, setInviting] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
+
+  usePaystack();
 
   const fetchMembers = async () => {
     if (!organizationId) return;
@@ -611,7 +632,31 @@ function TeamTab({ organizationName }: { organizationName: string }) {
 
   useEffect(() => { fetchMembers(); }, [organizationId]);
 
-  const sendInvite = async () => {
+  const openPaystackCheckout = (
+    checkout: { amount: number; metadata: any },
+    membershipId: string
+  ) => {
+    const PaystackPop = (window as any).PaystackPop;
+    if (!PaystackPop) { toast.error("Payment system not ready — refresh and try again"); return; }
+
+    const handler = PaystackPop.setup({
+      key: import.meta.env.VITE_PAYSTACK_PUBLIC_KEY,
+      email: user?.email ?? inviteEmail,
+      amount: checkout.amount,
+      metadata: checkout.metadata,
+      callback: (_response: any) => {
+        toast.success("Payment successful! Seat is activating…");
+        // Webhook handles activation — poll after short delay
+        setTimeout(() => fetchMembers(), 3000);
+      },
+      onClose: () => {
+        toast.info("Payment cancelled — seat is pending until payment is completed.");
+      },
+    });
+    handler.openIframe();
+  };
+
+  const addSeat = async () => {
     if (!inviteEmail.trim()) { toast.error("Enter an email address"); return; }
     if (!organizationId) { toast.error("Still loading — please wait a moment"); return; }
     setInviting(true);
@@ -619,17 +664,8 @@ function TeamTab({ organizationName }: { organizationName: string }) {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { toast.error("Not logged in"); return; }
 
-      const payload = {
-        email: inviteEmail.trim().toLowerCase(),
-        role: inviteRole,
-        organizationId: organizationId,
-        organizationName: organizationName || "My Pharmacy",
-      };
-
-      console.log("Sending invite payload:", JSON.stringify(payload));
-
       const res = await fetch(
-        `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/invite-staff`,
+        `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/create-staff-seat`,
         {
           method: "POST",
           headers: {
@@ -637,22 +673,71 @@ function TeamTab({ organizationName }: { organizationName: string }) {
             "Authorization": `Bearer ${session.access_token}`,
             "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            org_id: organizationId,
+            invitee_email: inviteEmail.trim().toLowerCase(),
+            role: inviteRole,
+            owner_user_id: session.user.id,
+          }),
         }
       );
+
       const result = await res.json();
-      console.log("Invite response:", res.status, JSON.stringify(result));
-      if (!res.ok || result.error) {
-        toast.error(result.error || "Invite failed");
-      } else {
-        toast.success(`Invite sent to ${inviteEmail}`);
+
+      if (result.status === "activated") {
+        toast.success(`Seat added and activated for ${inviteEmail}`);
         setInviteEmail("");
         fetchMembers();
+      } else if (result.status === "pending_payment") {
+        toast.info("No saved card — completing payment now…");
+        setInviteEmail("");
+        fetchMembers(); // show the pending row
+        openPaystackCheckout(result.checkout, result.membership_id);
+      } else if (result.status === "charge_failed") {
+        toast.error("Card charge failed — seat is pending. Use retry button to complete payment.");
+        setInviteEmail("");
+        fetchMembers();
+      } else {
+        toast.error(result.error || "Something went wrong");
       }
     } catch (e) {
       toast.error("Network error — please try again");
     } finally {
       setInviting(false);
+    }
+  };
+
+  const retryPayment = async (member: Member) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { toast.error("Not logged in"); return; }
+
+    // Re-call edge function logic — for now open a fresh checkout
+    const res = await fetch(
+      `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/create-staff-seat`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+          "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
+        },
+        body: JSON.stringify({
+          org_id: organizationId,
+          invitee_email: member.invited_email,
+          role: member.role,
+          owner_user_id: session.user.id,
+          existing_membership_id: member.id, // edge function will skip insert if provided
+        }),
+      }
+    );
+    const result = await res.json();
+    if (result.status === "activated") {
+      toast.success("Payment successful — seat activated!");
+      fetchMembers();
+    } else if (result.checkout) {
+      openPaystackCheckout(result.checkout, member.id);
+    } else {
+      toast.error(result.error || "Retry failed");
     }
   };
 
@@ -697,10 +782,10 @@ function TeamTab({ organizationName }: { organizationName: string }) {
           <div>
             <h3 className="font-semibold text-base flex items-center gap-2">
               <Mail className="h-4 w-4 text-muted-foreground" />
-              Invite a Staff Member
+              Add a Staff Seat
             </h3>
             <p className="text-sm text-muted-foreground mt-1">
-              They'll receive an email with a sign-in link. Their account is created automatically.
+              A seat fee applies per staff member. You'll be charged immediately if a saved card is on file, otherwise you'll complete payment via Paystack.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-3">
@@ -709,7 +794,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
               type="email"
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendInvite()}
+              onKeyDown={(e) => e.key === "Enter" && addSeat()}
               className="flex-1"
             />
             <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as "Pharmacist" | "Cashier")}>
@@ -721,9 +806,9 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                 <SelectItem value="Cashier">Cashier</SelectItem>
               </SelectContent>
             </Select>
-            <Button onClick={sendInvite} disabled={inviting || !organizationId} className="gap-2">
+            <Button onClick={addSeat} disabled={inviting || !organizationId} className="gap-2">
               <Mail className="h-4 w-4" />
-              {inviting ? "Sending…" : !organizationId ? "Loading…" : "Send Invite"}
+              {inviting ? "Processing…" : !organizationId ? "Loading…" : "Add Seat"}
             </Button>
           </div>
         </CardContent>
@@ -736,15 +821,16 @@ function TeamTab({ organizationName }: { organizationName: string }) {
           {loading ? (
             <p className="text-sm text-muted-foreground py-6 text-center">Loading team…</p>
           ) : members.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">No team members yet. Invite your first staff member above.</p>
+            <p className="text-sm text-muted-foreground py-6 text-center">No team members yet. Add your first staff seat above.</p>
           ) : (
-            <div className="rounded-lg border overflow-hidden">
+            <div className="rounded-lg border overflow-hidden overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/40 text-left text-muted-foreground">
                     <th className="px-4 py-3 font-medium">Email</th>
                     <th className="px-4 py-3 font-medium">Role</th>
                     <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Payment</th>
                     <th className="px-4 py-3 font-medium text-center">See Margins</th>
                     <th className="px-4 py-3 font-medium text-right">Actions</th>
                   </tr>
@@ -760,6 +846,27 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                       </td>
                       <td className="px-4 py-3">
                         <Badge className={`text-xs border ${statusColor(m.status)}`}>{m.status}</Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        {m.role === "Owner" ? (
+                          <span className="text-muted-foreground/40 text-xs">—</span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <Badge className={`text-xs border ${paymentStatusColor(m.payment_status ?? "active")}`}>
+                              {m.payment_status === "pending_payment" ? "pending" : m.payment_status ?? "active"}
+                            </Badge>
+                            {(m.payment_status === "pending_payment" || m.payment_status === "failed") && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 text-xs px-2 border-amber-500/50 text-amber-400 hover:bg-amber-500/10"
+                                onClick={() => retryPayment(m)}
+                              >
+                                Pay now
+                              </Button>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-center">
                         {m.role === "Pharmacist" ? (
@@ -815,7 +922,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {removeTarget?.invited_email}?</AlertDialogTitle>
             <AlertDialogDescription>
-              They will lose access to this pharmacy immediately. You can re-invite them later.
+              They will lose access to this pharmacy immediately. You can re-add them later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
