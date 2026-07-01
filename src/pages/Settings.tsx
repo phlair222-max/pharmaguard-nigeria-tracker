@@ -543,12 +543,12 @@ function TeamTab({ organizationName }: { organizationName: string }) {
       email: user?.email ?? inviteEmail,
       amount: checkout.amount,
       metadata: checkout.metadata,
-      callback: async (_response: any) => {
+      callback: (_response: any) => {
         toast.success("Payment successful! Activating seat…");
-        await (supabase.from as any)("memberships")
+        (supabase.from as any)("memberships")
           .update({ payment_status: "active", seat_fee_paid: true })
-          .eq("id", membershipId);
-        fetchMembers();
+          .eq("id", membershipId)
+          .then(() => fetchMembers());
       },
       onClose: () => {
         toast.info("Payment cancelled — seat is pending until payment is completed.");
