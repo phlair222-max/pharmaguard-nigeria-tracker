@@ -61,6 +61,7 @@ type PlanRow = {
   tier: string;
   display_name: string;
   price_monthly: number;
+  seat_price_monthly: number | null;
   max_products: number;
   max_staff: number;
   max_sales_history_days: number;
@@ -489,6 +490,7 @@ function PlanConfigTab() {
       .update({
         display_name: plan.display_name,
         price_monthly: plan.price_monthly,
+        seat_price_monthly: plan.seat_price_monthly,
         max_products: plan.max_products,
         max_staff: plan.max_staff,
         max_sales_history_days: plan.max_sales_history_days,
@@ -547,7 +549,7 @@ function PlanConfigTab() {
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Max Staff</Label>
+                  <Label className="text-xs">Included Staff</Label>
                   <Input
                     type="number"
                     value={plan.max_staff}
@@ -566,6 +568,22 @@ function PlanConfigTab() {
                     placeholder="-1=∞"
                   />
                 </div>
+              </div>
+
+              {/* NEW: incremental per-seat price, used by create-staff-seat once
+                  a staff member goes beyond "Included Staff" above */}
+              <div>
+                <Label className="text-xs">Extra Seat Price (₦/month)</Label>
+                <Input
+                  type="number"
+                  value={plan.seat_price_monthly ?? ""}
+                  onChange={(e) => update(plan.tier, "seat_price_monthly", e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1"
+                  placeholder="Not set — seats beyond the included count can't be charged yet"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Charged per staff member beyond "Included Staff" above. Leave blank to block adding extra seats on this tier until priced.
+                </p>
               </div>
 
               <div className="space-y-2 pt-1">
