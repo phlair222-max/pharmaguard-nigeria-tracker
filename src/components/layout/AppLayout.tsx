@@ -9,21 +9,22 @@ import { Button } from "@/components/ui/button";
 import { store, useStore, usePlan } from "@/lib/store";
 import { useTheme } from "next-themes";
 import HeaderTicker from "./HeaderTicker";
+import { canAccessPage, resolveEffectiveRole, type PageKey } from "@/lib/permissions";
 
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const ALL_ITEMS = [
-  { title: "Dashboard",       url: "/",          icon: LayoutDashboard, planKey: null,                   cashierAllowed: true  },
-  { title: "Inventory",       url: "/inventory", icon: Package,         planKey: null,                   cashierAllowed: true  },
-  { title: "POS / Sales",     url: "/pos",       icon: ShoppingCart,    planKey: null,                   cashierAllowed: true  },
-  { title: "Sales History",   url: "/sales",     icon: ReceiptText,     planKey: null,                   cashierAllowed: true  },
-  { title: "Suppliers",       url: "/suppliers", icon: Truck,           planKey: "canSuppliers",         cashierAllowed: false },
-  { title: "Reports",         url: "/reports",   icon: FileBarChart2,   planKey: "canReports",           cashierAllowed: false },
-  { title: "AI Forecast",     url: "/forecast",  icon: Sparkles,        planKey: "canAiForecast",        cashierAllowed: false },
-  // Poisons Register: legally required — Cashiers must access it when dispensing controlled drugs
-  { title: "Poisons Register",url: "/poisons",   icon: ShieldAlert,     planKey: "canPoisonsRegister",   cashierAllowed: true  },
-  { title: "Audit Trail",     url: "/audit",     icon: History,         planKey: "canAuditTrail",        cashierAllowed: false },
-  { title: "Settings",        url: "/settings",  icon: SettingsIcon,    planKey: null,                   cashierAllowed: false },
+  { title: "Dashboard",       url: "/",          icon: LayoutDashboard, planKey: null,                   page: "dashboard" as PageKey    },
+  { title: "Inventory",       url: "/inventory", icon: Package,         planKey: null,                   page: "inventory" as PageKey    },
+  { title: "POS / Sales",     url: "/pos",       icon: ShoppingCart,    planKey: null,                   page: "pos" as PageKey          },
+  { title: "Sales History",   url: "/sales",     icon: ReceiptText,     planKey: null,                   page: "salesHistory" as PageKey },
+  { title: "Suppliers",       url: "/suppliers", icon: Truck,           planKey: "canSuppliers",         page: "suppliers" as PageKey    },
+  { title: "Reports",         url: "/reports",   icon: FileBarChart2,   planKey: "canReports",           page: "reports" as PageKey      },
+  { title: "AI Forecast",     url: "/forecast",  icon: Sparkles,        planKey: "canAiForecast",        page: "forecast" as PageKey     },
+  // Poisons Register: legally required — everyone with dispensing access needs this
+  { title: "Poisons Register",url: "/poisons",   icon: ShieldAlert,     planKey: "canPoisonsRegister",   page: "poisons" as PageKey      },
+  { title: "Audit Trail",     url: "/audit",     icon: History,         planKey: "canAuditTrail",        page: "audit" as PageKey        },
+  { title: "Settings",        url: "/settings",  icon: SettingsIcon,    planKey: null,                   page: "settings" as PageKey     },
 ] as const;
 
 function AppSidebar() {
@@ -33,6 +34,7 @@ function AppSidebar() {
   const user = useStore((s) => s.user);
   const isPlatformAdmin = user?.username?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
   const planGates = usePlan();
+  const role = resolveEffectiveRole(user);
 
   const adminItem = { title: "Platform Admin", url: "/admin", icon: ShieldCheck };
 
@@ -59,13 +61,14 @@ function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {ALL_ITEMS.map((item) => {
-                const isCashier = user?.memberRole === "Cashier";
+                // Role gate — single source of truth in permissions.ts
+                if (!canAccessPage(role, item.page)) return null;
                 // Plan gate check (same for all roles — plan belongs to the org, not the user)
                 const planLocked = item.planKey ? !planGates[item.planKey as keyof typeof planGates] : false;
-                // Cashier: hide items not meant for them entirely
-                if (isCashier && !item.cashierAllowed) return null;
-                // Cashier: if item is cashierAllowed but plan-locked, hide it (no lock icon — they can't upgrade)
-                if (isCashier && item.cashierAllowed && planLocked) return null;
+                // Non-Owner roles can't upgrade the plan themselves — hide
+                // plan-locked items entirely for them instead of showing a
+                // lock icon they can't do anything about.
+                if (role !== "Owner" && planLocked) return null;
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
