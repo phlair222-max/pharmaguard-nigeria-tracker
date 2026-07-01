@@ -25,6 +25,7 @@ import { store } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
 import type { Session } from "@supabase/supabase-js";
 import { Loader2 } from "lucide-react";
+import RouteGuard from "@/components/RouteGuard";
 
 const queryClient = new QueryClient();
 
@@ -37,9 +38,22 @@ function AuthCallback() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(async ({ data }) => {
       if (data.session) {
         store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+
+        // Links this auth user to whatever membership row was created for
+        // their email when the Owner invited them. Without this, the
+        // membership row sits forever with user_id = null and the invited
+        // staff member never actually gets org access, even though they
+        // can log in.
+        const { error: claimErr } = await supabase.rpc("claim_membership_on_login");
+        if (claimErr) {
+          console.error("claim_membership_on_login failed:", claimErr.message);
+          // Non-fatal on purpose — an Owner signing up fresh has nothing
+          // to claim, this is expected to no-op for them.
+        }
+
         // Check if user has no password set (invited via magic link)
         // Supabase sets identities with provider "email" for magic link users
         const identities = data.session.user.identities || [];
@@ -188,12 +202,12 @@ const App = () => (
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/pos" element={<POS />} />
               <Route path="/sales" element={<SalesHistory />} />
-              <Route path="/suppliers" element={<Suppliers />} />
-              <Route path="/reports" element={<Reports />} />
-              <Route path="/forecast" element={<Forecast />} />
-              <Route path="/audit" element={<Audit />} />
+              <Route path="/suppliers" element={<RouteGuard page="suppliers"><Suppliers /></RouteGuard>} />
+              <Route path="/reports" element={<RouteGuard page="reports"><Reports /></RouteGuard>} />
+              <Route path="/forecast" element={<RouteGuard page="forecast"><Forecast /></RouteGuard>} />
+              <Route path="/audit" element={<RouteGuard page="audit"><Audit /></RouteGuard>} />
               <Route path="/poisons" element={<Poisons />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/settings" element={<RouteGuard page="settings"><Settings /></RouteGuard>} />
               <Route path="/admin" element={<AdminDashboard />} />
             </Route>
             <Route path="*" element={<NotFound />} />
