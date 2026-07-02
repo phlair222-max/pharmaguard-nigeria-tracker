@@ -564,12 +564,38 @@ function TeamTab({ organizationName }: { organizationName: string }) {
       email: user?.email ?? inviteEmail,
       amount: checkout.amount,
       metadata: checkout.metadata,
-      callback: (_response: any) => {
-        toast.success("Payment successful! Activating seat…");
-        (supabase.from as any)("memberships")
-          .update({ payment_status: "active", seat_fee_paid: true })
-          .eq("id", membershipId)
-          .then(() => fetchMembers());
+      callback: (response: any) => {
+        toast.info("Payment received — confirming and sending invite…");
+        (async () => {
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) { toast.error("Session expired — please refresh"); return; }
+            const res = await fetch(
+              `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/confirm-seat-payment`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${session.access_token}`,
+                  "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
+                },
+                body: JSON.stringify({ reference: response.reference, membership_id: membershipId }),
+              }
+            );
+            const result = await res.json();
+            if (result.success && result.invite_sent) {
+              toast.success("Payment confirmed and invite sent!");
+            } else if (result.success && !result.invite_sent) {
+              toast.warning("Payment confirmed, but the invite email failed to send. Check the Team list and try resending.");
+            } else {
+              toast.error(result.error || "Payment succeeded but activation failed — contact support with reference " + response.reference);
+            }
+          } catch {
+            toast.error("Payment succeeded but confirmation failed — reference " + response.reference + ". Refresh and check status.");
+          } finally {
+            fetchMembers();
+          }
+        })();
       },
       onClose: () => {
         toast.info("Payment cancelled — seat is pending until payment is completed.");
