@@ -368,8 +368,7 @@ export default function Inventory() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {/* Container with forced horizontal scrollbar */}
-          <div className="overflow-x-auto pb-4 px-1" style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }}>
+          <div className="overflow-x-auto pb-4" style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto", scrollbarWidth: "thin" }}>
             <Table className="min-w-[1100px]">
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
