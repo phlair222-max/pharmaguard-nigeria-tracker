@@ -367,8 +367,16 @@ export default function Inventory() {
             </Select>
           </div>
         </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto pb-4" style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto", scrollbarWidth: "thin" }}>
+        <CardContent className="overflow-visible p-0">
+          <div 
+            className="w-full overflow-x-auto overflow-y-hidden pb-4 [&>div]:!overflow-x-auto [&>div]:!overflow-y-hidden"
+            style={{
+              maxHeight: "calc(100vh - 260px)",
+              overflowY: "auto",
+              scrollbarWidth: "thin",
+              WebkitOverflowScrolling: "touch",
+            }}
+          >
             <Table className="min-w-[1100px]">
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
