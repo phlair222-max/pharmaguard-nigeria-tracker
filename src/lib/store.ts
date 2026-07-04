@@ -23,6 +23,8 @@ export type Product = {
   controlled?: boolean;
   barcode?: string;
   image?: string;
+  nemlDrugId?: string;
+  itemType?: "pharmaceutical" | "non_pharmaceutical";
 };
 
 export type SaleItem = { productId: string; name: string; qty: number; price: number; cost?: number };
@@ -115,9 +117,8 @@ export type PharmacySettings = {
   logo?: string;
   ownerPhoto?: string;
   ownerName?: string;
-  // ── VAT ──────────────────────────────────────────────────────────────────
-  vatEnabled?: boolean;   // true = apply VAT to sales
-  vatRate?: number;       // percentage, e.g. 7.5 means 7.5%
+  vatEnabled?: boolean;
+  vatRate?: number;
 };
 
 type DB = {
@@ -250,7 +251,6 @@ function load(): DB {
     const parsed = JSON.parse(raw) as DB;
     parsed.suppliers = parsed.suppliers || [];
     parsed.settings = parsed.settings || defaultSettings;
-    // Backfill VAT defaults for existing installs that predate this field
     if (parsed.settings.vatEnabled === undefined) parsed.settings.vatEnabled = false;
     if (parsed.settings.vatRate === undefined) parsed.settings.vatRate = 7.5;
     parsed.controlledDispense = parsed.controlledDispense || [];
@@ -422,7 +422,6 @@ export const store = {
     void supabasePush.insertProducts(newRows);
   },
 
-  // ── Supabase auth bridge ──────────────────────────────────────────────────
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
       db.user = null;
@@ -436,7 +435,6 @@ export const store = {
     persist();
   },
 
-  // ── Live sync: Realtime + polling fallback ───────────────────────────────
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
   _pollInterval: null as ReturnType<typeof setInterval> | null,
 
@@ -648,8 +646,6 @@ export const store = {
   },
 };
 
-// ── Row mappers ───────────────────────────────────────────────────────────────
-
 function productToRow(p: Product, userId: string, orgId: string) {
   return {
     id: p.id, user_id: userId, organization_id: orgId,
@@ -659,6 +655,7 @@ function productToRow(p: Product, userId: string, orgId: string) {
     cost_price: p.costPrice, selling_price: p.sellingPrice, supplier: p.supplier,
     supplier_id: p.supplierId || null, category: p.category, description: p.description || null,
     controlled: !!p.controlled, barcode: p.barcode || null, image: p.image || null,
+    neml_drug_id: p.nemlDrugId || null, item_type: p.itemType || "pharmaceutical",
   };
 }
 function rowToProduct(r: any): Product {
@@ -670,6 +667,7 @@ function rowToProduct(r: any): Product {
     sellingPrice: Number(r.selling_price) || 0, supplier: r.supplier || "",
     supplierId: r.supplier_id || undefined, category: r.category || "", description: r.description || "",
     controlled: !!r.controlled, barcode: r.barcode || undefined, image: r.image || undefined,
+    nemlDrugId: r.neml_drug_id || undefined, itemType: r.item_type || "pharmaceutical",
   };
 }
 function productPatchToRow(patch: Partial<Product>) {
@@ -681,6 +679,7 @@ function productPatchToRow(patch: Partial<Product>) {
     sellingPrice: "selling_price", supplier: "supplier", supplierId: "supplier_id",
     category: "category", description: "description", controlled: "controlled",
     barcode: "barcode", image: "image",
+    nemlDrugId: "neml_drug_id", itemType: "item_type",
   };
   for (const [k, v] of Object.entries(patch)) {
     if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
@@ -738,7 +737,6 @@ function rowToSettings(r: any): Partial<PharmacySettings> {
     logo: r.logo || undefined,
     ownerPhoto: r.owner_photo || undefined,
     ownerName: r.owner_name || undefined,
-    // VAT — gracefully undefined if columns don't exist yet in org table
     vatEnabled: r.vat_enabled ?? undefined,
     vatRate: r.vat_rate != null ? Number(r.vat_rate) : undefined,
   };
@@ -753,13 +751,11 @@ function settingsPatchToRow(p: Partial<PharmacySettings>) {
   if (p.logo !== undefined) out.logo = p.logo;
   if (p.ownerPhoto !== undefined) out.owner_photo = p.ownerPhoto;
   if (p.ownerName !== undefined) out.owner_name = p.ownerName;
-  // Only write VAT columns if they exist — Supabase will ignore unknown columns
   if (p.vatEnabled !== undefined) out.vat_enabled = p.vatEnabled;
   if (p.vatRate !== undefined) out.vat_rate = p.vatRate;
   return out;
 }
 
-// ── Supabase push (write-back) ────────────────────────────────────────────────
 const supabasePush = {
   async _context(): Promise<{ uid: string; orgId: string } | null> {
     const { data } = await supabase.auth.getUser();
@@ -914,7 +910,6 @@ export function movementSpeed(unitsLast30: number): "Fast" | "Medium" | "Slow" {
   return "Slow";
 }
 
-// ── Plan helpers ──────────────────────────────────────────────────────────────
 export function usePlan() {
   const plan = useStore((s) => s.plan);
   const user = useStore((s) => s.user);
