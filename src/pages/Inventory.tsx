@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
@@ -22,7 +22,6 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { ExpiryScanner } from "@/components/ExpiryScanner";
-import { supabase } from "@/integrations/supabase/client";
 
 const DEFAULT_CATEGORIES = ["Analgesics","Antibiotics","Antimalarials","Antihypertensives","Antiretrovirals","Antidiabetics","Cardiovascular","Vitamins","Supplements","Contraceptives","Controlled Substances"];
 const DEFAULT_PACK_SIZES = ["10 Tablets","20 Tablets","30 Capsules","Bottle","Sachet","Box","Vial","Tube","5ml","10ml","100ml","Pack of 6","Pack of 10"];
@@ -31,22 +30,33 @@ const PACK_KEY = "pg_custom_pack_sizes";
 const loadCustom = (k: string): string[] => { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } };
 const saveCustom = (k: string, v: string[]) => localStorage.setItem(k, JSON.stringify(v));
 
-type NemlDrug = {
-  id: string;
-  name: string;
-  forms_and_strengths: string | null;
-  category: string | null;
-  is_controlled: boolean;
-  requires_trained_personnel: boolean;
-  notes: string | null;
-};
-
 const empty: Omit<Product, "id"> = {
   name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
   reorderLevel: 10, reorderQuantity: 30, packSize: "10 Tablets",
   costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
-  image: "", controlled: false, itemType: "pharmaceutical", nemlDrugId: undefined,
+  image: "", controlled: false,
 };
+
+async function fileToDataUrl(file: File, max = 400): Promise<string> {
+  const dataUrl = await new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+  return await new Promise<string>((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      c.getContext("2d")!.drawImage(img, 0, 0, w, h);
+      res(c.toDataURL("image/jpeg", 0.8));
+    };
+    img.onerror = () => res(dataUrl);
+    img.src = dataUrl;
+  });
+}
 
 export default function Inventory() {
   const products = useStore((s) => s.products);
@@ -66,63 +76,16 @@ export default function Inventory() {
   const [receiveQty, setReceiveQty] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
   const [dupWarn, setDupWarn] = useState<Product[] | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [customCats, setCustomCats] = useState<string[]>(() => loadCustom(CAT_KEY));
   const [customPacks, setCustomPacks] = useState<string[]>(() => loadCustom(PACK_KEY));
   const [newCat, setNewCat] = useState("");
   const [newPack, setNewPack] = useState("");
 
+  // ── Scanner states ──────────────────────────────────────────────────────────
   const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
   const [barcodeSearchOpen, setBarcodeSearchOpen] = useState(false);
   const [expiryScanOpen, setExpiryScanOpen] = useState(false);
-
-  const [nemlResults, setNemlResults] = useState<NemlDrug[]>([]);
-  const [nemlOpen, setNemlOpen] = useState(false);
-  const [selectedNeml, setSelectedNeml] = useState<NemlDrug | null>(null);
-  const nemlDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const searchNeml = useCallback((term: string) => {
-    if (nemlDebounceRef.current) clearTimeout(nemlDebounceRef.current);
-    if (!term.trim() || term.trim().length < 2) {
-      setNemlResults([]); setNemlOpen(false);
-      return;
-    }
-    nemlDebounceRef.current = setTimeout(async () => {
-      const { data, error } = await (supabase.from as any)("neml_drugs")
-        .select("id, name, forms_and_strengths, category, is_controlled, requires_trained_personnel, notes")
-        .ilike("name", `%${term.trim()}%`)
-        .limit(8);
-      if (error) { console.error(error); return; }
-      setNemlResults(data || []);
-      setNemlOpen((data || []).length > 0);
-    }, 300);
-  }, []);
-
-  const onProductNameChange = (v: string) => {
-    if (selectedNeml && v !== selectedNeml.name) {
-      setSelectedNeml(null);
-      setDraft((d) => ({ ...d, name: v, nemlDrugId: undefined }));
-    } else {
-      setDraft((d) => ({ ...d, name: v }));
-    }
-    if (draft.itemType !== "non_pharmaceutical") searchNeml(v);
-  };
-
-  const selectNemlDrug = (drug: NemlDrug) => {
-    setSelectedNeml(drug);
-    setDraft((d) => ({
-      ...d,
-      name: drug.name,
-      nemlDrugId: drug.id,
-      category: drug.category || d.category,
-    }));
-    setNemlOpen(false);
-    setNemlResults([]);
-  };
-
-  const setItemType = (v: "pharmaceutical" | "non_pharmaceutical") => {
-    setDraft((d) => ({ ...d, itemType: v, ...(v === "non_pharmaceutical" ? { nemlDrugId: undefined } : {}) }));
-    if (v === "non_pharmaceutical") { setSelectedNeml(null); setNemlOpen(false); setNemlResults([]); }
-  };
 
   type SortKey = "name" | "generic" | "nafdac" | "packSize" | "batch" | "expiry" | "quantity" | "reorderLevel" | "reorderQuantity" | "costPrice" | "sellingPrice" | "supplier";
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -170,16 +133,8 @@ export default function Inventory() {
     });
   }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir]);
 
-  const openNew = () => {
-    setEditing(null); setDraft(empty); setSelectedNeml(null);
-    setNemlResults([]); setNemlOpen(false);
-    setOpen(true);
-  };
-  const openEdit = (p: Product) => {
-    setEditing(p); setDraft({ ...p, itemType: p.itemType || "pharmaceutical" });
-    setSelectedNeml(null); setNemlResults([]); setNemlOpen(false);
-    setOpen(true);
-  };
+  const openNew = () => { setEditing(null); setDraft(empty); setOpen(true); };
+  const openEdit = (p: Product) => { setEditing(p); setDraft({ ...p }); setOpen(true); };
   const performSave = () => {
     const final = { ...draft };
     if (final.supplierId) {
@@ -201,11 +156,20 @@ export default function Inventory() {
     performSave();
   };
 
+  const onImageChange = async (file?: File | null) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
+    const url = await fileToDataUrl(file, 400);
+    setDraft((d) => ({ ...d, image: url }));
+  };
+
+  // ── Barcode scan handler ────────────────────────────────────────────────────
   const onBarcodeScanned = (barcode: string) => {
     setDraft((d) => ({ ...d, barcode }));
     toast.success(`Barcode scanned: ${barcode}`);
   };
 
+  // ── Barcode search handler (Inventory search bar) ───────────────────────────
   const onBarcodeSearch = (barcode: string) => {
     const match = products.find((p) => p.barcode === barcode);
     if (match) {
@@ -217,6 +181,7 @@ export default function Inventory() {
     }
   };
 
+  // ── Expiry scan handler ─────────────────────────────────────────────────────
   const onExpiryScanConfirmed = (result: {
     expiryDate: string;
     productName?: string;
@@ -340,7 +305,7 @@ export default function Inventory() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto rounded-b-lg" style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }}>
-            <Table className="min-w-[1050px]">
+            <Table className="min-w-[1100px]">
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   {(() => {
@@ -361,7 +326,8 @@ export default function Inventory() {
                       </button>
                     );
                     return <>
-                      <TableHead className="min-w-[180px] pl-4"><SortBtn k="name" label="Product" /></TableHead>
+                      <TableHead className="w-[52px] pl-4">Img</TableHead>
+                      <TableHead className="min-w-[180px]"><SortBtn k="name" label="Product" /></TableHead>
                       <TableHead className="min-w-[90px]"><SortBtn k="batch" label="Batch" /></TableHead>
                       <TableHead className="min-w-[110px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
                       <TableHead className="min-w-[80px]">Status</TableHead>
@@ -378,7 +344,7 @@ export default function Inventory() {
               </TableHeader>
               <TableBody>
                 {list.length === 0 && (
-                  <TableRow><TableCell colSpan={15} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={16} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
                 )}
                 {list.map((p) => {
                   const tier = expiryTier(p.expiry);
@@ -390,9 +356,15 @@ export default function Inventory() {
                   return (
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
                       <TableCell className="pl-4">
+                        {p.image ? (
+                          <img src={p.image} alt={p.name} className="h-9 w-9 rounded-md object-cover border" />
+                        ) : (
+                          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-4 w-4" /></div>
+                        )}
+                      </TableCell>
+                      <TableCell>
                         <div className="font-medium flex items-center gap-1.5 leading-tight">
                           {p.name}
-                          {p.itemType === "non_pharmaceutical" && <Package2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
                           {p.controlled && <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive" title="Controlled drug" />}
                           {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                         </div>
@@ -442,86 +414,37 @@ export default function Inventory() {
         </CardContent>
       </Card>
 
-      {/* Add / Edit Product Dialog */}
+      {/* ── Add / Edit Product Dialog ── */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Edit Product" : "Add Product"}</DialogTitle></DialogHeader>
 
-          <div className="mb-3 flex items-center gap-2 rounded-lg border bg-muted/20 p-1">
-            <button
-              type="button"
-              onClick={() => setItemType("pharmaceutical")}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition-colors",
-                (draft.itemType ?? "pharmaceutical") === "pharmaceutical"
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Pill className="h-3.5 w-3.5" /> Pharmaceutical
-            </button>
-            <button
-              type="button"
-              onClick={() => setItemType("non_pharmaceutical")}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition-colors",
-                draft.itemType === "non_pharmaceutical"
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Package2 className="h-3.5 w-3.5" /> Non-Pharmaceutical
-            </button>
+          <div className="mb-3 flex items-center gap-4 rounded-lg border bg-muted/30 p-3">
+            {draft.image ? (
+              <img src={draft.image} alt="preview" className="h-20 w-20 rounded-md object-cover border" />
+            ) : (
+              <div className="flex h-20 w-20 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-6 w-6" /></div>
+            )}
+            <div className="flex-1">
+              <Label className="text-xs">Product Image</Label>
+              <div className="flex gap-2 mt-1">
+                <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onImageChange(e.target.files?.[0])} />
+                <Button type="button" size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                  <Upload className="mr-1.5 h-3.5 w-3.5" />Upload image
+                </Button>
+                {draft.image && <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, image: "" })}>Remove</Button>}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">JPG/PNG, under 5MB. Auto-resized.</p>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="relative">
-              <Label>Product name *</Label>
-              <Input
-                value={draft.name}
-                onChange={(e) => onProductNameChange(e.target.value)}
-                onFocus={() => { if (nemlResults.length > 0) setNemlOpen(true); }}
-                onBlur={() => setTimeout(() => setNemlOpen(false), 150)}
-                autoComplete="off"
-                placeholder={draft.itemType === "non_pharmaceutical" ? "e.g. Cotton wool" : "Start typing to search NEML..."}
-              />
-              {draft.itemType !== "non_pharmaceutical" && nemlOpen && nemlResults.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full rounded-md border bg-popover shadow-lg max-h-60 overflow-y-auto">
-                  {nemlResults.map((drug) => (
-                    <button
-                      key={drug.id}
-                      type="button"
-                      onMouseDown={(e) => { e.preventDefault(); selectNemlDrug(drug); }}
-                      className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-muted transition-colors border-b last:border-b-0"
-                    >
-                      <span className="font-medium">{drug.name}</span>
-                      {drug.forms_and_strengths && (
-                        <span className="text-[11px] text-muted-foreground line-clamp-1">{drug.forms_and_strengths}</span>
-                      )}
-                      {drug.requires_trained_personnel && (
-                        <span className="flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-500">
-                          <GraduationCap className="h-3 w-3" /> Trained personnel item
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {selectedNeml && (
-                <p className="mt-1 flex items-center gap-1 text-[11px] text-success">
-                  <Pill className="h-3 w-3" /> Matched to NEML catalogue
-                </p>
-              )}
-              {selectedNeml?.requires_trained_personnel && (
-                <p className="mt-1 flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-500">
-                  <GraduationCap className="h-3 w-3" /> {selectedNeml.notes || "For use by appropriately trained health personnel"}
-                </p>
-              )}
-            </div>
+            <Field label="Product name *" v={draft.name} on={(v) => setDraft({ ...draft, name: v })} />
             <Field label="Generic name" v={draft.generic} on={(v) => setDraft({ ...draft, generic: v })} />
             <Field label="NAFDAC Registration No." v={draft.nafdac} on={(v) => setDraft({ ...draft, nafdac: v })} />
             <Field label="Batch / Lot No." v={draft.batch} on={(v) => setDraft({ ...draft, batch: v })} />
 
+            {/* ── Expiry date field with scan button ── */}
             <div>
               <Label>Expiry date *</Label>
               <div className="flex gap-2">
@@ -638,6 +561,7 @@ export default function Inventory() {
               </Select>
             </div>
 
+            {/* ── Barcode field with scan button ── */}
             <div>
               <Label>Barcode (optional)</Label>
               <div className="flex gap-2">
@@ -672,6 +596,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Receive Stock Dialog ── */}
       <Dialog open={!!receiveFor} onOpenChange={(o) => !o && setReceiveFor(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Receive stock — {receiveFor?.name}</DialogTitle></DialogHeader>
@@ -687,6 +612,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Delete Confirm ── */}
       <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -705,6 +631,7 @@ export default function Inventory() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* ── Duplicate Warning ── */}
       <AlertDialog open={!!dupWarn} onOpenChange={(o) => !o && setDupWarn(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -732,6 +659,7 @@ export default function Inventory() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* ── Barcode Scanner ── */}
       <BarcodeScanner
         open={barcodeScanOpen}
         onOpenChange={setBarcodeScanOpen}
@@ -739,6 +667,7 @@ export default function Inventory() {
         title="Scan Product Barcode"
       />
 
+      {/* ── Barcode Search Scanner ── */}
       <BarcodeScanner
         open={barcodeSearchOpen}
         onOpenChange={setBarcodeSearchOpen}
@@ -746,6 +675,7 @@ export default function Inventory() {
         title="Scan to Search Inventory"
       />
 
+      {/* ── Expiry Scanner ── */}
       <ExpiryScanner
         open={expiryScanOpen}
         onOpenChange={setExpiryScanOpen}
