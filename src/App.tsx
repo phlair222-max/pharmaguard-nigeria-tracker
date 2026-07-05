@@ -153,21 +153,27 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
       window.history.replaceState(null, "", window.location.pathname);
     }
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    // getSession handles the initial load + hydration — single source of truth on mount
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (data.session?.user) {
+        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+        void store.hydrateFromSupabase();
+      } else {
+        setSession(null);
+      }
+    });
+
+    // onAuthStateChange only handles subsequent changes (sign in, sign out, token refresh)
+    // INITIAL_SESSION is skipped — already handled by getSession above
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "INITIAL_SESSION") return;
       setSession(s);
       if (s?.user) {
         store.setAuthUser({ id: s.user.id, email: s.user.email || "user" });
         void store.hydrateFromSupabase();
       } else {
         store.setAuthUser(null);
-      }
-    });
-
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      if (data.session?.user) {
-        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
-        void store.hydrateFromSupabase();
       }
     });
 
