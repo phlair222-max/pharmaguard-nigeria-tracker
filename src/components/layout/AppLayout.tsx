@@ -185,7 +185,16 @@ export default function AppLayout() {
             </div>
             <ThemeToggle />
           </header>
-          <main className="flex-1 overflow-auto p-4 md:p-6">
+          {/* min-h-0 added: flex-1 alone does NOT cap a flex child's height —
+              a flex item's default min-height is `auto`, so without min-h-0
+              this element was still free to grow past the space the flex
+              column gave it in order to fit whatever page content (like
+              Inventory's table) was rendered inside it. That meant
+              Inventory.tsx's own `h-full` wrapper had no real bounded parent
+              to measure against, so it fell back to content-based height —
+              same root-cause pattern as the two earlier fixes, one level
+              deeper in the tree. */}
+          <main className="flex-1 min-h-0 overflow-auto p-4 md:p-6">
             <Outlet />
           </main>
         </div>
