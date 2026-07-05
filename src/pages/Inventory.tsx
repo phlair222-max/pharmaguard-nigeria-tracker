@@ -369,8 +369,8 @@ export default function Inventory() {
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
           <div
-            className="h-full w-full overflow-auto [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
-            style={{ scrollbarWidth: "thin", WebkitOverflowScrolling: "touch" }}
+            className="h-full w-full overflow-x-scroll overflow-y-scroll [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
+            style={{ scrollbarWidth: "auto", WebkitOverflowScrolling: "touch" }}
           >
             <Table className="min-w-[1100px]">
               <TableHeader className="sticky top-0 z-10 bg-card">
