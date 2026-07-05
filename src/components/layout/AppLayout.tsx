@@ -164,11 +164,20 @@ function ThemeToggle() {
 export default function AppLayout() {
   return (
     <SidebarProvider>
-      <div className="flex min-h-screen w-full bg-background">
+      {/*
+        h-screen + overflow-hidden (instead of min-h-screen) locks this
+        wrapper to exactly the viewport height. Without this, the page has
+        no real ceiling, so `main`'s flex-1 + overflow-auto below never gets
+        a bounded height to work with — content just keeps growing past the
+        fold and the whole page scrolls instead of `main` scrolling
+        internally. This is what was pushing the Inventory table's
+        horizontal scrollbar off-screen.
+      */}
+      <div className="flex h-screen w-full overflow-hidden bg-background">
         <AppSidebar />
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* Header: fixed height, never grows, ticker is sandwiched between trigger and theme toggle */}
-          <header className="sticky top-0 z-30 flex h-12 w-full items-center gap-2 border-b bg-card/80 px-3 backdrop-blur overflow-hidden">
+          <header className="sticky top-0 z-30 flex h-12 w-full shrink-0 items-center gap-2 border-b bg-card/80 px-3 backdrop-blur overflow-hidden">
             <SidebarTrigger className="shrink-0" />
             {/* Ticker occupies only the middle space — flex-1 with min-w-0 ensures it never overflows */}
             <div className="min-w-0 flex-1 overflow-hidden">
