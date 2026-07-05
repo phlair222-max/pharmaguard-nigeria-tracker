@@ -295,8 +295,8 @@ export default function Inventory() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Inventory</h1>
           <p className="text-sm text-muted-foreground">Manage products, batches, stock and expiry</p>
@@ -311,8 +311,8 @@ export default function Inventory() {
         </div>
       </div>
 
-      <Card className="shadow-card">
-        <CardHeader className="pb-3">
+      <Card className="flex min-h-0 flex-1 flex-col shadow-card">
+        <CardHeader className="shrink-0 pb-3">
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-2 flex-1 min-w-[220px]">
               <div className="relative flex-1">
@@ -367,15 +367,10 @@ export default function Inventory() {
             </Select>
           </div>
         </CardHeader>
-        <CardContent className="overflow-visible p-0">
-          <div 
-            className="w-full overflow-x-auto overflow-y-hidden pb-4 [&>div]:!overflow-x-auto [&>div]:!overflow-y-hidden"
-            style={{
-              maxHeight: "calc(100vh - 260px)",
-              overflowY: "auto",
-              scrollbarWidth: "thin",
-              WebkitOverflowScrolling: "touch",
-            }}
+        <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
+          <div
+            className="h-full w-full overflow-auto [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
+            style={{ scrollbarWidth: "thin", WebkitOverflowScrolling: "touch" }}
           >
             <Table className="min-w-[1100px]">
               <TableHeader className="sticky top-0 z-10 bg-card">
