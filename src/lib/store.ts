@@ -437,6 +437,7 @@ export const store = {
 
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
   _pollInterval: null as ReturnType<typeof setInterval> | null,
+  _hydrating: false, // ← hydration lock
 
   stopRealtime() {
     if (this._realtimeChannel) {
@@ -509,140 +510,152 @@ export const store = {
   },
 
   async hydrateFromSupabase() {
-    const { data: auth } = await supabase.auth.getUser();
-    if (!auth.user) return;
-    const uid = auth.user.id;
-    const email = auth.user.email || "";
+    // Prevent concurrent hydration runs
+    if (this._hydrating) return;
+    this._hydrating = true;
 
-    const { data: membership, error: membershipError } = await (supabase.from as any)("memberships")
-      .select("organization_id, role, can_view_margins, status")
-      .eq("user_id", uid)
-      .eq("status", "active")
-      .maybeSingle();
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) return;
+      const uid = auth.user.id;
+      const email = auth.user.email || "";
 
-    console.log("[hydrate] uid:", uid, "email:", email);
-    console.log("[hydrate] membership result:", membership, "error:", membershipError);
-
-    if (!membership) {
-      if (membershipError) {
-        console.error("[hydrate] membership query failed, aborting:", membershipError.message);
-        return;
-      }
-
-      const { data: invited, error: invitedError } = await (supabase.from as any)("memberships")
-        .select("id, organization_id, role, can_view_margins")
-        .eq("invited_email", email.toLowerCase())
-        .eq("status", "invited")
+      const { data: membership, error: membershipError } = await (supabase.from as any)("memberships")
+        .select("organization_id, role, can_view_margins, status")
+        .eq("user_id", uid)
+        .eq("status", "active")
         .maybeSingle();
 
-      if (invitedError) {
-        console.error("[hydrate] invited lookup failed:", invitedError.message);
+      console.log("[hydrate] uid:", uid, "email:", email);
+      console.log("[hydrate] membership result:", membership, "error:", membershipError);
+
+      if (!membership) {
+        if (membershipError) {
+          console.error("[hydrate] membership query failed, aborting:", membershipError.message);
+          return;
+        }
+
+        const { data: invited, error: invitedError } = await (supabase.from as any)("memberships")
+          .select("id, organization_id, role, can_view_margins")
+          .eq("invited_email", email.toLowerCase())
+          .eq("status", "invited")
+          .maybeSingle();
+
+        if (invitedError) {
+          console.error("[hydrate] invited lookup failed:", invitedError.message);
+          return;
+        }
+
+        if (invited) {
+          await (supabase.from as any)("memberships")
+            .update({ user_id: uid, status: "active" })
+            .eq("id", invited.id);
+          toast.success("Welcome! You've been connected to your pharmacy.");
+          // Release lock before recursive call
+          this._hydrating = false;
+          return this.hydrateFromSupabase();
+        }
+
+        const { data: newOrg } = await (supabase.from as any)("organizations")
+          .insert({ owner_id: uid, name: "My Pharmacy" })
+          .select("id")
+          .single();
+
+        if (newOrg) {
+          await (supabase.from as any)("memberships").insert({
+            organization_id: newOrg.id,
+            user_id: uid,
+            role: "Owner",
+            can_view_margins: true,
+            status: "active",
+          });
+          // Release lock before recursive call
+          this._hydrating = false;
+          return this.hydrateFromSupabase();
+        }
         return;
       }
 
-      if (invited) {
-        await (supabase.from as any)("memberships")
-          .update({ user_id: uid, status: "active" })
-          .eq("id", invited.id);
-        toast.success("Welcome! You've been connected to your pharmacy.");
-        return this.hydrateFromSupabase();
-      }
+      const orgId: string = membership.organization_id;
+      const memberRole: "Owner" | "Pharmacist" | "Cashier" = membership.role;
+      const canViewMargins: boolean = membership.can_view_margins ?? false;
 
-      const { data: newOrg } = await (supabase.from as any)("organizations")
-        .insert({ owner_id: uid, name: "My Pharmacy" })
-        .select("id")
-        .single();
+      const legacyRole: "Admin" | "Pharmacist" =
+        memberRole === "Owner" ? "Admin" : "Pharmacist";
 
-      if (newOrg) {
-        await (supabase.from as any)("memberships").insert({
-          organization_id: newOrg.id,
-          user_id: uid,
-          role: "Owner",
-          can_view_margins: true,
-          status: "active",
-        });
-        return this.hydrateFromSupabase();
-      }
-      return;
-    }
+      db.user = {
+        username: email,
+        role: legacyRole,
+        organizationId: orgId,
+        memberRole,
+        canViewMargins,
+      };
+      persist();
 
-    const orgId: string = membership.organization_id;
-    const memberRole: "Owner" | "Pharmacist" | "Cashier" = membership.role;
-    const canViewMargins: boolean = membership.can_view_margins ?? false;
-
-    const legacyRole: "Admin" | "Pharmacist" =
-      memberRole === "Owner" ? "Admin" : "Pharmacist";
-
-    db.user = {
-      username: email,
-      role: legacyRole,
-      organizationId: orgId,
-      memberRole,
-      canViewMargins,
-    };
-    persist();
-
-    const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
-      supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
-      supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
-      supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
-      (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
-      (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
-      supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
-      (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
-      (supabase.from as any)("plan_config").select("*"),
-    ]);
-
-    if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
-    if (salesR.error) { console.error(salesR.error); toast.error("Failed to load sales"); }
-
-    db.products = (prodsR.data || []).map(rowToProduct);
-    db.sales = (salesR.data || []).map(rowToSale);
-    db.suppliers = (supR.data || []).map(rowToSupplier);
-    db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
-    db.audit = ((audR as any).data || []).map(rowToAudit);
-    if ((orgR as any)?.data) db.settings = { ...db.settings, ...rowToSettings((orgR as any).data) };
-
-    const orgTier: string = (orgR as any)?.data?.subscription_tier ?? "free";
-    const orgExpiry: string | null = (orgR as any)?.data?.subscription_expires_at ?? null;
-    db.user = { ...db.user!, subscriptionTier: orgTier, subscriptionExpiresAt: orgExpiry };
-
-    const plans: any[] = (planR as any)?.data || [];
-    const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
-    db.plan = thisPlan ? {
-      tier: thisPlan.tier,
-      displayName: thisPlan.display_name,
-      priceMonthly: Number(thisPlan.price_monthly),
-      maxProducts: thisPlan.max_products,
-      maxStaff: thisPlan.max_staff,
-      maxSalesHistoryDays: thisPlan.max_sales_history_days,
-      canAiForecast: thisPlan.can_ai_forecast,
-      canPoisonsRegister: thisPlan.can_poisons_register,
-      canReports: thisPlan.can_reports,
-      canSuppliers: thisPlan.can_suppliers,
-      canAuditTrail: thisPlan.can_audit_trail,
-    } : null;
-    persist();
-
-    if (
-      email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
-      db.products.length === 0 &&
-      db.sales.length === 0
-    ) {
-      await seedAdminDemoData(uid, orgId);
-      const [p2, s2, sup2] = await Promise.all([
+      const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
         supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
         supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
+        (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
+        (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
+        supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
+        (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
+        (supabase.from as any)("plan_config").select("*"),
       ]);
-      db.products = (p2.data || []).map(rowToProduct);
-      db.sales = (s2.data || []).map(rowToSale);
-      db.suppliers = (sup2.data || []).map(rowToSupplier);
-      persist();
-      toast.success("Demo data loaded into your admin pharmacy");
-    }
 
-    this.startRealtime(orgId);
+      if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
+      if (salesR.error) { console.error(salesR.error); toast.error("Failed to load sales"); }
+
+      db.products = (prodsR.data || []).map(rowToProduct);
+      db.sales = (salesR.data || []).map(rowToSale);
+      db.suppliers = (supR.data || []).map(rowToSupplier);
+      db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
+      db.audit = ((audR as any).data || []).map(rowToAudit);
+      if ((orgR as any)?.data) db.settings = { ...db.settings, ...rowToSettings((orgR as any).data) };
+
+      const orgTier: string = (orgR as any)?.data?.subscription_tier ?? "free";
+      const orgExpiry: string | null = (orgR as any)?.data?.subscription_expires_at ?? null;
+      db.user = { ...db.user!, subscriptionTier: orgTier, subscriptionExpiresAt: orgExpiry };
+
+      const plans: any[] = (planR as any)?.data || [];
+      const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
+      db.plan = thisPlan ? {
+        tier: thisPlan.tier,
+        displayName: thisPlan.display_name,
+        priceMonthly: Number(thisPlan.price_monthly),
+        maxProducts: thisPlan.max_products,
+        maxStaff: thisPlan.max_staff,
+        maxSalesHistoryDays: thisPlan.max_sales_history_days,
+        canAiForecast: thisPlan.can_ai_forecast,
+        canPoisonsRegister: thisPlan.can_poisons_register,
+        canReports: thisPlan.can_reports,
+        canSuppliers: thisPlan.can_suppliers,
+        canAuditTrail: thisPlan.can_audit_trail,
+      } : null;
+      persist();
+
+      if (
+        email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
+        db.products.length === 0 &&
+        db.sales.length === 0
+      ) {
+        await seedAdminDemoData(uid, orgId);
+        const [p2, s2, sup2] = await Promise.all([
+          supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
+          supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+          supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
+        ]);
+        db.products = (p2.data || []).map(rowToProduct);
+        db.sales = (s2.data || []).map(rowToSale);
+        db.suppliers = (sup2.data || []).map(rowToSupplier);
+        persist();
+        toast.success("Demo data loaded into your admin pharmacy");
+      }
+
+      this.startRealtime(orgId);
+    } finally {
+      this._hydrating = false; // always release lock
+    }
   },
 };
 
