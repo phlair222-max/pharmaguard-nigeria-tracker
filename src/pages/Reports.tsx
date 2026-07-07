@@ -6,15 +6,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useStore } from "@/lib/store";
+import { useStore, store, usePlan } from "@/lib/store";
 import { NGN, expiryStatus, daysUntil } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
-import { FileDown, FileText, ShieldCheck } from "lucide-react";
+import { FileDown, FileText, ShieldCheck, History, Loader2 } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import { usePlan } from "@/lib/store";
 import { UpgradePrompt } from "@/components/UpgradePrompt";
+import { toast } from "sonner";
 
 export default function Reports() {
   const sales = useStore((s) => s.sales);
@@ -22,8 +22,27 @@ export default function Reports() {
   const settings = useStore((s) => s.settings);
   const dispenses = useStore((s) => s.controlledDispense);
   const audit = useStore((s) => s.audit);
+  const extendedLoaded = useStore((s) => s.extendedSalesLoaded);
   const [from, setFrom] = useState(format(new Date(Date.now() - 6 * 86400000), "yyyy-MM-dd"));
   const [to, setTo] = useState(format(new Date(), "yyyy-MM-dd"));
+  const [extLoading, setExtLoading] = useState(false);
+
+  const plan = usePlan();
+  const isPro = plan.tier === "pro";
+  const maxDays = plan.plan?.maxSalesHistoryDays ?? 0;
+  const extButtonLabel = maxDays === -1 ? "Load all sales history" : `Load last ${maxDays} days`;
+
+  // Show the banner when user picks a from-date older than 90 days and hasn't loaded extended yet
+  const fromMs = new Date(from).getTime();
+  const cutoff90Ms = Date.now() - 90 * 86400000;
+  const fromIsOlderThan90 = fromMs < cutoff90Ms;
+
+  const handleLoadExtended = async () => {
+    setExtLoading(true);
+    const result = await store.loadExtendedSalesHistory();
+    setExtLoading(false);
+    if (!result.ok) toast.error("Failed to load history: " + result.error);
+  };
 
   const inRange = useMemo(() => {
     const f = startOfDay(new Date(from)).getTime();
@@ -40,7 +59,6 @@ export default function Reports() {
   const stockCostValue = products.reduce((a, p) => a + p.quantity * (p.costPrice ?? 0), 0);
   const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
 
-  // Profit by product within range
   const profitMap = new Map<string, { name: string; units: number; revenue: number; profit: number }>();
   for (const s of inRange) {
     for (const it of s.items) {
@@ -52,7 +70,6 @@ export default function Reports() {
   }
   const profitRows = [...profitMap.values()].sort((a, b) => b.profit - a.profit);
 
-  // Stock Movement: units sold per product within range
   const movementMap = new Map<string, { name: string; sold: number; revenue: number }>();
   for (const s of inRange) {
     for (const it of s.items) {
@@ -148,8 +165,6 @@ export default function Reports() {
     }
   };
 
-
-
   const exportPDF = (title: string, head: string[], body: any[][]) => {
     const doc = new jsPDF();
     doc.setFontSize(14); doc.text("PharmaGuard NG", 14, 14);
@@ -165,8 +180,6 @@ export default function Reports() {
     XLSX.writeFile(wb, `${name.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.xlsx`);
   };
 
-
-  const plan = usePlan();
   if (!plan.canReports) return <div className="p-6"><UpgradePrompt feature="Reports & Exports" requiredPlan="basic" description="Full sales reports, profit analysis, stock movement, and CSV/PDF exports." /></div>;
   return (
     <div className="space-y-4">
@@ -189,6 +202,26 @@ export default function Reports() {
             <Stat label="Profit" v={NGN(totals.profit)} />
             <Stat label="Transactions" v={String(totals.count)} />
           </div>
+
+          {/* Extended history banner — shows when Pro user picks a date older than 90 days */}
+          {isPro && !extendedLoaded && fromIsOlderThan90 && (
+            <div className="w-full flex items-center justify-between rounded-lg border border-dashed border-muted-foreground/40 bg-muted/30 px-4 py-3 text-sm mt-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <History className="h-4 w-4 shrink-0" />
+                <span>Showing last 90 days. Load full history to report on this date range.</span>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleLoadExtended} disabled={extLoading}>
+                {extLoading ? <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Loading...</> : extButtonLabel}
+              </Button>
+            </div>
+          )}
+
+          {isPro && extendedLoaded && (
+            <div className="w-full flex items-center gap-2 rounded-lg border border-dashed border-success/40 bg-success/5 px-4 py-2 text-xs text-success mt-1">
+              <History className="h-3.5 w-3.5 shrink-0" />
+              Full sales history loaded
+            </div>
+          )}
         </CardContent>
       </Card>
 
