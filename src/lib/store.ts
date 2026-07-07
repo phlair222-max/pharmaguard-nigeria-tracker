@@ -132,6 +132,7 @@ type DB = {
   loginActivity: LoginActivity[];
   credentials: Credential[];
   plan: PlanConfig | null;
+  extendedSalesLoaded: boolean; // ← SESSION 9: tracks whether Pro full-history load has run
 };
 
 const KEY = "pharmaguard_db_v3";
@@ -228,7 +229,7 @@ function makeSeed(): DB {
   }
   return {
     products, sales, audit: [], user: null, suppliers, settings: defaultSettings,
-    controlledDispense: [], loginActivity: [],
+    controlledDispense: [], loginActivity: [], extendedSalesLoaded: false,
     credentials: [
       { username: "admin", passwordHash: hashPwd("admin") },
       { username: "pharma", passwordHash: hashPwd("pharma") },
@@ -239,6 +240,7 @@ function makeSeed(): DB {
 function emptyDb(): DB {
   return {
     products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings, plan: null,
+    extendedSalesLoaded: false,
     controlledDispense: [], loginActivity: [],
     credentials: [
       { username: "admin", passwordHash: hashPwd("admin") },
@@ -270,6 +272,7 @@ function load(): DB {
     parsed.controlledDispense = parsed.controlledDispense || [];
     parsed.loginActivity = parsed.loginActivity || [];
     parsed.credentials = parsed.credentials || [];
+    parsed.extendedSalesLoaded = parsed.extendedSalesLoaded || false;
     return parsed;
   } catch {
     return emptyDb();
@@ -441,6 +444,7 @@ export const store = {
       db.user = null;
       db.products = []; db.sales = []; db.suppliers = [];
       db.controlledDispense = []; db.audit = [];
+      db.extendedSalesLoaded = false;
       persist();
       this.stopRealtime();
       return;
@@ -451,7 +455,7 @@ export const store = {
 
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
   _pollInterval: null as ReturnType<typeof setInterval> | null,
-  _hydrating: false, // ← hydration lock
+  _hydrating: false,
 
   stopRealtime() {
     if (this._realtimeChannel) {
@@ -525,7 +529,6 @@ export const store = {
   },
 
   async hydrateFromSupabase() {
-    // Prevent concurrent hydration runs
     if (this._hydrating) return;
     this._hydrating = true;
 
@@ -566,7 +569,6 @@ export const store = {
             .update({ user_id: uid, status: "active" })
             .eq("id", invited.id);
           toast.success("Welcome! You've been connected to your pharmacy.");
-          // Release lock before recursive call
           this._hydrating = false;
           return this.hydrateFromSupabase();
         }
@@ -584,7 +586,6 @@ export const store = {
             can_view_margins: true,
             status: "active",
           });
-          // Release lock before recursive call
           this._hydrating = false;
           return this.hydrateFromSupabase();
         }
@@ -648,6 +649,9 @@ export const store = {
         canSuppliers: thisPlan.can_suppliers,
         canAuditTrail: thisPlan.can_audit_trail,
       } : null;
+
+      // Reset extended flag on fresh hydrate — user must re-trigger if needed
+      db.extendedSalesLoaded = false;
       persist();
 
       if (
@@ -670,7 +674,47 @@ export const store = {
 
       this.startRealtime(orgId);
     } finally {
-      this._hydrating = false; // always release lock
+      this._hydrating = false;
+    }
+  },
+
+  // ── SESSION 9: On-demand extended sales history load (Pro only) ─────────────
+  // Fires a one-off Supabase query beyond the 90-day hydrate cutoff.
+  // Merges results into db.sales without duplicates. Does NOT restart
+  // hydrate, polling, or realtime. extendedSalesLoaded flag prevents
+  // repeat queries and updates UI indicators in SalesHistory + Reports.
+  async loadExtendedSalesHistory(): Promise<{ ok: boolean; error?: string }> {
+    const orgId = db.user?.organizationId;
+    const maxDays = db.plan?.maxSalesHistoryDays ?? 0;
+    if (!orgId) return { ok: false, error: "Not authenticated" };
+
+    try {
+      let query = supabase
+        .from("sales")
+        .select("*, sale_items(*)")
+        .eq("organization_id", orgId)
+        .order("created_at", { ascending: false });
+
+      // -1 = unlimited (Pro): fetch all. Positive = bounded window.
+      if (maxDays !== -1 && maxDays > 0) {
+        const cutoff = new Date(Date.now() - maxDays * 86400000).toISOString();
+        query = query.gte("created_at", cutoff);
+      }
+
+      const { data, error } = await query;
+      if (error) return { ok: false, error: error.message };
+
+      const existingIds = new Set(db.sales.map((s) => s.id));
+      const newSales = (data || []).map(rowToSale).filter((s) => !existingIds.has(s.id));
+      db.sales = [...db.sales, ...newSales].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      db.extendedSalesLoaded = true;
+      persist();
+      notify();
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e.message ?? "Unknown error" };
     }
   },
 };
