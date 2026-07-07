@@ -62,14 +62,19 @@ export type PlanConfig = {
   tier: string;
   displayName: string;
   priceMonthly: number;
-  maxProducts: number;       // -1 = unlimited
-  maxStaff: number;          // -1 = unlimited
-  maxSalesHistoryDays: number; // -1 = unlimited
+  maxProducts: number;          // -1 = unlimited
+  maxStaff: number;             // -1 = unlimited
+  maxSalesHistoryDays: number;  // -1 = unlimited
   canAiForecast: boolean;
   canPoisonsRegister: boolean;
   canReports: boolean;
   canSuppliers: boolean;
   canAuditTrail: boolean;
+  // ── Session 9: Module flags ──────────────────────────────────────────
+  // canApiAccess: grants the org access to the Modular API (Pro only by default)
+  // canDisposalReport: grants access to AI Disposal Report (Basic + Pro)
+  canApiAccess: boolean;
+  canDisposalReport: boolean;
 };
 
 export type ControlledDispense = {
@@ -132,21 +137,13 @@ type DB = {
   loginActivity: LoginActivity[];
   credentials: Credential[];
   plan: PlanConfig | null;
-  extendedSalesLoaded: boolean; // ← SESSION 9: tracks whether Pro full-history load has run
+  extendedSalesLoaded: boolean;
 };
 
 const KEY = "pharmaguard_db_v3";
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
 // ── PERFORMANCE FIX (Session 8) ──────────────────────────────────────────────
-// Both hydrateFromSupabase() and _syncFromServer() were fetching the ENTIRE
-// unbounded `sales` (+ nested sale_items) history on every call — including
-// every 30s poll tick. Confirmed via Network tab: this was the dominant cost
-// in every hydrate/poll cycle, independent of Inventory's product count.
-// Bounding to a recent window fixes the poll cost. NOTE: this also means
-// Reports / Sales History / anywhere else reading db.sales will only see
-// sales within this window. If that's not acceptable, wire this to
-// PlanConfig.maxSalesHistoryDays per-tier instead of this flat constant.
 const SALES_HYDRATE_DAYS = 90;
 function salesCutoffISO(): string {
   return new Date(Date.now() - SALES_HYDRATE_DAYS * 86400000).toISOString();
@@ -522,7 +519,6 @@ export const store = {
       .subscribe();
 
     this._realtimeChannel = ch;
-
     this._pollInterval = setInterval(() => {
       void this._syncFromServer(orgId);
     }, 30_000);
@@ -595,9 +591,7 @@ export const store = {
       const orgId: string = membership.organization_id;
       const memberRole: "Owner" | "Pharmacist" | "Cashier" = membership.role;
       const canViewMargins: boolean = membership.can_view_margins ?? false;
-
-      const legacyRole: "Admin" | "Pharmacist" =
-        memberRole === "Owner" ? "Admin" : "Pharmacist";
+      const legacyRole: "Admin" | "Pharmacist" = memberRole === "Owner" ? "Admin" : "Pharmacist";
 
       db.user = {
         username: email,
@@ -636,6 +630,8 @@ export const store = {
 
       const plans: any[] = (planR as any)?.data || [];
       const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
+
+      // ── Session 9: map new module flags from plan_config row ─────────────
       db.plan = thisPlan ? {
         tier: thisPlan.tier,
         displayName: thisPlan.display_name,
@@ -648,9 +644,10 @@ export const store = {
         canReports: thisPlan.can_reports,
         canSuppliers: thisPlan.can_suppliers,
         canAuditTrail: thisPlan.can_audit_trail,
+        canApiAccess: thisPlan.can_api_access ?? false,
+        canDisposalReport: thisPlan.can_disposal_report ?? false,
       } : null;
 
-      // Reset extended flag on fresh hydrate — user must re-trigger if needed
       db.extendedSalesLoaded = false;
       persist();
 
@@ -678,11 +675,6 @@ export const store = {
     }
   },
 
-  // ── SESSION 9: On-demand extended sales history load (Pro only) ─────────────
-  // Fires a one-off Supabase query beyond the 90-day hydrate cutoff.
-  // Merges results into db.sales without duplicates. Does NOT restart
-  // hydrate, polling, or realtime. extendedSalesLoaded flag prevents
-  // repeat queries and updates UI indicators in SalesHistory + Reports.
   async loadExtendedSalesHistory(): Promise<{ ok: boolean; error?: string }> {
     const orgId = db.user?.organizationId;
     const maxDays = db.plan?.maxSalesHistoryDays ?? 0;
@@ -695,7 +687,6 @@ export const store = {
         .eq("organization_id", orgId)
         .order("created_at", { ascending: false });
 
-      // -1 = unlimited (Pro): fetch all. Positive = bounded window.
       if (maxDays !== -1 && maxDays > 0) {
         const cutoff = new Date(Date.now() - maxDays * 86400000).toISOString();
         query = query.gte("created_at", cutoff);
@@ -751,8 +742,7 @@ function productPatchToRow(patch: Partial<Product>) {
     packSize: "pack_size", lastRestocked: "last_restocked", costPrice: "cost_price",
     sellingPrice: "selling_price", supplier: "supplier", supplierId: "supplier_id",
     category: "category", description: "description", controlled: "controlled",
-    barcode: "barcode", image: "image",
-    nemlDrugId: "neml_drug_id", itemType: "item_type",
+    barcode: "barcode", image: "image", nemlDrugId: "neml_drug_id", itemType: "item_type",
   };
   for (const [k, v] of Object.entries(patch)) {
     if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
@@ -802,14 +792,9 @@ function rowToAudit(r: any): AuditEntry {
 }
 function rowToSettings(r: any): Partial<PharmacySettings> {
   return {
-    name: r.name || undefined,
-    address: r.address || undefined,
-    phone: r.phone || undefined,
-    email: r.email || undefined,
-    premiseLicense: r.premise_license || undefined,
-    logo: r.logo || undefined,
-    ownerPhoto: r.owner_photo || undefined,
-    ownerName: r.owner_name || undefined,
+    name: r.name || undefined, address: r.address || undefined, phone: r.phone || undefined,
+    email: r.email || undefined, premiseLicense: r.premise_license || undefined,
+    logo: r.logo || undefined, ownerPhoto: r.owner_photo || undefined, ownerName: r.owner_name || undefined,
     vatEnabled: r.vat_enabled ?? undefined,
     vatRate: r.vat_rate != null ? Number(r.vat_rate) : undefined,
   };
@@ -998,15 +983,22 @@ export function usePlan() {
     plan: effectivePlan,
     tier: isExpired ? "free" : (user?.subscriptionTier ?? "free"),
     isExpired,
-    canAiForecast: effectivePlan?.canAiForecast ?? false,
-    canPoisonsRegister: effectivePlan?.canPoisonsRegister ?? false,
-    canReports: effectivePlan?.canReports ?? false,
-    canSuppliers: effectivePlan?.canSuppliers ?? false,
-    canAuditTrail: effectivePlan?.canAuditTrail ?? false,
+    // ── Existing feature gates (unchanged) ──────────────────────────────
+    canAiForecast:       effectivePlan?.canAiForecast       ?? false,
+    canPoisonsRegister:  effectivePlan?.canPoisonsRegister  ?? false,
+    canReports:          effectivePlan?.canReports          ?? false,
+    canSuppliers:        effectivePlan?.canSuppliers        ?? false,
+    canAuditTrail:       effectivePlan?.canAuditTrail       ?? false,
+    // ── Session 9: Module gates ──────────────────────────────────────────
+    // canApiAccess: controls access to Modular API settings page + key management
+    // canDisposalReport: controls access to AI Disposal Report (Basic + Pro)
+    canApiAccess:        effectivePlan?.canApiAccess        ?? false,
+    canDisposalReport:   effectivePlan?.canDisposalReport   ?? false,
+    // ── Limits ──────────────────────────────────────────────────────────
     atProductLimit: effectivePlan
       ? (effectivePlan.maxProducts !== -1 && products.length >= effectivePlan.maxProducts)
       : products.length >= 50,
     productLimit: effectivePlan?.maxProducts ?? 50,
-    staffLimit: effectivePlan?.maxStaff ?? 1,
+    staffLimit:   effectivePlan?.maxStaff   ?? 1,
   };
 }
