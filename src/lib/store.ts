@@ -22,7 +22,6 @@ export type Product = {
   description?: string;
   controlled?: boolean;
   barcode?: string;
-  image?: string;
   nemlDrugId?: string;
   itemType?: "pharmaceutical" | "non_pharmaceutical";
 };
@@ -70,9 +69,6 @@ export type PlanConfig = {
   canReports: boolean;
   canSuppliers: boolean;
   canAuditTrail: boolean;
-  // ── Session 9: Module flags ──────────────────────────────────────────
-  // canApiAccess: grants the org access to the Modular API (Pro only by default)
-  // canDisposalReport: grants access to AI Disposal Report (Basic + Pro)
   canApiAccess: boolean;
   canDisposalReport: boolean;
 };
@@ -631,7 +627,6 @@ export const store = {
       const plans: any[] = (planR as any)?.data || [];
       const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
 
-      // ── Session 9: map new module flags from plan_config row ─────────────
       db.plan = thisPlan ? {
         tier: thisPlan.tier,
         displayName: thisPlan.display_name,
@@ -718,7 +713,7 @@ function productToRow(p: Product, userId: string, orgId: string) {
     reorder_quantity: p.reorderQuantity, pack_size: p.packSize, last_restocked: p.lastRestocked || null,
     cost_price: p.costPrice, selling_price: p.sellingPrice, supplier: p.supplier,
     supplier_id: p.supplierId || null, category: p.category, description: p.description || null,
-    controlled: !!p.controlled, barcode: p.barcode || null, image: p.image || null,
+    controlled: !!p.controlled, barcode: p.barcode || null,
     neml_drug_id: p.nemlDrugId || null, item_type: p.itemType || "pharmaceutical",
   };
 }
@@ -730,7 +725,7 @@ function rowToProduct(r: any): Product {
     lastRestocked: r.last_restocked || undefined, costPrice: r.cost_price != null ? Number(r.cost_price) : null,
     sellingPrice: Number(r.selling_price) || 0, supplier: r.supplier || "",
     supplierId: r.supplier_id || undefined, category: r.category || "", description: r.description || "",
-    controlled: !!r.controlled, barcode: r.barcode || undefined, image: r.image || undefined,
+    controlled: !!r.controlled, barcode: r.barcode || undefined,
     nemlDrugId: r.neml_drug_id || undefined, itemType: r.item_type || "pharmaceutical",
   };
 }
@@ -742,7 +737,7 @@ function productPatchToRow(patch: Partial<Product>) {
     packSize: "pack_size", lastRestocked: "last_restocked", costPrice: "cost_price",
     sellingPrice: "selling_price", supplier: "supplier", supplierId: "supplier_id",
     category: "category", description: "description", controlled: "controlled",
-    barcode: "barcode", image: "image", nemlDrugId: "neml_drug_id", itemType: "item_type",
+    barcode: "barcode", nemlDrugId: "neml_drug_id", itemType: "item_type",
   };
   for (const [k, v] of Object.entries(patch)) {
     if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
@@ -983,18 +978,13 @@ export function usePlan() {
     plan: effectivePlan,
     tier: isExpired ? "free" : (user?.subscriptionTier ?? "free"),
     isExpired,
-    // ── Existing feature gates (unchanged) ──────────────────────────────
     canAiForecast:       effectivePlan?.canAiForecast       ?? false,
     canPoisonsRegister:  effectivePlan?.canPoisonsRegister  ?? false,
     canReports:          effectivePlan?.canReports          ?? false,
     canSuppliers:        effectivePlan?.canSuppliers        ?? false,
     canAuditTrail:       effectivePlan?.canAuditTrail       ?? false,
-    // ── Session 9: Module gates ──────────────────────────────────────────
-    // canApiAccess: controls access to Modular API settings page + key management
-    // canDisposalReport: controls access to AI Disposal Report (Basic + Pro)
     canApiAccess:        effectivePlan?.canApiAccess        ?? false,
     canDisposalReport:   effectivePlan?.canDisposalReport   ?? false,
-    // ── Limits ──────────────────────────────────────────────────────────
     atProductLimit: effectivePlan
       ? (effectivePlan.maxProducts !== -1 && products.length >= effectivePlan.maxProducts)
       : products.length >= 50,
