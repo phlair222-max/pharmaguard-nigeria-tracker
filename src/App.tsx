@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ThemeProvider } from "next-themes";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -62,7 +62,6 @@ function AuthCallback() {
         if (createdRecently) {
           setNeedsPassword(true);
         } else {
-          console.log("[auth-trace] AuthCallback -> calling hydrateFromSupabase()");
           void store.hydrateFromSupabase();
           navigate("/dashboard", { replace: true });
         }
@@ -83,7 +82,6 @@ function AuthCallback() {
       return;
     }
     toast.success("Password set successfully — welcome to PharmaGuard NG!");
-    console.log("[auth-trace] savePassword -> calling hydrateFromSupabase()");
     void store.hydrateFromSupabase();
     navigate("/dashboard", { replace: true });
   };
@@ -148,6 +146,13 @@ function AuthCallback() {
 
 const SessionGate = ({ children }: { children: JSX.Element }) => {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
+  // Guards against hydrateFromSupabase() being triggered twice on the same
+  // mount — getSession() and onAuthStateChange's SIGNED_IN both fire on
+  // initial load, and previously both called hydrate independently. The
+  // store's internal _hydrating lock only caught this by luck of timing,
+  // not reliably (confirmed via console trace: sometimes both ran fully
+  // back to back). This ref makes the dedupe explicit and deterministic.
+  const hydratedRef = useRef(false);
 
   useEffect(() => {
     // Clean up any OAuth error fragments from URL
@@ -155,14 +160,18 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
       window.history.replaceState(null, "", window.location.pathname);
     }
 
+    const hydrateOnce = (u: { id: string; email: string }) => {
+      store.setAuthUser(u);
+      if (hydratedRef.current) return;
+      hydratedRef.current = true;
+      void store.hydrateFromSupabase();
+    };
+
     // getSession handles the initial load + hydration — single source of truth on mount
     supabase.auth.getSession().then(({ data }) => {
-      console.log("[auth-trace] getSession() resolved — session present:", !!data.session);
       setSession(data.session);
       if (data.session?.user) {
-        store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
-        console.log("[auth-trace] getSession() -> calling hydrateFromSupabase()");
-        void store.hydrateFromSupabase();
+        hydrateOnce({ id: data.session.user.id, email: data.session.user.email || "user" });
       } else {
         setSession(null);
       }
@@ -171,14 +180,22 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
     // onAuthStateChange only handles subsequent changes (sign in, sign out, token refresh)
     // INITIAL_SESSION is skipped — already handled by getSession above
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
-      console.log("[auth-trace] onAuthStateChange fired — event:", event, "has session:", !!s);
       if (event === "INITIAL_SESSION") return;
+
+      // Silent background token renewal — session is still the same user's
+      // session, just a new access token. No need to re-run the full
+      // 8-query hydrate for this; just keep session/auth state current.
+      if (event === "TOKEN_REFRESHED") {
+        setSession(s);
+        if (s?.user) store.setAuthUser({ id: s.user.id, email: s.user.email || "user" });
+        return;
+      }
+
       setSession(s);
       if (s?.user) {
-        store.setAuthUser({ id: s.user.id, email: s.user.email || "user" });
-        console.log("[auth-trace] onAuthStateChange(", event, ") -> calling hydrateFromSupabase()");
-        void store.hydrateFromSupabase();
+        hydrateOnce({ id: s.user.id, email: s.user.email || "user" });
       } else {
+        hydratedRef.current = false; // allow re-hydration on a future sign-in
         store.setAuthUser(null);
       }
     });
