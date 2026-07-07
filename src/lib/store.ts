@@ -137,6 +137,20 @@ type DB = {
 const KEY = "pharmaguard_db_v3";
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
+// ── PERFORMANCE FIX (Session 8) ──────────────────────────────────────────────
+// Both hydrateFromSupabase() and _syncFromServer() were fetching the ENTIRE
+// unbounded `sales` (+ nested sale_items) history on every call — including
+// every 30s poll tick. Confirmed via Network tab: this was the dominant cost
+// in every hydrate/poll cycle, independent of Inventory's product count.
+// Bounding to a recent window fixes the poll cost. NOTE: this also means
+// Reports / Sales History / anywhere else reading db.sales will only see
+// sales within this window. If that's not acceptable, wire this to
+// PlanConfig.maxSalesHistoryDays per-tier instead of this flat constant.
+const SALES_HYDRATE_DAYS = 90;
+function salesCutoffISO(): string {
+  return new Date(Date.now() - SALES_HYDRATE_DAYS * 86400000).toISOString();
+}
+
 const seedProducts: Array<[string, string, string, string, number, number, number, number, string, string, string]> = [
   ["Paracetamol 500mg", "Paracetamol", "A4-1234", "PCM-2024-001", 240, 60, 8, 15, "Emzor", "Analgesics", "Tablet"],
   ["Amoxicillin 500mg", "Amoxicillin", "A4-2210", "AMX-2024-014", 35, 30, 35, 60, "Fidson", "Antibiotics", "Capsule"],
@@ -452,8 +466,9 @@ export const store = {
 
   async _syncFromServer(orgId: string) {
     try {
+      const cutoff = salesCutoffISO();
       const [salesR, prodsR, orgR] = await Promise.all([
-        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
         (supabase.from as any)("organizations")
           .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
@@ -592,9 +607,10 @@ export const store = {
       };
       persist();
 
+      const cutoff = salesCutoffISO();
       const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
-        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
         supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
         (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
         (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
@@ -642,7 +658,7 @@ export const store = {
         await seedAdminDemoData(uid, orgId);
         const [p2, s2, sup2] = await Promise.all([
           supabase.from("products_safe_view").select("*").eq("organization_id", orgId),
-          supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).order("created_at", { ascending: false }),
+          supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
           supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
         ]);
         db.products = (p2.data || []).map(rowToProduct);
