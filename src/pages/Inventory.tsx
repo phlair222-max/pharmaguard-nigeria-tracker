@@ -14,7 +14,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, ImageIcon, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
@@ -45,29 +45,8 @@ const empty: Omit<Product, "id"> = {
   name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
   reorderLevel: 10, reorderQuantity: 30, packSize: "10 Tablets",
   costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
-  image: "", controlled: false, itemType: "pharmaceutical", nemlDrugId: undefined,
+  controlled: false, itemType: "pharmaceutical", nemlDrugId: undefined,
 };
-
-async function fileToDataUrl(file: File, max = 400): Promise<string> {
-  const dataUrl = await new Promise<string>((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result));
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
-  return await new Promise<string>((res) => {
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, max / Math.max(img.width, img.height));
-      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
-      const c = document.createElement("canvas"); c.width = w; c.height = h;
-      c.getContext("2d")!.drawImage(img, 0, 0, w, h);
-      res(c.toDataURL("image/jpeg", 0.8));
-    };
-    img.onerror = () => res(dataUrl);
-    img.src = dataUrl;
-  });
-}
 
 export default function Inventory() {
   const products = useStore((s) => s.products);
@@ -87,7 +66,6 @@ export default function Inventory() {
   const [receiveQty, setReceiveQty] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
   const [dupWarn, setDupWarn] = useState<Product[] | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const [customCats, setCustomCats] = useState<string[]>(() => loadCustom(CAT_KEY));
   const [customPacks, setCustomPacks] = useState<string[]>(() => loadCustom(PACK_KEY));
   const [newCat, setNewCat] = useState("");
@@ -221,13 +199,6 @@ export default function Inventory() {
       if (dups.length > 0) { setDupWarn(dups); return; }
     }
     performSave();
-  };
-
-  const onImageChange = async (file?: File | null) => {
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
-    const url = await fileToDataUrl(file, 400);
-    setDraft((d) => ({ ...d, image: url }));
   };
 
   const onBarcodeScanned = (barcode: string) => {
@@ -369,7 +340,7 @@ export default function Inventory() {
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
           <Table
-            className="min-w-[1100px]"
+            className="min-w-[1050px]"
             containerClassName="h-full w-full overflow-x-scroll overflow-y-scroll [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
           >
               <TableHeader className="sticky top-0 z-10 bg-card">
@@ -392,8 +363,7 @@ export default function Inventory() {
                       </button>
                     );
                     return <>
-                      <TableHead className="w-[52px] pl-4">Img</TableHead>
-                      <TableHead className="min-w-[180px]"><SortBtn k="name" label="Product" /></TableHead>
+                      <TableHead className="min-w-[180px] pl-4"><SortBtn k="name" label="Product" /></TableHead>
                       <TableHead className="min-w-[90px]"><SortBtn k="batch" label="Batch" /></TableHead>
                       <TableHead className="min-w-[110px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
                       <TableHead className="min-w-[80px]">Status</TableHead>
@@ -410,7 +380,7 @@ export default function Inventory() {
               </TableHeader>
               <TableBody>
                 {list.length === 0 && (
-                  <TableRow><TableCell colSpan={16} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
                 )}
                 {list.map((p) => {
                   const tier = expiryTier(p.expiry);
@@ -422,13 +392,6 @@ export default function Inventory() {
                   return (
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
                       <TableCell className="pl-4">
-                        {p.image ? (
-                          <img src={p.image} alt={p.name} className="h-9 w-9 rounded-md object-cover border" />
-                        ) : (
-                          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-4 w-4" /></div>
-                        )}
-                      </TableCell>
-                      <TableCell>
                         <div className="font-medium flex items-center gap-1.5 leading-tight">
                           {p.name}
                           {p.itemType === "non_pharmaceutical" && <Package2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
@@ -484,25 +447,6 @@ export default function Inventory() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Edit Product" : "Add Product"}</DialogTitle></DialogHeader>
-
-          <div className="mb-3 flex items-center gap-4 rounded-lg border bg-muted/30 p-3">
-            {draft.image ? (
-              <img src={draft.image} alt="preview" className="h-20 w-20 rounded-md object-cover border" />
-            ) : (
-              <div className="flex h-20 w-20 items-center justify-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-6 w-6" /></div>
-            )}
-            <div className="flex-1">
-              <Label className="text-xs">Product Image</Label>
-              <div className="flex gap-2 mt-1">
-                <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onImageChange(e.target.files?.[0])} />
-                <Button type="button" size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
-                  <Upload className="mr-1.5 h-3.5 w-3.5" />Upload image
-                </Button>
-                {draft.image && <Button type="button" size="sm" variant="ghost" onClick={() => setDraft({ ...draft, image: "" })}>Remove</Button>}
-              </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">JPG/PNG, under 5MB. Auto-resized.</p>
-            </div>
-          </div>
 
           <div className="mb-3 flex items-center gap-2 rounded-lg border bg-muted/20 p-1">
             <button
