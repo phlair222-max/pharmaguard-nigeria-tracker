@@ -62,6 +62,7 @@ function AuthCallback() {
         if (createdRecently) {
           setNeedsPassword(true);
         } else {
+          console.log("[auth-trace] AuthCallback -> calling hydrateFromSupabase()");
           void store.hydrateFromSupabase();
           navigate("/dashboard", { replace: true });
         }
@@ -82,6 +83,7 @@ function AuthCallback() {
       return;
     }
     toast.success("Password set successfully — welcome to PharmaGuard NG!");
+    console.log("[auth-trace] savePassword -> calling hydrateFromSupabase()");
     void store.hydrateFromSupabase();
     navigate("/dashboard", { replace: true });
   };
@@ -155,9 +157,11 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
 
     // getSession handles the initial load + hydration — single source of truth on mount
     supabase.auth.getSession().then(({ data }) => {
+      console.log("[auth-trace] getSession() resolved — session present:", !!data.session);
       setSession(data.session);
       if (data.session?.user) {
         store.setAuthUser({ id: data.session.user.id, email: data.session.user.email || "user" });
+        console.log("[auth-trace] getSession() -> calling hydrateFromSupabase()");
         void store.hydrateFromSupabase();
       } else {
         setSession(null);
@@ -167,10 +171,12 @@ const SessionGate = ({ children }: { children: JSX.Element }) => {
     // onAuthStateChange only handles subsequent changes (sign in, sign out, token refresh)
     // INITIAL_SESSION is skipped — already handled by getSession above
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      console.log("[auth-trace] onAuthStateChange fired — event:", event, "has session:", !!s);
       if (event === "INITIAL_SESSION") return;
       setSession(s);
       if (s?.user) {
         store.setAuthUser({ id: s.user.id, email: s.user.email || "user" });
+        console.log("[auth-trace] onAuthStateChange(", event, ") -> calling hydrateFromSupabase()");
         void store.hydrateFromSupabase();
       } else {
         store.setAuthUser(null);
