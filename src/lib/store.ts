@@ -470,7 +470,7 @@ export const store = {
       const cutoff = salesCutoffISO();
       const [salesR, prodsR, orgR] = await Promise.all([
         supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
-        supabase.from("products_safe_view").select("*").eq("organization_id", orgId).limit(2000),
+        supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
         (supabase.from as any)("organizations")
           .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
           .eq("id", orgId).maybeSingle(),
@@ -604,7 +604,7 @@ export const store = {
 
       const cutoff = salesCutoffISO();
       const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
-        supabase.from("products_safe_view").select("*").eq("organization_id", orgId).limit(2000),
+        supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
         supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
         supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
         (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
@@ -658,7 +658,7 @@ export const store = {
       ) {
         await seedAdminDemoData(uid, orgId);
         const [p2, s2, sup2] = await Promise.all([
-          supabase.from("products_safe_view").select("*").eq("organization_id", orgId).limit(2000),
+          supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
           supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
           supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
         ]);
