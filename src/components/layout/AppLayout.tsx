@@ -14,7 +14,14 @@ import { canAccessPage, resolveEffectiveRole, type PageKey } from "@/lib/permiss
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const ALL_ITEMS = [
-  { title: "Dashboard",       url: "/",          icon: LayoutDashboard, planKey: null,                   page: "dashboard" as PageKey    },
+  // FIX (Session 8): this was "/" — which matches App.tsx's top-level public
+  // Landing route, NOT the actual protected "/dashboard" route registered
+  // inside SessionGate/AppLayout. Every click on this link was leaving the
+  // SessionGate tree entirely (unmounting it), landing on Landing, then
+  // presumably redirecting back into "/dashboard" — which remounts
+  // SessionGate fresh and re-runs the full hydrateFromSupabase() every time,
+  // regardless of the hydratedRef dedupe (a fresh mount has a fresh ref).
+  { title: "Dashboard",       url: "/dashboard", icon: LayoutDashboard, planKey: null,                   page: "dashboard" as PageKey    },
   { title: "Inventory",       url: "/inventory", icon: Package,         planKey: null,                   page: "inventory" as PageKey    },
   { title: "POS / Sales",     url: "/pos",       icon: ShoppingCart,    planKey: null,                   page: "pos" as PageKey          },
   { title: "Sales History",   url: "/sales",     icon: ReceiptText,     planKey: null,                   page: "salesHistory" as PageKey },
