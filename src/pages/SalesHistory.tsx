@@ -6,18 +6,38 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useStore } from "@/lib/store";
+import { useStore, store } from "@/lib/store";
+import { usePlan } from "@/lib/store";
 import { NGN } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
-import { Search, Download, Eye } from "lucide-react";
+import { Search, Download, Eye, History, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 
 export default function SalesHistory() {
   const sales = useStore((s) => s.sales);
+  const extendedLoaded = useStore((s) => s.extendedSalesLoaded);
   const [q, setQ] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [pay, setPay] = useState("all");
   const [view, setView] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const { tier, plan } = usePlan();
+
+  const isPro = tier === "pro";
+  const maxDays = plan?.maxSalesHistoryDays ?? 0;
+  const buttonLabel = maxDays === -1 ? "Load all sales history" : `Load last ${maxDays} days`;
+
+  const handleLoadExtended = async () => {
+    setLoading(true);
+    const result = await store.loadExtendedSalesHistory();
+    setLoading(false);
+    if (result.ok) {
+      toast.success("Extended sales history loaded");
+    } else {
+      toast.error("Failed to load history: " + result.error);
+    }
+  };
 
   const list = useMemo(() => {
     return sales.filter((s) => {
@@ -61,9 +81,28 @@ export default function SalesHistory() {
         <Button variant="outline" size="sm" onClick={exportCSV}><Download className="mr-2 h-4 w-4" />Export CSV</Button>
       </div>
 
+      {/* Extended history banner — Pro only, hidden once loaded */}
+      {isPro && !extendedLoaded && (
+        <div className="flex items-center justify-between rounded-lg border border-dashed border-muted-foreground/40 bg-muted/30 px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <History className="h-4 w-4 shrink-0" />
+            <span>You are viewing the last 90 days. Your Pro plan includes full history.</span>
+          </div>
+          <Button size="sm" variant="outline" onClick={handleLoadExtended} disabled={loading}>
+            {loading ? <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Loading...</> : buttonLabel}
+          </Button>
+        </div>
+      )}
+
+      {isPro && extendedLoaded && (
+        <div className="flex items-center gap-2 rounded-lg border border-dashed border-success/40 bg-success/5 px-4 py-2 text-xs text-success">
+          <History className="h-3.5 w-3.5 shrink-0" />
+          Full sales history loaded
+        </div>
+      )}
+
       <Card className="shadow-card">
         <CardHeader className="pb-3">
-          {/* All filters on one aligned row */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -76,21 +115,11 @@ export default function SalesHistory() {
             </div>
             <div className="flex items-center gap-1.5 text-sm text-muted-foreground whitespace-nowrap">
               <span>From</span>
-              <Input
-                type="date"
-                className="w-[140px]"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-              />
+              <Input type="date" className="w-[140px]" value={from} onChange={(e) => setFrom(e.target.value)} />
             </div>
             <div className="flex items-center gap-1.5 text-sm text-muted-foreground whitespace-nowrap">
               <span>To</span>
-              <Input
-                type="date"
-                className="w-[140px]"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-              />
+              <Input type="date" className="w-[140px]" value={to} onChange={(e) => setTo(e.target.value)} />
             </div>
             <Select value={pay} onValueChange={setPay}>
               <SelectTrigger className="w-[150px]"><SelectValue placeholder="Payment" /></SelectTrigger>
@@ -104,7 +133,6 @@ export default function SalesHistory() {
             </Select>
           </div>
 
-          {/* Summary badges */}
           <div className="mt-3 flex gap-3 text-sm">
             <Badge variant="outline" className="border-success text-success">Revenue: {NGN(totals.rev)}</Badge>
             <Badge variant="outline" className="border-info text-info">Profit: {NGN(totals.profit)}</Badge>
