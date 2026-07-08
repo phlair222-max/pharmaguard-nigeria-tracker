@@ -1,10 +1,12 @@
 // =====================================================================
 // src/lib/apiKeyUtils.ts
 //
-// Utilities for generating and managing Modular API keys.
+// Utilities for generating and managing Modular API keys and
+// API-only client organizations.
 // Column names match confirmed live schema:
 //   api_keys: id, org_id, key_hash, key_prefix, name, scopes,
 //             is_active, created_by, created_at, last_used_at, revoked_at
+//   organizations: ..., subscription_tier, api_access_enabled, owner_id, email
 //
 // The raw key is shown ONCE at creation time, then discarded.
 // Only the SHA-256 hash is persisted in the database.
@@ -62,7 +64,73 @@ export interface CreatedApiKey {
   id:        string;
 }
 
-// ── Create ────────────────────────────────────────────────────────────────────
+export interface ApiClientOrg {
+  id:                string;
+  name:              string;
+  email:             string | null;
+  subscriptionTier:  string;
+  apiAccessEnabled:  boolean;
+  status:            string;
+  createdAt:         string;
+}
+
+// ── Create API-only client org (Platform Admin only) ───────────────────────────
+
+export async function createApiOnlyOrg(params: {
+  name:         string;
+  contactEmail: string;
+  adminUid:     string; // owner_id is NOT NULL — platform admin becomes nominal owner
+}): Promise<string> {
+  const { data, error } = await (supabase.from as any)("organizations")
+    .insert({
+      name:               params.name,
+      email:              params.contactEmail,
+      owner_id:           params.adminUid,
+      subscription_tier:  "api_only",
+      status:             "active",
+      api_access_enabled: true,
+    })
+    .select("id")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data.id;
+}
+
+// ── List all API client orgs (api_only tier, or any org with the add-on flag on) ──
+
+export async function listApiClientOrgs(): Promise<ApiClientOrg[]> {
+  const { data, error } = await (supabase.from as any)("organizations")
+    .select("id, name, email, subscription_tier, api_access_enabled, status, created_at")
+    .or("subscription_tier.eq.api_only,api_access_enabled.eq.true")
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((r: any) => ({
+    id:               r.id,
+    name:             r.name,
+    email:            r.email,
+    subscriptionTier: r.subscription_tier,
+    apiAccessEnabled: r.api_access_enabled,
+    status:           r.status,
+    createdAt:        r.created_at,
+  }));
+}
+
+// ── Toggle org API access (Platform Admin only) ───────────────────────────────
+// Used both to provision api_only clients and to grant the Pro add-on to
+// an existing pharmacy org.
+
+export async function setOrgApiAccess(orgId: string, enabled: boolean): Promise<void> {
+  const { error } = await (supabase.from as any)("organizations")
+    .update({ api_access_enabled: enabled })
+    .eq("id", orgId);
+
+  if (error) throw new Error(error.message);
+}
+
+// ── Create key ────────────────────────────────────────────────────────────────
 
 export async function createApiKey(params: {
   orgId:  string;
@@ -91,36 +159,13 @@ export async function createApiKey(params: {
   return { rawKey, keyPrefix, id: data.id };
 }
 
-// ── List ──────────────────────────────────────────────────────────────────────
+// ── List keys for one org ───────────────────────────────────────────────────────
 
 export async function listApiKeys(orgId: string): Promise<ApiKey[]> {
   const { data, error } = await supabase
     .from("api_keys")
     .select("id, org_id, name, key_prefix, scopes, is_active, created_at, last_used_at, revoked_at")
     .eq("org_id", orgId)
-    .order("created_at", { ascending: false });
-
-  if (error) throw new Error(error.message);
-
-  return (data ?? []).map(r => ({
-    id:         r.id,
-    orgId:      r.org_id,
-    name:       r.name,
-    keyPrefix:  r.key_prefix,
-    scopes:     r.scopes as ApiScope[],
-    isActive:   r.is_active,
-    createdAt:  r.created_at,
-    lastUsedAt: r.last_used_at,
-    revokedAt:  r.revoked_at,
-  }));
-}
-
-// ── List all keys across all orgs (Platform Admin only) ───────────────────────
-
-export async function listAllApiKeys(): Promise<ApiKey[]> {
-  const { data, error } = await supabase
-    .from("api_keys")
-    .select("id, org_id, name, key_prefix, scopes, is_active, created_at, last_used_at, revoked_at")
     .order("created_at", { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -163,16 +208,6 @@ export async function reactivateApiKey(keyId: string): Promise<void> {
       revoked_at: null,
     })
     .eq("id", keyId);
-
-  if (error) throw new Error(error.message);
-}
-
-// ── Toggle org API access (Platform Admin only) ───────────────────────────────
-
-export async function setOrgApiAccess(orgId: string, enabled: boolean): Promise<void> {
-  const { error } = await (supabase.from as any)("organizations")
-    .update({ api_access_enabled: enabled })
-    .eq("id", orgId);
 
   if (error) throw new Error(error.message);
 }
