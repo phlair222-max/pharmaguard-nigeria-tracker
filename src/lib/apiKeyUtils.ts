@@ -76,6 +76,7 @@ export interface ApiClientOrg {
   apiAccessEnabled:  boolean;
   status:            string;
   createdAt:         string;
+  apiMonthlyQuota:   number;
 }
 
 // ── Create API-only client org (Platform Admin only) ───────────────────────────
@@ -108,7 +109,7 @@ export async function createApiOnlyOrg(params: {
 
 export async function listApiClientOrgs(): Promise<ApiClientOrg[]> {
   const { data, error } = await (supabase.from as any)("organizations")
-    .select("id, name, email, subscription_tier, api_access_enabled, status, created_at")
+    .select("id, name, email, subscription_tier, api_access_enabled, status, created_at, api_monthly_quota")
     .or("subscription_tier.eq.api_only,api_access_enabled.eq.true")
     .order("created_at", { ascending: false });
 
@@ -122,7 +123,42 @@ export async function listApiClientOrgs(): Promise<ApiClientOrg[]> {
     apiAccessEnabled: r.api_access_enabled,
     status:           r.status,
     createdAt:        r.created_at,
+    apiMonthlyQuota:  r.api_monthly_quota ?? 500,
   }));
+}
+
+// ── Monthly usage — Platform Admin only ────────────────────────────────────────
+// Returns a map of orgId -> requests used so far in the current calendar
+// month. Orgs with no usage this month simply won't have a key in the map
+// (treat missing as 0 on the caller side).
+
+export async function getMonthlyUsage(): Promise<Record<string, number>> {
+  const monthStart = new Date().toISOString().slice(0, 7) + "-01";
+
+  const { data, error } = await (supabase.from as any)("api_client_usage")
+    .select("org_id, request_count")
+    .eq("month_start", monthStart);
+
+  if (error) throw new Error(error.message);
+
+  const usage: Record<string, number> = {};
+  for (const row of data ?? []) {
+    usage[row.org_id] = row.request_count;
+  }
+  return usage;
+}
+
+// ── Update quota — Platform Admin only ──────────────────────────────────────────
+// Manual top-up for now. A self-serve Paystack flow can call this same
+// function once wired up — this is the single source of truth for the
+// quota value, regardless of how it gets triggered.
+
+export async function setOrgQuota(orgId: string, quota: number): Promise<void> {
+  const { error } = await (supabase.from as any)("organizations")
+    .update({ api_monthly_quota: quota })
+    .eq("id", orgId);
+
+  if (error) throw new Error(error.message);
 }
 
 // ── Toggle org API access (Platform Admin only) ───────────────────────────────
