@@ -57,6 +57,8 @@ import {
   listApiKeys,
   revokeApiKey,
   reactivateApiKey,
+  getMonthlyUsage,
+  setOrgQuota,
 } from "@/lib/apiKeyUtils";
 
 const ADMIN_EMAIL = "phlair222@gmail.com";
@@ -687,12 +689,20 @@ function ApiClientsTab() {
   const [creatingOrg, setCreatingOrg] = useState(false);
   const [expandedOrgId, setExpandedOrgId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [usage, setUsage] = useState<Record<string, number>>({});
+  const [editingQuotaId, setEditingQuotaId] = useState<string | null>(null);
+  const [quotaDraft, setQuotaDraft] = useState<string>("");
+  const [savingQuotaId, setSavingQuotaId] = useState<string | null>(null);
 
   const fetchOrgs = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await listApiClientOrgs();
-      setOrgs(data);
+      const [orgData, usageData] = await Promise.all([
+        listApiClientOrgs(),
+        getMonthlyUsage(),
+      ]);
+      setOrgs(orgData);
+      setUsage(usageData);
     } catch (e: unknown) {
       toast.error("Failed to load API clients: " + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -701,6 +711,30 @@ function ApiClientsTab() {
   }, []);
 
   useEffect(() => { fetchOrgs(); }, [fetchOrgs]);
+
+  const startEditQuota = (org: ApiClientOrg) => {
+    setEditingQuotaId(org.id);
+    setQuotaDraft(String(org.apiMonthlyQuota));
+  };
+
+  const saveQuota = async (org: ApiClientOrg) => {
+    const parsed = Number(quotaDraft);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      toast.error("Quota must be a positive number");
+      return;
+    }
+    setSavingQuotaId(org.id);
+    try {
+      await setOrgQuota(org.id, parsed);
+      setOrgs((prev) => prev.map((o) => (o.id === org.id ? { ...o, apiMonthlyQuota: parsed } : o)));
+      toast.success(`Monthly quota for "${org.name}" set to ${parsed}`);
+      setEditingQuotaId(null);
+    } catch (e: unknown) {
+      toast.error("Failed to update quota: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSavingQuotaId(null);
+    }
+  };
 
   const handleCreateOrg = async () => {
     if (!newOrgName.trim() || !newOrgEmail.trim()) {
@@ -845,6 +879,55 @@ function ApiClientsTab() {
                       <ChevronDown className="h-3.5 w-3.5" />
                     )}
                   </Button>
+                </div>
+              </div>
+              <div className="flex items-center justify-between px-4 pb-3 -mt-1">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>
+                    Usage this month:{" "}
+                    <span className={`font-medium ${
+                      (usage[org.id] ?? 0) >= org.apiMonthlyQuota ? "text-red-400" : "text-foreground"
+                    }`}>
+                      {usage[org.id] ?? 0}
+                    </span>
+                    {" / "}
+                    {editingQuotaId === org.id ? (
+                      <span className="inline-flex items-center gap-1 align-middle">
+                        <Input
+                          type="number"
+                          value={quotaDraft}
+                          onChange={(e) => setQuotaDraft(e.target.value)}
+                          className="h-6 w-20 text-xs px-1.5 py-0"
+                          min={0}
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-1.5"
+                          disabled={savingQuotaId === org.id}
+                          onClick={() => saveQuota(org)}
+                        >
+                          <Check className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-1.5"
+                          onClick={() => setEditingQuotaId(null)}
+                        >
+                          ✕
+                        </Button>
+                      </span>
+                    ) : (
+                      <button
+                        className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                        onClick={() => startEditQuota(org)}
+                        title="Click to edit monthly quota"
+                      >
+                        {org.apiMonthlyQuota}/mo
+                      </button>
+                    )}
+                  </span>
                 </div>
               </div>
               {expandedOrgId === org.id && (
