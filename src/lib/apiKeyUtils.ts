@@ -10,6 +10,10 @@
 //
 // The raw key is shown ONCE at creation time, then discarded.
 // Only the SHA-256 hash is persisted in the database.
+//
+// This is a STANDALONE B2B product. API clients are their own org rows
+// (subscription_tier = 'api_only') with no relationship to pharmacy app
+// tiers (free/basic/pro). Nothing here is invoked from the pharmacy app.
 // =====================================================================
 
 import { supabase } from "@/integrations/supabase/client";
@@ -75,11 +79,14 @@ export interface ApiClientOrg {
 }
 
 // ── Create API-only client org (Platform Admin only) ───────────────────────────
+// owner_id is NOT NULL on organizations, but API clients never log in.
+// The platform admin's own uid is used as a nominal owner — satisfies the
+// constraint without implying a real pharmacy-app login will ever happen.
 
 export async function createApiOnlyOrg(params: {
   name:         string;
   contactEmail: string;
-  adminUid:     string; // owner_id is NOT NULL — platform admin becomes nominal owner
+  adminUid:     string;
 }): Promise<string> {
   const { data, error } = await (supabase.from as any)("organizations")
     .insert({
@@ -120,7 +127,7 @@ export async function listApiClientOrgs(): Promise<ApiClientOrg[]> {
 
 // ── Toggle org API access (Platform Admin only) ───────────────────────────────
 // Used both to provision api_only clients and to grant the Pro add-on to
-// an existing pharmacy org.
+// an existing pharmacy org, should that model ever be used.
 
 export async function setOrgApiAccess(orgId: string, enabled: boolean): Promise<void> {
   const { error } = await (supabase.from as any)("organizations")
