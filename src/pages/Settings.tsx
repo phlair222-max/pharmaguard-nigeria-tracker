@@ -8,13 +8,14 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { store, useStore } from "@/lib/store";
+import { store, useStore, usePlan } from "@/lib/store";
 import { toast } from "sonner";
-import { Building2, Upload, ImageIcon, User, Shield, FileCheck2, KeyRound, LogOut, CheckCircle2, XCircle, Eye, EyeOff, Users, Mail, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
+import { Building2, Upload, ImageIcon, User, Shield, FileCheck2, KeyRound, LogOut, CheckCircle2, XCircle, Eye, EyeOff, Users, Mail, Trash2, ToggleLeft, ToggleRight, CreditCard, AlertTriangle, Zap, Check } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { format } from "date-fns";
+import { useSearchParams } from "react-router-dom";
 
 async function fileToDataUrl(file: File, max = 400): Promise<string> {
   const dataUrl = await new Promise<string>((res, rej) => {
@@ -67,6 +68,7 @@ export default function Settings() {
   const settings = useStore((s) => s.settings);
   const user = useStore((s) => s.user);
   const loginActivity = useStore((s) => s.loginActivity);
+  const [searchParams] = useSearchParams();
 
   const normalize = (s: typeof settings) => ({
     ...s,
@@ -83,6 +85,20 @@ export default function Settings() {
   const [prefs, setPrefs] = useState<CompliancePrefs>(loadPrefs());
   const logoRef = useRef<HTMLInputElement>(null);
   const ownerRef = useRef<HTMLInputElement>(null);
+
+  const isOwnerOrLegacyAdmin =
+    user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole);
+
+  // FIX: supports deep-linking from the sidebar's "Upgrade" link
+  // (?tab=billing) straight into this tab, instead of landing on Details
+  // and making the Owner hunt for it.
+  const requestedTab = searchParams.get("tab");
+  const initialTab =
+    requestedTab === "billing" && isOwnerOrLegacyAdmin
+      ? "billing"
+      : requestedTab === "team" && isOwnerOrLegacyAdmin
+      ? "team"
+      : "details";
 
   useEffect(() => {
     setDraft(normalize(settings));
@@ -128,13 +144,16 @@ export default function Settings() {
         <p className="text-sm text-muted-foreground">Manage pharmacy details, branding, security and compliance preferences</p>
       </div>
 
-      <Tabs defaultValue="details">
+      <Tabs defaultValue={initialTab}>
         <TabsList className="flex flex-wrap h-auto">
           <TabsTrigger value="details"><Building2 className="mr-1.5 h-4 w-4" />Pharmacy Details</TabsTrigger>
           <TabsTrigger value="branding"><ImageIcon className="mr-1.5 h-4 w-4" />Branding & Logo</TabsTrigger>
           <TabsTrigger value="security"><Shield className="mr-1.5 h-4 w-4" />Security & Account</TabsTrigger>
           <TabsTrigger value="compliance"><FileCheck2 className="mr-1.5 h-4 w-4" />Reports & Compliance</TabsTrigger>
-          {(user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole)) && (
+          {isOwnerOrLegacyAdmin && (
+            <TabsTrigger value="billing"><CreditCard className="mr-1.5 h-4 w-4" />Plan & Billing</TabsTrigger>
+          )}
+          {isOwnerOrLegacyAdmin && (
             <TabsTrigger value="team"><Users className="mr-1.5 h-4 w-4" />Team</TabsTrigger>
           )}
         </TabsList>
@@ -267,7 +286,13 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
-        {(user?.memberRole === "Owner" || (user?.role === "Admin" && !user?.memberRole)) && (
+        {isOwnerOrLegacyAdmin && (
+          <TabsContent value="billing">
+            <BillingTab organizationName={settings.name} />
+          </TabsContent>
+        )}
+
+        {isOwnerOrLegacyAdmin && (
           <TabsContent value="team">
             <TeamTab organizationName={settings.name} />
           </TabsContent>
@@ -466,6 +491,235 @@ function Req({ ok, children }: { ok: boolean; children: React.ReactNode }) {
   );
 }
 
+// ── shared Paystack script loader (used by both Billing and Team tabs) ────────
+function usePaystack() {
+  useEffect(() => {
+    if (document.getElementById("paystack-script")) return;
+    const script = document.createElement("script");
+    script.id = "paystack-script";
+    script.src = "https://js.paystack.co/v1/inline.js";
+    script.async = true;
+    document.body.appendChild(script);
+  }, []);
+}
+
+const GRACE_PERIOD_DAYS = 3;
+const TIER_LABEL: Record<string, string> = { free: "Free", basic: "Basic", pro: "Pro" };
+const UPGRADE_ORDER = ["free", "basic", "pro"];
+
+type PlanRow = { tier: string; display_name: string; price_monthly: number };
+
+// ── Plan & Billing Tab ─────────────────────────────────────────────────────────
+function BillingTab({ organizationName }: { organizationName: string }) {
+  const user = useStore((s) => s.user);
+  const plan = usePlan();
+  const organizationId = user?.organizationId ?? "";
+  const currentTier = plan.tier;
+  const [plans, setPlans] = useState<PlanRow[]>([]);
+  const [loadingPlans, setLoadingPlans] = useState(true);
+  const [upgradingTier, setUpgradingTier] = useState<string | null>(null);
+
+  usePaystack();
+
+  useEffect(() => {
+    (supabase.from as any)("plan_config")
+      .select("tier, display_name, price_monthly")
+      .order("price_monthly")
+      .then(({ data }: any) => { if (data) setPlans(data); setLoadingPlans(false); });
+  }, []);
+
+  const openPaystackCheckout = (checkout: { amount: number; metadata: any }, targetTier: string) => {
+    const PaystackPop = (window as any).PaystackPop;
+    if (!PaystackPop) { toast.error("Payment system not ready — refresh and try again"); return; }
+    const handler = PaystackPop.setup({
+      key: import.meta.env.VITE_PAYSTACK_PUBLIC_KEY,
+      email: user?.username ?? "",
+      amount: checkout.amount,
+      metadata: checkout.metadata,
+      callback: (response: any) => {
+        toast.info("Payment received — confirming your upgrade…");
+        (async () => {
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) { toast.error("Session expired — please refresh"); return; }
+            const res = await fetch(
+              `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/confirm-plan-upgrade`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${session.access_token}`,
+                  "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
+                },
+                body: JSON.stringify({ reference: response.reference, org_id: organizationId }),
+              }
+            );
+            const result = await res.json();
+            if (result.success) {
+              toast.success(`You're now on the ${TIER_LABEL[result.tier] ?? result.tier} plan!`);
+              void store.hydrateFromSupabase();
+            } else {
+              toast.error(result.error || "Payment succeeded but activation failed — contact support with reference " + response.reference);
+            }
+          } catch {
+            toast.error("Payment succeeded but confirmation failed — reference " + response.reference + ". Refresh and check status.");
+          } finally {
+            setUpgradingTier(null);
+          }
+        })();
+      },
+      onClose: () => {
+        toast.info("Upgrade cancelled — you're still on your current plan.");
+        setUpgradingTier(null);
+      },
+    });
+    handler.openIframe();
+  };
+
+  const upgradeTo = async (targetTier: string) => {
+    if (!organizationId) { toast.error("Still loading — please wait a moment"); return; }
+    setUpgradingTier(targetTier);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { toast.error("Not logged in"); setUpgradingTier(null); return; }
+      const res = await fetch(
+        `https://wdolhvtpqrmfpbwlpbri.supabase.co/functions/v1/create-plan-upgrade`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
+            "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indkb2xodnRwcXJtZnBid2xwYnJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MTE1NDQsImV4cCI6MjA5NjE4NzU0NH0.ylhGD8cNhJrkvBUDMyxw3ugSFiIWWPXPSjf6moLM0zM",
+          },
+          body: JSON.stringify({
+            org_id: organizationId,
+            target_tier: targetTier,
+            owner_user_id: session.user.id,
+          }),
+        }
+      );
+      const result = await res.json();
+      if (result.status === "activated") {
+        toast.success(`You're now on the ${TIER_LABEL[targetTier] ?? targetTier} plan!`);
+        void store.hydrateFromSupabase();
+        setUpgradingTier(null);
+      } else if (result.status === "pending_payment") {
+        toast.info("Completing payment now…");
+        openPaystackCheckout(result.checkout, targetTier);
+        // upgradingTier stays set until the popup callback/close resolves it
+      } else if (result.status === "charge_failed") {
+        toast.error("Card charge failed: " + (result.paystack_error || "unknown error"));
+        setUpgradingTier(null);
+      } else {
+        toast.error(result.error || "Something went wrong");
+        setUpgradingTier(null);
+      }
+    } catch (e) {
+      toast.error("Network error — please try again");
+      setUpgradingTier(null);
+    }
+  };
+
+  const inGrace = plan.billingStatus === "grace_period";
+  const graceDaysLeft = (() => {
+    if (!inGrace || !plan.gracePeriodStartedAt) return null;
+    const started = new Date(plan.gracePeriodStartedAt).getTime();
+    const elapsedDays = (Date.now() - started) / 86400000;
+    return Math.max(0, Math.ceil(GRACE_PERIOD_DAYS - elapsedDays));
+  })();
+
+  const currentPlanRow = plans.find((p) => p.tier === currentTier);
+  const upgradableTiers = plans
+    .filter((p) => UPGRADE_ORDER.indexOf(p.tier) > UPGRADE_ORDER.indexOf(currentTier))
+    .filter((p) => p.tier !== "api_only")
+    .sort((a, b) => UPGRADE_ORDER.indexOf(a.tier) - UPGRADE_ORDER.indexOf(b.tier));
+
+  return (
+    <div className="space-y-4">
+      {inGrace && (
+        <div className="flex items-start gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium text-red-300">
+              We couldn't renew your {TIER_LABEL[currentTier] ?? currentTier} subscription
+            </p>
+            <p className="text-xs text-red-300/80 mt-0.5">
+              {graceDaysLeft !== null && graceDaysLeft > 0
+                ? `Your plan will be downgraded to Free in ${graceDaysLeft} day${graceDaysLeft !== 1 ? "s" : ""} unless payment succeeds. Update your card or retry below.`
+                : "Your plan may be downgraded to Free very soon unless payment succeeds. Update your card or retry below."}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            className="shrink-0 bg-red-500 hover:bg-red-400 text-white"
+            onClick={() => upgradeTo(currentTier)}
+            disabled={upgradingTier === currentTier}
+          >
+            {upgradingTier === currentTier ? "Retrying…" : "Retry payment"}
+          </Button>
+        </div>
+      )}
+
+      <Card className="shadow-card">
+        <CardContent className="p-4 space-y-1">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <CreditCard className="h-4 w-4 text-primary" /> Current Plan
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <span className="text-xl font-bold">{currentPlanRow?.display_name ?? TIER_LABEL[currentTier] ?? currentTier}</span>
+            <Badge variant="outline" className="capitalize">{currentTier}</Badge>
+          </div>
+          {currentTier !== "free" && user?.subscriptionExpiresAt && (
+            <p className="text-xs text-muted-foreground">
+              {inGrace ? "Payment overdue since" : "Renews on"}{" "}
+              {format(new Date(user.subscriptionExpiresAt), "dd MMM yyyy")}
+            </p>
+          )}
+          {currentTier === "free" && (
+            <p className="text-xs text-muted-foreground">No active subscription — upgrade below to unlock more features.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {loadingPlans ? (
+        <p className="text-sm text-muted-foreground py-6 text-center">Loading plans…</p>
+      ) : upgradableTiers.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-6 text-center">You're on the highest available plan.</p>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {upgradableTiers.map((p) => (
+            <Card key={p.tier} className="shadow-card border-primary/20">
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold">{p.display_name}</h3>
+                  <Badge variant="outline" className="capitalize">{p.tier}</Badge>
+                </div>
+                <div>
+                  <span className="text-2xl font-bold">₦{Number(p.price_monthly).toLocaleString()}</span>
+                  <span className="text-sm text-muted-foreground">/month</span>
+                </div>
+                <Button
+                  className="w-full gap-2"
+                  onClick={() => upgradeTo(p.tier)}
+                  disabled={upgradingTier === p.tier}
+                >
+                  <Zap className="h-4 w-4" />
+                  {upgradingTier === p.tier ? "Processing…" : `Upgrade to ${p.display_name}`}
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground">
+        Subscriptions renew automatically every 30 days using your saved card. If a renewal charge fails,
+        you'll get a {GRACE_PERIOD_DAYS}-day grace period to update payment before being moved back to Free.
+      </p>
+    </div>
+  );
+}
+
 // ── TeamTab ───────────────────────────────────────────────────────────────────
 type Member = {
   id: string;
@@ -493,17 +747,6 @@ function paymentStatusColor(status: string) {
   if (status === "active") return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
   if (status === "pending_payment") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
   return "bg-red-500/15 text-red-400 border-red-500/30";
-}
-
-function usePaystack() {
-  useEffect(() => {
-    if (document.getElementById("paystack-script")) return;
-    const script = document.createElement("script");
-    script.id = "paystack-script";
-    script.src = "https://js.paystack.co/v1/inline.js";
-    script.async = true;
-    document.body.appendChild(script);
-  }, []);
 }
 
 function TeamTab({ organizationName }: { organizationName: string }) {
