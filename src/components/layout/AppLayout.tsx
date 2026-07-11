@@ -4,7 +4,7 @@ import {
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
   SidebarHeader, SidebarFooter, useSidebar,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles, ShieldCheck, Lock } from "lucide-react";
+import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles, ShieldCheck, Lock, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { store, useStore, usePlan } from "@/lib/store";
 import { useTheme } from "next-themes";
@@ -132,28 +132,52 @@ function AppSidebar() {
 
 function UserBadge({ collapsed }: { collapsed: boolean }) {
   const user = useStore((s) => s.user);
+  const plan = usePlan();
   const navigate = useNavigate();
   if (!user) return null;
+
+  // FIX: upgrade entry point placed at the sidebar footer, right next to
+  // the signed-in user's email — only shown to the Owner (non-Owner roles
+  // can't change billing) and only when there's actually somewhere to
+  // upgrade to (hidden once already on Pro). Deep-links straight into the
+  // new Plan & Billing tab via ?tab=billing instead of dropping the Owner
+  // on the generic Details tab.
+  const isOwner = user.memberRole === "Owner" || (!user.memberRole && user.role === "Admin");
+  const canUpgrade = isOwner && plan.tier !== "pro";
+
   return (
-    <div className="flex items-center justify-between p-2">
-      {!collapsed && (
-        <div className="text-xs">
-          <div className="font-medium text-sidebar-foreground">{user.username}</div>
-          <div className="text-sidebar-foreground/60">{user.memberRole ?? user.role}</div>
-        </div>
+    <div className="flex flex-col gap-1.5 p-2">
+      <div className="flex items-center justify-between">
+        {!collapsed && (
+          <div className="text-xs min-w-0">
+            <div className="font-medium text-sidebar-foreground truncate">{user.username}</div>
+            <div className="text-sidebar-foreground/60">{user.memberRole ?? user.role}</div>
+          </div>
+        )}
+        <Button
+          variant="ghost" size="icon"
+          className="h-8 w-8 text-sidebar-foreground hover:bg-sidebar-accent shrink-0"
+          onClick={async () => {
+            const { supabase } = await import("@/integrations/supabase/client");
+            await supabase.auth.signOut();
+            store.logout();
+            navigate("/login");
+          }}
+        >
+          <LogOut className="h-4 w-4" />
+        </Button>
+      </div>
+      {!collapsed && canUpgrade && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full gap-1.5 h-7 text-xs border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
+          onClick={() => navigate("/settings?tab=billing")}
+        >
+          <Zap className="h-3 w-3" />
+          {plan.tier === "free" ? "Upgrade plan" : "Upgrade to Pro"}
+        </Button>
       )}
-      <Button
-        variant="ghost" size="icon"
-        className="h-8 w-8 text-sidebar-foreground hover:bg-sidebar-accent"
-        onClick={async () => {
-          const { supabase } = await import("@/integrations/supabase/client");
-          await supabase.auth.signOut();
-          store.logout();
-          navigate("/login");
-        }}
-      >
-        <LogOut className="h-4 w-4" />
-      </Button>
     </div>
   );
 }
