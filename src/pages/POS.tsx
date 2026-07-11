@@ -134,6 +134,9 @@ export default function POS() {
   const [payment, setPayment] = useState<"Cash" | "POS" | "Bank Transfer" | "Mobile Money">("Cash");
   const [customer, setCustomer] = useState("");
   const [tendered, setTendered] = useState(0);
+  // FIX: guards against double-submitting a sale (e.g. impatient double-click
+  // while the cloud write is in flight), which previously had no protection.
+  const [submitting, setSubmitting] = useState(false);
 
   // ── Persist last receipt across page navigation ───────────────────────────
   // Initialise ref from localStorage so it survives unmount/remount
@@ -216,63 +219,98 @@ export default function POS() {
 
   const controlledInCart = cart.filter((l) => products.find((p) => p.id === l.productId)?.controlled);
 
-  const finalizeSale = (controlledForms?: Record<string, {
+  // FIX (root fix for "sales sometimes vanish"): this now AWAITS
+  // store.recordSale() and checks whether the cloud write actually
+  // succeeded before doing anything else. Previously it called
+  // store.recordSale(...) without awaiting it, then immediately cleared
+  // the cart, showed a success toast, and printed a receipt — regardless
+  // of whether the sale ever reached Supabase. If the write failed
+  // silently in the background, the cashier had already been told it
+  // worked and the cart was already gone, with no way to know or retry.
+  //
+  // Now: on failure, the cart is left exactly as it was so nothing is
+  // lost and the cashier can just press "Complete Sale" again once the
+  // connection issue clears. A clear error toast (from store.ts) explains
+  // what happened.
+  const finalizeSale = async (controlledForms?: Record<string, {
     patientName: string; patientPhone: string; prescriber: string;
     prescriberRegNo: string; prescriptionRef: string;
   }>) => {
-    const sale = store.recordSale({
-      items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
-      total, profit, payment,
-      cashier: user?.username || "user",
-      customer: customer || undefined,
-    });
-    if (controlledForms) {
-      for (const l of controlledInCart) {
-        const f = controlledForms[l.productId];
-        if (!f) continue;
-        const p = products.find((x) => x.id === l.productId);
-        store.recordControlledDispense({
-          productId: l.productId, productName: l.name, batch: p?.batch || "",
-          quantity: l.qty, amount: l.qty * l.price,
-          patientName: f.patientName, patientPhone: f.patientPhone,
-          prescriber: f.prescriber, prescriberRegNo: f.prescriberRegNo,
-          prescriptionRef: f.prescriptionRef,
-        });
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const result = await store.recordSale({
+        items: cart.map(({ productId, name, qty, price, cost }) => ({ productId, name, qty, price, cost })),
+        total, profit, payment,
+        cashier: user?.username || "user",
+        customer: customer || undefined,
+      });
+
+      if (!result.ok) {
+        // Sale failed to save — cart is left intact, nothing to clean up.
+        setControlledOpen(false);
+        return;
       }
+
+      const sale = result.sale;
+
+      if (controlledForms) {
+        for (const l of controlledInCart) {
+          const f = controlledForms[l.productId];
+          if (!f) continue;
+          const p = products.find((x) => x.id === l.productId);
+          store.recordControlledDispense({
+            productId: l.productId, productName: l.name, batch: p?.batch || "",
+            quantity: l.qty, amount: l.qty * l.price,
+            patientName: f.patientName, patientPhone: f.patientPhone,
+            prescriber: f.prescriber, prescriberRegNo: f.prescriberRegNo,
+            prescriptionRef: f.prescriptionRef,
+          });
+        }
+      }
+
+      const receiptSnapshot = {
+        ...sale,
+        customer,
+        tendered,
+        change,
+        subtotal,
+        vatAmount,
+        vatRate,
+        vatEnabled,
+      };
+
+      // Persist to localStorage so button stays clickable after navigation
+      try { localStorage.setItem(LAST_RECEIPT_KEY, JSON.stringify(receiptSnapshot)); } catch {}
+
+      lastReceiptRef.current = receiptSnapshot;
+      setHasReceipt(true);
+
+      setCart([]); setCustomer(""); setTendered(0); setControlledOpen(false);
+      // FIX (offline support): distinguish an offline-queued sale from a
+      // fully-synced one so the cashier isn't misled into thinking it's
+      // already in the cloud when it's actually still waiting to sync.
+      if (result.offline) {
+        toast.info("Sale recorded offline — will sync automatically when connection returns", { duration: 6000 });
+      } else {
+        toast.success("Sale recorded");
+      }
+
+      setTimeout(() => {
+        printReceiptViaIframe(receiptSnapshot, settings);
+      }, 150);
+    } finally {
+      setSubmitting(false);
     }
-
-    const receiptSnapshot = {
-      ...sale,
-      customer,
-      tendered,
-      change,
-      subtotal,
-      vatAmount,
-      vatRate,
-      vatEnabled,
-    };
-
-    // Persist to localStorage so button stays clickable after navigation
-    try { localStorage.setItem(LAST_RECEIPT_KEY, JSON.stringify(receiptSnapshot)); } catch {}
-
-    lastReceiptRef.current = receiptSnapshot;
-    setHasReceipt(true);
-
-    setCart([]); setCustomer(""); setTendered(0); setControlledOpen(false);
-    toast.success("Sale recorded");
-
-    setTimeout(() => {
-      printReceiptViaIframe(receiptSnapshot, settings);
-    }, 150);
   };
 
   const checkout = () => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || submitting) return;
     if (controlledInCart.length > 0) {
       if (user?.memberRole === "Cashier") { setPinOpen(true); return; }
       setControlledOpen(true); return;
     }
-    finalizeSale();
+    void finalizeSale();
   };
 
   const onPinAuthorized = () => { setPinOpen(false); setControlledOpen(true); };
@@ -444,8 +482,8 @@ export default function POS() {
               )}
             </div>
 
-            <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0}>
-              Complete Sale · {NGN(total)}
+            <Button className="w-full" size="lg" onClick={checkout} disabled={cart.length === 0 || submitting}>
+              {submitting ? "Saving sale..." : `Complete Sale · ${NGN(total)}`}
             </Button>
             <Button variant="outline" className="w-full" size="sm"
               onClick={printReceipt}
