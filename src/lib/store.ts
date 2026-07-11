@@ -36,6 +36,13 @@ export type Sale = {
   cashier: string;
   customer?: string;
   createdAt: string;
+  // FIX (offline support): "pending" means this sale exists locally and
+  // has NOT yet been confirmed saved to Supabase — it will keep retrying
+  // in the background via syncPendingSales(). "synced" means Supabase has
+  // confirmed the write. Sales loaded directly from Supabase are always
+  // "synced" by definition. Missing/undefined is treated as "synced" for
+  // backward compatibility with sales recorded before this field existed.
+  syncStatus?: "synced" | "pending";
 };
 
 export type AuditEntry = {
@@ -49,7 +56,14 @@ export type AuditEntry = {
 
 export type User = {
   username: string;
-  role: "Admin" | "Pharmacist";
+  // FIX: role is not guaranteed to be set the instant a session resolves.
+  // For a genuinely new/unverified session it stays undefined (fail-closed)
+  // until hydrateFromSupabase() confirms the real membership row. For a
+  // RETURNING session (same user as last time, on this device), setAuthUser
+  // bridges in the last confirmed role immediately so the app stays usable
+  // offline — hydrateFromSupabase then silently re-confirms/corrects it
+  // once a connection is available. See setAuthUser() for details.
+  role?: "Admin" | "Pharmacist";
   organizationId?: string;
   memberRole?: "Owner" | "Pharmacist" | "Cashier";
   canViewMargins?: boolean;
@@ -138,6 +152,18 @@ type DB = {
   credentials: Credential[];
   plan: PlanConfig | null;
   extendedSalesLoaded: boolean;
+  // FIX: true once we have a role we're willing to act on — either freshly
+  // confirmed by hydrateFromSupabase(), or bridged in from a returning
+  // session's last confirmed state (see setAuthUser). RouteGuard should
+  // show a neutral loading state while this is false, rather than either
+  // granting or denying access based on incomplete information.
+  authReady: boolean;
+  // FIX: best-effort connectivity flag, updated by the browser's
+  // online/offline events. Not a perfect signal (a device can report
+  // "online" while actually having no usable connection), but useful for
+  // UI messaging. The real source of truth for "did this request actually
+  // reach Supabase" is always the try/catch around the request itself.
+  isOffline: boolean;
 };
 
 const KEY = "pharmaguard_db_v3";
@@ -147,6 +173,37 @@ const ADMIN_EMAIL = "phlair222@gmail.com";
 const SALES_HYDRATE_DAYS = 90;
 function salesCutoffISO(): string {
   return new Date(Date.now() - SALES_HYDRATE_DAYS * 86400000).toISOString();
+}
+
+// FIX (offline support): wraps a Supabase call with a hard timeout. On weak
+// connections common on Nigerian mobile networks, a request can hang for a
+// long time without ever technically erroring out. Without this, a cashier
+// on a bad connection would see "Saving sale..." indefinitely. If the
+// timeout fires, the promise rejects and the caller's catch block treats it
+// exactly like a network failure — the sale is queued for background sync
+// instead of blocking the till.
+const SALE_WRITE_TIMEOUT_MS = 8000;
+function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Request timed out — weak or no connection")), ms);
+    Promise.resolve(promise).then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+// FIX (offline support): best-effort classifier for "this failed because
+// we couldn't reach the server" vs "this failed because the server
+// rejected it". A thrown exception (network down, DNS failure, our own
+// timeout above) is always treated as network-related. A structured
+// {error} object returned BY Supabase (e.g. an RLS rejection, a constraint
+// violation) means the request did reach the server and got a real
+// answer — that should not be silently queued and retried forever, since
+// retrying an intrinsically-rejected write will never succeed.
+function isNetworkErrorMessage(msg: string | undefined | null): boolean {
+  if (!msg) return true;
+  return /fetch|network|timed out|timeout|offline|ENOTFOUND|Failed to fetch/i.test(msg);
 }
 
 const seedProducts: Array<[string, string, string, string, number, number, number, number, string, string, string]> = [
@@ -221,12 +278,15 @@ function makeSeed(): DB {
         payment: (["Cash", "POS", "Bank Transfer", "Mobile Money"] as const)[Math.floor(Math.random() * 4)],
         cashier: "admin",
         createdAt: new Date(today - d * 86400000 - Math.random() * 80000000).toISOString(),
+        syncStatus: "synced",
       });
     }
   }
   return {
     products, sales, audit: [], user: null, suppliers, settings: defaultSettings,
-    controlledDispense: [], loginActivity: [], extendedSalesLoaded: false,
+    controlledDispense: [], loginActivity: [], extendedSalesLoaded: false, plan: null,
+    authReady: false,
+    isOffline: typeof navigator !== "undefined" ? !navigator.onLine : false,
     credentials: [
       { username: "admin", passwordHash: hashPwd("admin") },
       { username: "pharma", passwordHash: hashPwd("pharma") },
@@ -238,6 +298,8 @@ function emptyDb(): DB {
   return {
     products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings, plan: null,
     extendedSalesLoaded: false,
+    authReady: false,
+    isOffline: typeof navigator !== "undefined" ? !navigator.onLine : false,
     controlledDispense: [], loginActivity: [],
     credentials: [
       { username: "admin", passwordHash: hashPwd("admin") },
@@ -270,6 +332,24 @@ function load(): DB {
     parsed.loginActivity = parsed.loginActivity || [];
     parsed.credentials = parsed.credentials || [];
     parsed.extendedSalesLoaded = parsed.extendedSalesLoaded || false;
+    // FIX (offline support): sales recorded before this update have no
+    // syncStatus. We assume they're already synced rather than re-pushing
+    // them blindly (we can't safely tell whether they already exist
+    // server-side, and re-inserting could create duplicates). Any sale
+    // that was truly lost by the old bug, before this fix shipped, is not
+    // auto-recovered by this migration — that's a one-time historical gap,
+    // not an ongoing one.
+    parsed.sales = (parsed.sales || []).map((s) => ({ ...s, syncStatus: s.syncStatus ?? "synced" }));
+    // FIX: authReady always starts false on a fresh page load and must be
+    // earned again via setAuthUser()/hydrateFromSupabase() — but we
+    // deliberately KEEP the persisted user.role/memberRole (unlike an
+    // earlier version of this fix, which stripped them). Wiping them here
+    // would defeat offline bootstrapping: setAuthUser() below is what
+    // decides whether a cached role can be trusted, based on whether this
+    // is the SAME user as last time. See setAuthUser() for the actual
+    // security boundary.
+    parsed.authReady = false;
+    parsed.isOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
     return parsed;
   } catch {
     return emptyDb();
@@ -332,18 +412,98 @@ export const store = {
     persist();
     void supabasePush.updateProduct(id, { quantity: p.quantity });
   },
-  recordSale(sale: Omit<Sale, "id" | "createdAt">) {
-    const ns: Sale = { ...sale, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    db.sales.unshift(ns);
-    for (const it of ns.items) {
-      const p = db.products.find((p) => p.id === it.productId);
-      if (p) p.quantity = Math.max(0, p.quantity - it.qty);
-    }
-    this.audit("Sale completed", `₦${ns.total.toFixed(2)}`, ns.payment);
+
+  // FIX (offline support — this is the core of the offline promise):
+  //
+  // The sale is written to local state and persisted FIRST, unconditionally,
+  // so the cashier is never blocked by connectivity. It's marked
+  // syncStatus: "pending". We then attempt the Supabase write:
+  //
+  //   • Write succeeds            → marked "synced". Done.
+  //   • Write fails, network-y    → stays "pending" locally. Stock is
+  //                                  already deducted, receipt can still
+  //                                  print, cashier keeps working. A
+  //                                  background process (syncPendingSales)
+  //                                  will push it up automatically the
+  //                                  moment a connection is available.
+  //   • Write fails, NOT network  → rolled back entirely. This is a real
+  //                                  rejection (bad data, permissions,
+  //                                  etc.) that will never succeed just by
+  //                                  retrying, so we don't pretend it
+  //                                  worked — the cashier is told plainly
+  //                                  and can retry after checking with the
+  //                                  Owner.
+  async recordSale(sale: Omit<Sale, "id" | "createdAt" | "syncStatus">): Promise<
+    | { ok: true; sale: Sale; offline: boolean }
+    | { ok: false; error?: string }
+  > {
+    const ns: Sale = { ...sale, id: crypto.randomUUID(), createdAt: new Date().toISOString(), syncStatus: "pending" };
+
+    const prevSales = db.sales;
+    const prevProducts = db.products;
+
+    db.sales = [ns, ...db.sales];
+    db.products = db.products.map((p) => {
+      const line = ns.items.find((it) => it.productId === p.id);
+      return line ? { ...p, quantity: Math.max(0, p.quantity - line.qty) } : p;
+    });
     persist();
-    void supabasePush.insertSale(ns);
-    return ns;
+
+    const result = await supabasePush.insertSale(ns);
+
+    if (result.ok) {
+      const idx = db.sales.findIndex((s) => s.id === ns.id);
+      if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced" };
+      this.audit("Sale completed", `₦${ns.total.toFixed(2)}`, ns.payment);
+      persist();
+      return { ok: true, sale: (idx !== -1 ? db.sales[idx] : ns), offline: false };
+    }
+
+    if (result.isNetworkError) {
+      this.audit("Sale completed (offline — pending sync)", `₦${ns.total.toFixed(2)}`, ns.payment);
+      persist();
+      return { ok: true, sale: ns, offline: true };
+    }
+
+    db.sales = prevSales;
+    db.products = prevProducts;
+    persist();
+    toast.error("Sale NOT saved — " + (result.error || "unknown error") + ". Please try again.", { duration: 8000 });
+    return { ok: false, error: result.error };
   },
+
+  // FIX (offline support): retries every locally-pending (unsynced) sale,
+  // oldest first, so receipts land on the server in chronological order.
+  // Called on: successful hydrate, the 30s poll (_syncFromServer), and the
+  // browser's 'online' event. Stops at the first still-failing sale in a
+  // given pass (almost always means we're still offline) rather than
+  // hammering every pending sale on every retry.
+  async syncPendingSales(): Promise<void> {
+    if (!db.user?.organizationId) return;
+    const pending = db.sales.filter((s) => s.syncStatus === "pending");
+    if (!pending.length) return;
+
+    const ordered = [...pending].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    let syncedCount = 0;
+    for (const s of ordered) {
+      const result = await supabasePush.insertSale(s);
+      if (result.ok) {
+        const idx = db.sales.findIndex((x) => x.id === s.id);
+        if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced" };
+        syncedCount++;
+      } else {
+        break;
+      }
+    }
+    if (syncedCount > 0) {
+      persist();
+      toast.success(`${syncedCount} offline sale${syncedCount > 1 ? "s" : ""} synced to the cloud`);
+    }
+  },
+
   addSupplier(s: Omit<Supplier, "id">) {
     const ns = { ...s, id: crypto.randomUUID() };
     db.suppliers.push(ns);
@@ -388,12 +548,19 @@ export const store = {
     if (db.loginActivity.length > 100) db.loginActivity.length = 100;
     if (!ok || !role) { persist(); return false; }
     db.user = { username, role };
+    // FIX: this legacy local-credential login path doesn't go through
+    // hydrateFromSupabase() at all, so it must set authReady itself —
+    // otherwise RouteGuard would show "Checking access..." forever for
+    // these demo accounts.
+    db.authReady = true;
     this.audit("Login", username);
     persist(); return true;
   },
   logout() {
     if (db.user) this.audit("Logout", db.user.username);
-    db.user = null; persist();
+    db.user = null;
+    db.authReady = false;
+    persist();
   },
   changePassword(username: string, oldPwd: string, newPwd: string): { ok: boolean; error?: string } {
     const cred = db.credentials.find((c) => c.username === username);
@@ -436,9 +603,33 @@ export const store = {
     void supabasePush.insertProducts(newRows);
   },
 
+  // FIX (root fix for both the Owner-flash bug AND offline usability):
+  //
+  // If this is the SAME user who was last confirmed on this device (we
+  // still have their username + a confirmed memberRole from a previous
+  // successful hydrate), we bridge that cached role in immediately and
+  // mark authReady = true right away. This is what lets a Cashier open
+  // the app with no signal and still ring up sales — we already know who
+  // they are and what they're allowed to do, from last time we could
+  // verify it. hydrateFromSupabase() then re-confirms (or corrects) this
+  // in the background the moment a connection is available.
+  //
+  // If this is a NEW or unrecognized session (different email than what
+  // was cached, or nothing cached at all), we do NOT guess a role — it
+  // stays undefined and authReady stays false until Supabase confirms the
+  // real membership. This is the fix for the original bug, where every
+  // fresh session was briefly (or, on a bad connection, not-so-briefly)
+  // treated as "Admin" regardless of the person's real role.
+  //
+  // Trade-off worth knowing: if an Owner changes a Cashier's role, or the
+  // org's subscription lapses, while that Cashier's device is offline, the
+  // device won't find out until it reconnects. This is the same trade-off
+  // every offline-capable POS makes (Square, Shopify POS, etc.) — treat it
+  // as "reconciles automatically on reconnect", not "instant everywhere".
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
       db.user = null;
+      db.authReady = false;
       db.products = []; db.sales = []; db.suppliers = [];
       db.controlledDispense = []; db.audit = [];
       db.extendedSalesLoaded = false;
@@ -446,7 +637,16 @@ export const store = {
       this.stopRealtime();
       return;
     }
-    db.user = { username: u.email, role: "Admin" };
+
+    if (db.user && db.user.username === u.email && db.user.memberRole) {
+      // Returning, already-verified session — trust it provisionally.
+      db.authReady = true;
+      persist();
+      return;
+    }
+
+    db.user = { username: u.email, role: undefined };
+    db.authReady = false;
     persist();
   },
 
@@ -466,6 +666,10 @@ export const store = {
   },
 
   async _syncFromServer(orgId: string) {
+    // FIX (offline support): always give pending sales a chance to sync
+    // on the same cadence as the background poll.
+    void this.syncPendingSales();
+
     try {
       const cutoff = salesCutoffISO();
       const [salesR, prodsR, orgR] = await Promise.all([
@@ -477,9 +681,20 @@ export const store = {
       ]);
       let changed = false;
       if (salesR.data) {
-        const fresh = JSON.stringify(salesR.data.map((s: any) => s.id + s.created_at));
-        const current = JSON.stringify(db.sales.map((s) => s.id + s.createdAt));
-        if (fresh !== current) { db.sales = salesR.data.map(rowToSale); changed = true; }
+        // FIX (offline support): MERGE instead of overwrite. Overwriting
+        // db.sales wholesale with the server's copy would silently delete
+        // any locally-pending (not-yet-synced) offline sale that the
+        // server doesn't know about yet — exactly the "sale disappeared"
+        // symptom, just from a different code path.
+        const serverSales = salesR.data.map(rowToSale);
+        const serverIds = new Set(serverSales.map((s) => s.id));
+        const pendingLocal = db.sales.filter((s) => s.syncStatus === "pending" && !serverIds.has(s.id));
+        const merged = [...pendingLocal, ...serverSales].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        const fresh = JSON.stringify(merged.map((s) => s.id + s.createdAt + s.syncStatus));
+        const current = JSON.stringify(db.sales.map((s) => s.id + s.createdAt + s.syncStatus));
+        if (fresh !== current) { db.sales = merged; changed = true; }
       }
       if (prodsR.data) {
         const fresh = JSON.stringify(prodsR.data.map((p: any) => p.id + p.quantity));
@@ -570,7 +785,15 @@ export const store = {
 
       if (!membership) {
         if (membershipError) {
-          console.error("[hydrate] membership query failed, aborting:", membershipError.message);
+          console.error("[hydrate] membership query failed:", membershipError.message);
+          // FIX (offline support): if we already bridged in a cached role
+          // for this exact user in setAuthUser(), authReady is already
+          // true and the app is usable — this is just a background
+          // refresh that couldn't complete, not a hard stop. Only alert
+          // if we have NO usable cached state at all.
+          if (!db.authReady) {
+            toast.error("Could not verify your pharmacy account — check your connection and reload.");
+          }
           return;
         }
 
@@ -582,6 +805,9 @@ export const store = {
 
         if (invitedError) {
           console.error("[hydrate] invited lookup failed:", invitedError.message);
+          if (!db.authReady) {
+            toast.error("Could not verify your invite — check your connection and reload.");
+          }
           return;
         }
 
@@ -619,13 +845,22 @@ export const store = {
       const legacyRole: "Admin" | "Pharmacist" = memberRole === "Owner" ? "Admin" : "Pharmacist";
 
       db.user = {
+        ...db.user,
         username: email,
         role: legacyRole,
         organizationId: orgId,
         memberRole,
         canViewMargins,
       };
+      // FIX: this is the moment the role is actually confirmed by
+      // Supabase — authoritative, overrides any bridged/cached value.
+      db.authReady = true;
       persist();
+
+      // FIX (offline support): now that org context is confirmed, give
+      // any offline-queued sales from before this login/reconnect a
+      // chance to sync right away, instead of waiting for the next poll.
+      void this.syncPendingSales();
 
       const cutoff = salesCutoffISO();
       const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
@@ -643,7 +878,17 @@ export const store = {
       if (salesR.error) { console.error(salesR.error); toast.error("Failed to load sales"); }
 
       db.products = (prodsR.data || []).map(rowToProduct);
-      db.sales = (salesR.data || []).map(rowToSale);
+
+      // FIX (offline support): same merge logic as _syncFromServer — keep
+      // any locally-pending sale that the server doesn't have yet, so a
+      // reload right after an offline sale doesn't wipe it out.
+      const serverSales = (salesR.data || []).map(rowToSale);
+      const serverIds = new Set(serverSales.map((s: Sale) => s.id));
+      const pendingLocal = db.sales.filter((s) => s.syncStatus === "pending" && !serverIds.has(s.id));
+      db.sales = [...pendingLocal, ...serverSales].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
       db.suppliers = (supR.data || []).map(rowToSupplier);
       db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
       db.audit = ((audR as any).data || []).map(rowToAudit);
@@ -786,6 +1031,8 @@ function rowToSale(r: any): Sale {
     id: r.id, total: Number(r.total) || 0, profit: Number(r.profit) || 0,
     payment: r.payment, cashier: r.cashier || "", customer: r.customer || undefined,
     createdAt: r.created_at,
+    // Any row loaded FROM Supabase is, by definition, already saved there.
+    syncStatus: "synced",
     items: (r.sale_items || []).map((it: any) => ({
       productId: it.product_id, name: it.name, qty: it.qty,
       price: Number(it.price), cost: Number(it.cost),
@@ -847,12 +1094,23 @@ function settingsPatchToRow(p: Partial<PharmacySettings>) {
 }
 
 const supabasePush = {
+  // FIX (offline support): getSession() reads the session already persisted
+  // to localStorage by supabase-js and does NOT make a network call, unlike
+  // getUser() which always re-validates against the Auth server. Using
+  // getSession() here means we can still resolve "who is this" while
+  // offline, so a sale write attempt gets far enough to correctly fail as
+  // a network error (and get queued) instead of failing this earlier check
+  // for an unrelated reason and being silently dropped.
   async _context(): Promise<{ uid: string; orgId: string } | null> {
-    const { data } = await supabase.auth.getUser();
-    const uid = data.user?.id;
-    const orgId = db.user?.organizationId;
-    if (!uid || !orgId) return null;
-    return { uid, orgId };
+    try {
+      const { data } = await supabase.auth.getSession();
+      const uid = data.session?.user?.id;
+      const orgId = db.user?.organizationId;
+      if (!uid || !orgId) return null;
+      return { uid, orgId };
+    } catch {
+      return null;
+    }
   },
   async insertProduct(p: Product) {
     const ctx = await this._context(); if (!ctx) return;
@@ -876,26 +1134,64 @@ const supabasePush = {
     const { error } = await supabase.from("products").delete().eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not delete product in cloud"); }
   },
-  async insertSale(s: Sale) {
-    const ctx = await this._context(); if (!ctx) return;
-    const { error: e1 } = await supabase.from("sales").insert({
-      id: s.id, user_id: ctx.uid, organization_id: ctx.orgId,
-      total: s.total, profit: s.profit, payment: s.payment,
-      cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
-    });
-    if (e1) { console.error(e1); toast.error("Could not sync sale"); return; }
-    if (s.items.length) {
-      const { error: e2 } = await supabase.from("sale_items").insert(
-        s.items.map((it) => ({
-          sale_id: s.id, product_id: it.productId || null, name: it.name,
-          qty: it.qty, price: it.price, cost: it.cost ?? 0,
-        })),
-      );
-      if (e2) { console.error(e2); toast.error("Could not sync sale items"); }
+  // FIX (offline support): returns { ok, error, isNetworkError } instead of
+  // void. Wrapped in try/catch + a hard timeout (see withTimeout above) so
+  // a hanging request on a bad connection doesn't leave the caller waiting
+  // forever — it resolves to a network-classified failure instead.
+  async insertSale(s: Sale): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
+    const ctx = await this._context();
+    if (!ctx) {
+      // Most commonly: couldn't confirm the session because we're
+      // offline. Treat as network so the sale queues instead of being
+      // silently skipped like the old behavior.
+      return { ok: false, error: "offline", isNetworkError: true };
     }
-    for (const it of s.items) {
-      const p = db.products.find((p) => p.id === it.productId);
-      if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
+
+    try {
+      const { error: e1 } = await withTimeout(
+        supabase.from("sales").insert({
+          id: s.id, user_id: ctx.uid, organization_id: ctx.orgId,
+          total: s.total, profit: s.profit, payment: s.payment,
+          cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
+        }),
+        SALE_WRITE_TIMEOUT_MS,
+      );
+      if (e1) {
+        console.error(e1);
+        return { ok: false, error: e1.message, isNetworkError: isNetworkErrorMessage(e1.message) };
+      }
+
+      if (s.items.length) {
+        const { error: e2 } = await withTimeout(
+          supabase.from("sale_items").insert(
+            s.items.map((it) => ({
+              sale_id: s.id, product_id: it.productId || null, name: it.name,
+              qty: it.qty, price: it.price, cost: it.cost ?? 0,
+            })),
+          ),
+          SALE_WRITE_TIMEOUT_MS,
+        );
+        // NOTE: if the sale header above succeeded but this fails for a
+        // genuine (non-network) reason, the sale row exists server-side
+        // with no line items. Fully closing this requires wrapping both
+        // inserts in one DB transaction via an Edge Function, similar to
+        // confirm-seat-payment. Flagging as a possible follow-up.
+        if (e2) {
+          console.error(e2);
+          return { ok: false, error: e2.message, isNetworkError: isNetworkErrorMessage(e2.message) };
+        }
+      }
+
+      for (const it of s.items) {
+        const p = db.products.find((p) => p.id === it.productId);
+        if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
+      }
+      return { ok: true };
+    } catch (e: any) {
+      // A thrown exception (rather than a returned {error}) means the
+      // request never got a real answer from the server — no internet,
+      // DNS failure, or our own timeout firing. Always network-classified.
+      return { ok: false, error: e?.message || "Network error", isNetworkError: true };
     }
   },
   async insertSupplier(s: Supplier) {
@@ -974,6 +1270,23 @@ async function seedAdminDemoData(uid: string, orgId: string) {
       if (e2) console.error(e2);
     }
   }
+}
+
+// FIX (offline support): module-level connectivity listeners. Set up once
+// when this module first loads. On 'online', immediately attempt to sync
+// any pending sales rather than waiting for the next 30s poll — a cashier
+// who's been offline for a while shouldn't have to wait half a minute
+// after their signal comes back.
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => {
+    db.isOffline = false;
+    notify();
+    void store.syncPendingSales();
+  });
+  window.addEventListener("offline", () => {
+    db.isOffline = true;
+    notify();
+  });
 }
 
 export function useStore<T>(selector: (db: DB) => T): T {
