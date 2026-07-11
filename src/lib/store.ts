@@ -55,6 +55,10 @@ export type User = {
   canViewMargins?: boolean;
   subscriptionTier?: string;
   subscriptionExpiresAt?: string | null;
+  // FIX: surfaces recurring-billing state so the UI can show a grace-period
+  // warning and days-remaining before an automatic downgrade to Free.
+  billingStatus?: "active" | "grace_period";
+  gracePeriodStartedAt?: string | null;
 };
 
 export type PlanConfig = {
@@ -468,7 +472,7 @@ export const store = {
         supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
         (supabase.from as any)("organizations")
-          .select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
+          .select("subscription_tier, subscription_expires_at, billing_status, grace_period_started_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
           .eq("id", orgId).maybeSingle(),
       ]);
       let changed = false;
@@ -487,6 +491,31 @@ export const store = {
         if (freshName !== db.settings.name) {
           db.settings = { ...db.settings, ...rowToSettings(orgR.data) };
           changed = true;
+        }
+        // FIX: keep billing/tier state fresh via the same poll/realtime
+        // path — so a renewal or grace-period change made by the
+        // scheduled renew-subscriptions job shows up without a full
+        // re-login.
+        if (db.user) {
+          const newTier = orgR.data.subscription_tier ?? "free";
+          const newExpiry = orgR.data.subscription_expires_at ?? null;
+          const newBillingStatus = orgR.data.billing_status ?? "active";
+          const newGraceStarted = orgR.data.grace_period_started_at ?? null;
+          if (
+            db.user.subscriptionTier !== newTier ||
+            db.user.subscriptionExpiresAt !== newExpiry ||
+            db.user.billingStatus !== newBillingStatus ||
+            db.user.gracePeriodStartedAt !== newGraceStarted
+          ) {
+            db.user = {
+              ...db.user,
+              subscriptionTier: newTier,
+              subscriptionExpiresAt: newExpiry,
+              billingStatus: newBillingStatus,
+              gracePeriodStartedAt: newGraceStarted,
+            };
+            changed = true;
+          }
         }
       }
       if (changed) notify();
@@ -606,7 +635,7 @@ export const store = {
         (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
         (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
         supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
-        (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
+        (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, billing_status, grace_period_started_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
         (supabase.from as any)("plan_config").select("*"),
       ]);
 
@@ -622,7 +651,15 @@ export const store = {
 
       const orgTier: string = (orgR as any)?.data?.subscription_tier ?? "free";
       const orgExpiry: string | null = (orgR as any)?.data?.subscription_expires_at ?? null;
-      db.user = { ...db.user!, subscriptionTier: orgTier, subscriptionExpiresAt: orgExpiry };
+      const orgBillingStatus: "active" | "grace_period" = (orgR as any)?.data?.billing_status ?? "active";
+      const orgGraceStarted: string | null = (orgR as any)?.data?.grace_period_started_at ?? null;
+      db.user = {
+        ...db.user!,
+        subscriptionTier: orgTier,
+        subscriptionExpiresAt: orgExpiry,
+        billingStatus: orgBillingStatus,
+        gracePeriodStartedAt: orgGraceStarted,
+      };
 
       const plans: any[] = (planR as any)?.data || [];
       const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
@@ -990,5 +1027,9 @@ export function usePlan() {
       : products.length >= 50,
     productLimit: effectivePlan?.maxProducts ?? 50,
     staffLimit:   effectivePlan?.maxStaff   ?? 1,
+    // FIX: surfaces grace-period state so UI (Plan & Billing tab, sidebar)
+    // can warn the Owner before an automatic downgrade to Free happens.
+    billingStatus: user?.billingStatus ?? "active",
+    gracePeriodStartedAt: user?.gracePeriodStartedAt ?? null,
   };
 }
