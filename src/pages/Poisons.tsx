@@ -177,9 +177,10 @@ export default function Poisons() {
                 <TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Amount</TableHead>
                 <TableHead>Patient</TableHead><TableHead>Prescriber</TableHead>
                 <TableHead>Rx Ref</TableHead><TableHead>Cashier</TableHead>
+                <TableHead>Status</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {dispenses.length === 0 && <TableRow><TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
+                {dispenses.length === 0 && <TableRow><TableCell colSpan={10} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
                 {dispenses.map((d) => (
                   <TableRow key={d.id}>
                     <TableCell className="text-xs">{format(new Date(d.at), "dd MMM yyyy HH:mm")}</TableCell>
@@ -191,6 +192,15 @@ export default function Poisons() {
                     <TableCell className="text-xs"><div>{d.prescriber}</div><div className="text-muted-foreground">{d.prescriberRegNo}</div></TableCell>
                     <TableCell className="text-xs font-mono">{d.prescriptionRef}</TableCell>
                     <TableCell className="text-xs">{d.cashier}</TableCell>
+                    <TableCell className="text-xs">
+                      {/* COMPLIANCE FIX: surfaces sync status on the register itself so a
+                          pharmacist can see at a glance whether an entry recorded while
+                          offline has actually reached the cloud yet — same visibility
+                          Sales History already has for pending sales. */}
+                      {d.syncStatus === "pending"
+                        ? <Badge variant="outline" className="border-warning text-warning">Syncing…</Badge>
+                        : <Badge variant="outline" className="border-success text-success">Synced</Badge>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -212,6 +222,10 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
   const [prescriber, setPrescriber] = useState("");
   const [prescriberRegNo, setPrescriberRegNo] = useState("");
   const [prescriptionRef, setPrescriptionRef] = useState("");
+  // COMPLIANCE FIX: guards against double-submitting a dispense (e.g. an
+  // impatient double-click while the write is in flight), same pattern
+  // POS.tsx already uses for sales.
+  const [submitting, setSubmitting] = useState(false);
   const product = list.find((p) => p.id === productId);
   const amount = (product?.sellingPrice || 0) * qty;
 
@@ -220,19 +234,46 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
     setPrescriber(""); setPrescriberRegNo(""); setPrescriptionRef("");
   };
 
-  const submit = () => {
+  // COMPLIANCE FIX: previously called store.recordControlledDispense(...)
+  // synchronously, then immediately showed a success toast and closed the
+  // dialog regardless of whether the write actually reached Supabase —
+  // the exact bug already fixed for sales, just not yet applied here. Now
+  // awaits the call, distinguishes a fully-synced record from one that's
+  // offline-queued (told to the pharmacist honestly, not hidden), and
+  // leaves the form open with its data intact on a genuine failure so
+  // nothing has to be re-typed from memory.
+  const submit = async () => {
+    if (submitting) return;
     if (!product) { toast.error("Select a drug"); return; }
     if (!patientName.trim()) { toast.error("Patient name required"); return; }
     if (!prescriber.trim()) { toast.error("Prescriber name required"); return; }
     if (!prescriptionRef.trim()) { toast.error("Prescription reference required"); return; }
     if (qty <= 0 || qty > product.quantity) { toast.error("Invalid quantity"); return; }
-    store.recordControlledDispense({
-      productId: product.id, productName: product.name, batch: product.batch,
-      quantity: qty, amount, patientName: patientName.trim(), patientPhone: patientPhone.trim(),
-      prescriber: prescriber.trim(), prescriberRegNo: prescriberRegNo.trim(), prescriptionRef: prescriptionRef.trim(),
-    });
-    toast.success("Controlled dispense recorded");
-    reset(); setOpen(false);
+
+    setSubmitting(true);
+    try {
+      const result = await store.recordControlledDispense({
+        productId: product.id, productName: product.name, batch: product.batch,
+        quantity: qty, amount, patientName: patientName.trim(), patientPhone: patientPhone.trim(),
+        prescriber: prescriber.trim(), prescriberRegNo: prescriberRegNo.trim(), prescriptionRef: prescriptionRef.trim(),
+      });
+
+      if (!result.ok) {
+        // Real (non-network) rejection — store.ts already showed the error
+        // toast and rolled back local state. Leave the form open with the
+        // pharmacist's entries intact so nothing has to be re-typed.
+        return;
+      }
+
+      if (result.offline) {
+        toast.info("Dispense recorded offline — will sync automatically when connection returns", { duration: 6000 });
+      } else {
+        toast.success("Controlled dispense recorded");
+      }
+      reset(); setOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -288,8 +329,10 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button onClick={submit} className="bg-destructive hover:bg-destructive/90">Record dispensing</Button>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={submitting}>Cancel</Button>
+          <Button onClick={submit} disabled={submitting} className="bg-destructive hover:bg-destructive/90">
+            {submitting ? "Saving…" : "Record dispensing"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
