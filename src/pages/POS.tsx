@@ -255,17 +255,33 @@ export default function POS() {
       const sale = result.sale;
 
       if (controlledForms) {
+        // COMPLIANCE FIX: previously fired store.recordControlledDispense(...)
+        // without awaiting it or checking the result — the exact same class
+        // of bug that used to cause sales to silently vanish. Now each call
+        // is awaited. Since the sale itself has already been recorded at
+        // this point and can't be un-sold, a genuine (non-network) failure
+        // here can't roll back the sale — but the pharmacist must be told
+        // plainly that THIS SPECIFIC Poisons Register entry did not save,
+        // so they can record it manually rather than assume it's covered.
+        const dispenseFailures: string[] = [];
         for (const l of controlledInCart) {
           const f = controlledForms[l.productId];
           if (!f) continue;
           const p = products.find((x) => x.id === l.productId);
-          store.recordControlledDispense({
+          const dResult = await store.recordControlledDispense({
             productId: l.productId, productName: l.name, batch: p?.batch || "",
             quantity: l.qty, amount: l.qty * l.price,
             patientName: f.patientName, patientPhone: f.patientPhone,
             prescriber: f.prescriber, prescriberRegNo: f.prescriberRegNo,
             prescriptionRef: f.prescriptionRef,
           });
+          if (!dResult.ok) dispenseFailures.push(l.name);
+        }
+        if (dispenseFailures.length > 0) {
+          toast.error(
+            `Sale saved, but the Poisons Register entry for ${dispenseFailures.join(", ")} did NOT save. Please record it manually and notify the Owner.`,
+            { duration: 12000 }
+          );
         }
       }
 
