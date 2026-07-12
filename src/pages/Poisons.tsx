@@ -266,7 +266,7 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
       }
 
       if (result.offline) {
-        toast.info("Dispense recorded offline — will sync automatically when connection returns", { duration: 6000 });
+        toast.info("Dispense recorded — connection was slow/unavailable, it will sync automatically once reconnected.", { duration: 10000 });
       } else {
         toast.success("Controlled dispense recorded");
       }
