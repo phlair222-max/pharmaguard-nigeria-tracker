@@ -105,6 +105,11 @@ export type ControlledDispense = {
   prescriptionRef: string;
   cashier: string;
   at: string;
+  // COMPLIANCE FIX: mirrors Sale.syncStatus. A Poisons Register entry must
+  // never be silently lost to a dropped connection — "pending" means it
+  // exists locally and is actively being retried in the background until
+  // Supabase confirms it; "synced" means it's confirmed durable server-side.
+  syncStatus?: "synced" | "pending";
 };
 
 export type LoginActivity = {
@@ -328,7 +333,9 @@ function load(): DB {
     parsed.settings = parsed.settings || defaultSettings;
     if (parsed.settings.vatEnabled === undefined) parsed.settings.vatEnabled = false;
     if (parsed.settings.vatRate === undefined) parsed.settings.vatRate = 7.5;
-    parsed.controlledDispense = parsed.controlledDispense || [];
+    parsed.controlledDispense = (parsed.controlledDispense || []).map((c: ControlledDispense) => ({
+      ...c, syncStatus: c.syncStatus ?? "synced",
+    }));
     parsed.loginActivity = parsed.loginActivity || [];
     parsed.credentials = parsed.credentials || [];
     parsed.extendedSalesLoaded = parsed.extendedSalesLoaded || false;
@@ -359,8 +366,49 @@ function load(): DB {
 let db: DB = load();
 const listeners = new Set<() => void>();
 
+// SECURITY FIX (transient-layer caching leak): controlledDispense and
+// sales.customer can carry patient/customer identifiers — for a Poisons
+// Register, this is compliance-sensitive data. Writing it to localStorage
+// unencrypted and indefinitely means it's readable by any XSS on this
+// origin, any browser extension with storage access, or anyone with
+// physical/DevTools access to an unlocked till — and it outlives logout
+// unless explicitly cleared.
+//
+// Once a record has synced to Supabase, the local device no longer needs
+// to hold the identifying fields — Supabase is the source of truth and the
+// data is encrypted at rest there. So we redact identifiers from the
+// LOCAL PERSISTED COPY as soon as syncStatus is "synced", while leaving
+// them intact in the in-memory `db` object (so the current session's UI —
+// e.g. "last dispensed to Jane Doe" — still displays correctly until the
+// next reload). The only identifiers that ever sit on disk in plaintext
+// are ones still genuinely offline-pending, and only until the next
+// successful sync.
+function sanitizeForPersist(state: DB): DB {
+  return {
+    ...state,
+    // Now that ControlledDispense tracks syncStatus (see COMPLIANCE FIX
+    // above), gate redaction on it the same way sales already are:
+    // "pending" entries keep their real identifiers on disk because
+    // syncPendingControlledDispenses() needs the actual data to retry the
+    // write — redacting a still-unsynced entry would permanently lose the
+    // patient/prescriber details it needs to eventually reach Supabase.
+    // Once synced, the source of truth is the (encrypted-at-rest) server
+    // copy, so the local disk copy is redacted.
+    controlledDispense: state.controlledDispense.map((d) =>
+      d.syncStatus === "synced" || d.syncStatus === undefined
+        ? { ...d, patientName: "[synced — see cloud record]", patientPhone: undefined, prescriber: "[synced — see cloud record]", prescriberRegNo: undefined }
+        : d
+    ),
+    sales: state.sales.map((s) =>
+      s.syncStatus === "synced" || s.syncStatus === undefined
+        ? { ...s, customer: undefined }
+        : s
+    ),
+  };
+}
+
 function persist() {
-  localStorage.setItem(KEY, JSON.stringify(db));
+  localStorage.setItem(KEY, JSON.stringify(sanitizeForPersist(db)));
   listeners.forEach((l) => l());
 }
 
@@ -468,7 +516,13 @@ export const store = {
     db.sales = prevSales;
     db.products = prevProducts;
     persist();
-    toast.error("Sale NOT saved — " + (result.error || "unknown error") + ". Please try again.", { duration: 8000 });
+    // SECURITY FIX: no longer interpolates the raw Postgres/Supabase error
+    // string into the on-screen toast — that string can contain schema
+    // details (column names, constraint names, RLS policy names) which
+    // shouldn't be visible to an unprivileged, possibly walk-up cashier.
+    // The real detail still goes to the console for whoever's debugging.
+    console.error("[recordSale] failed:", result.error);
+    toast.error("Sale could not be saved. Please try again, or contact your pharmacy owner if this continues.", { duration: 8000 });
     return { ok: false, error: result.error };
   },
 
@@ -558,8 +612,15 @@ export const store = {
   },
   logout() {
     if (db.user) this.audit("Logout", db.user.username);
-    db.user = null;
-    db.authReady = false;
+    // SECURITY FIX (transient-layer caching leak): logout previously only
+    // cleared db.user, leaving the entire cached dataset — including any
+    // still-pending (unredacted) controlled-dispense or sale customer
+    // data — sitting in localStorage on a shared/handoff device after the
+    // cashier walks away. Purge the persisted cache outright on logout;
+    // the next login re-hydrates cleanly from Supabase.
+    this.stopRealtime();
+    localStorage.removeItem(KEY);
+    db = emptyDb();
     persist();
   },
   changePassword(username: string, oldPwd: string, newPwd: string): { ok: boolean; error?: string } {
@@ -582,18 +643,99 @@ export const store = {
     this.audit("Cleared other sessions", currentUser ?? "system");
     persist();
   },
-  recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier">) {
+  // COMPLIANCE FIX (offline durability for the Poisons Register): this
+  // used to fire-and-forget the Supabase insert (`void
+  // supabasePush.insertControlled(entry)`), with no retry, no pending
+  // state, and no way to know if it ever actually landed. On a dropped
+  // connection, the entry existed ONLY in local state and — unlike
+  // sales, which already had this fixed — there was no
+  // syncPendingControlledDispenses() to recover it. A controlled
+  // dispense recorded while offline could be silently lost forever the
+  // moment the tab closed or localStorage was cleared.
+  //
+  // Now mirrors recordSale() exactly: optimistic local write marked
+  // "pending" → attempt Supabase write → network failure stays "pending"
+  // and is retried by syncPendingControlledDispenses() (called on hydrate,
+  // the 30s poll, and the browser 'online' event) → genuine rejection
+  // (bad data, permissions) rolls back entirely and tells the pharmacist
+  // plainly, since retrying a real rejection will never succeed.
+  async recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier" | "syncStatus">): Promise<
+    | { ok: true; entry: ControlledDispense; offline: boolean }
+    | { ok: false; error?: string }
+  > {
     const entry: ControlledDispense = {
-      ...d, id: crypto.randomUUID(), at: new Date().toISOString(), cashier: db.user?.username ?? "system",
+      ...d, id: crypto.randomUUID(), at: new Date().toISOString(),
+      cashier: db.user?.username ?? "system", syncStatus: "pending",
     };
-    db.controlledDispense.unshift(entry);
-    const p = db.products.find((p) => p.id === d.productId);
-    if (p) p.quantity = Math.max(0, p.quantity - d.quantity);
-    this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
+
+    const prevControlled = db.controlledDispense;
+    const prevProducts = db.products;
+
+    db.controlledDispense = [entry, ...db.controlledDispense];
+    db.products = db.products.map((p) =>
+      p.id === d.productId ? { ...p, quantity: Math.max(0, p.quantity - d.quantity) } : p
+    );
     persist();
-    void supabasePush.insertControlled(entry);
-    if (p) void supabasePush.updateProduct(p.id, { quantity: p.quantity });
-    return entry;
+
+    const result = await supabasePush.insertControlled(entry);
+
+    if (result.ok) {
+      const idx = db.controlledDispense.findIndex((c) => c.id === entry.id);
+      if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced" };
+      this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
+      // NOTE: no client-side updateProduct push here — record_dispense_atomic
+      // already decremented stock server-side inside its own locked
+      // transaction. The true server quantity flows back down naturally on
+      // the next poll/hydrate, same pattern as record_sale_atomic.
+      persist();
+      return { ok: true, entry: (idx !== -1 ? db.controlledDispense[idx] : entry), offline: false };
+    }
+
+    if (result.isNetworkError) {
+      this.audit(
+        "Controlled dispense (offline — pending sync)",
+        d.productName,
+        `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`
+      );
+      persist();
+      return { ok: true, entry, offline: true };
+    }
+
+    db.controlledDispense = prevControlled;
+    db.products = prevProducts;
+    persist();
+    console.error("[recordControlledDispense] failed:", result.error);
+    toast.error("Controlled dispense could not be saved. Please try again or contact the Owner.", { duration: 8000 });
+    return { ok: false, error: result.error };
+  },
+
+  // COMPLIANCE FIX: retries every locally-pending controlled-dispense
+  // record, oldest first — same pattern as syncPendingSales(). Called on
+  // hydrate, the 30s poll, and the browser 'online' event.
+  async syncPendingControlledDispenses(): Promise<void> {
+    if (!db.user?.organizationId) return;
+    const pending = db.controlledDispense.filter((c) => c.syncStatus === "pending");
+    if (!pending.length) return;
+
+    const ordered = [...pending].sort(
+      (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()
+    );
+
+    let syncedCount = 0;
+    for (const c of ordered) {
+      const result = await supabasePush.insertControlled(c);
+      if (result.ok) {
+        const idx = db.controlledDispense.findIndex((x) => x.id === c.id);
+        if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced" };
+        syncedCount++;
+      } else {
+        break;
+      }
+    }
+    if (syncedCount > 0) {
+      persist();
+      toast.success(`${syncedCount} offline controlled-dispense record${syncedCount > 1 ? "s" : ""} synced to the cloud`);
+    }
   },
   importProducts(rows: Omit<Product, "id">[]) {
     const newRows = rows.map((r) => ({ ...r, id: crypto.randomUUID() }));
@@ -666,9 +808,10 @@ export const store = {
   },
 
   async _syncFromServer(orgId: string) {
-    // FIX (offline support): always give pending sales a chance to sync
-    // on the same cadence as the background poll.
+    // FIX (offline support): always give pending sales AND pending
+    // controlled-dispense records a chance to sync on the same cadence.
     void this.syncPendingSales();
+    void this.syncPendingControlledDispenses();
 
     try {
       const cutoff = salesCutoffISO();
@@ -780,8 +923,7 @@ export const store = {
         .eq("status", "active")
         .maybeSingle();
 
-      console.log("[hydrate] uid:", uid, "email:", email);
-      console.log("[hydrate] membership result:", membership, "error:", membershipError);
+      console.log("[hydrate] membership lookup: found=", !!membership, "error=", membershipError?.message);
 
       if (!membership) {
         if (membershipError) {
@@ -858,9 +1000,11 @@ export const store = {
       persist();
 
       // FIX (offline support): now that org context is confirmed, give
-      // any offline-queued sales from before this login/reconnect a
-      // chance to sync right away, instead of waiting for the next poll.
+      // any offline-queued sales AND controlled-dispense records from
+      // before this login/reconnect a chance to sync right away, instead
+      // of waiting for the next poll.
       void this.syncPendingSales();
+      void this.syncPendingControlledDispenses();
 
       const cutoff = salesCutoffISO();
       const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
@@ -1064,6 +1208,8 @@ function rowToControlled(r: any): ControlledDispense {
     quantity: r.quantity || 0, amount: Number(r.amount) || 0, patientName: r.patient_name,
     patientPhone: r.patient_phone || "", prescriber: r.prescriber, prescriberRegNo: r.prescriber_reg_no || "",
     prescriptionRef: r.prescription_ref, cashier: r.cashier || "", at: r.at,
+    // Any row loaded FROM Supabase is, by definition, already saved there.
+    syncStatus: "synced",
   };
 }
 function rowToAudit(r: any): AuditEntry {
@@ -1134,10 +1280,24 @@ const supabasePush = {
     const { error } = await supabase.from("products").delete().eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not delete product in cloud"); }
   },
-  // FIX (offline support): returns { ok, error, isNetworkError } instead of
-  // void. Wrapped in try/catch + a hard timeout (see withTimeout above) so
-  // a hanging request on a bad connection doesn't leave the caller waiting
-  // forever — it resolves to a network-classified failure instead.
+  // FIX (atomic stock decrement): swapped from the old two-insert
+  // (sales + sale_items) plus a client-side loop of per-item
+  // updateProduct calls, to a single call to the record_sale_atomic
+  // Postgres RPC. The RPC does everything — sale header insert, sale_items
+  // insert, and stock decrement with a row-level lock per product — inside
+  // ONE database transaction. This closes two gaps the old client-side
+  // approach had: (1) a crash/network-drop between the sale insert and the
+  // stock-update loop could leave stock un-decremented even though the
+  // sale "succeeded"; (2) two offline devices selling the last unit of the
+  // same product could both read stale stock and both succeed, oversetting
+  // negative without anyone knowing. The RPC's FOR UPDATE row lock plus the
+  // audit_logs entry it writes on any negative-stock event fixes both.
+  //
+  // Still wrapped in the same try/catch + withTimeout + isNetworkErrorMessage
+  // classification as before, so offline queuing behavior in recordSale()
+  // and syncPendingSales() is completely unchanged from the caller's point
+  // of view — it just doesn't know or care that the write is now one RPC
+  // call instead of three separate ones.
   async insertSale(s: Sale): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
     const ctx = await this._context();
     if (!ctx) {
@@ -1148,44 +1308,32 @@ const supabasePush = {
     }
 
     try {
-      const { error: e1 } = await withTimeout(
-        supabase.from("sales").insert({
-          id: s.id, user_id: ctx.uid, organization_id: ctx.orgId,
-          total: s.total, profit: s.profit, payment: s.payment,
-          cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
+      const { error } = await withTimeout(
+        supabase.rpc("record_sale_atomic", {
+          p_sale_id: s.id,
+          p_organization_id: ctx.orgId,
+          p_user_id: ctx.uid,
+          p_cashier: s.cashier,
+          p_customer: s.customer || null,
+          p_payment: s.payment,
+          p_total: s.total,
+          p_profit: s.profit,
+          p_items: s.items.map((it) => ({
+            product_id: it.productId || null,
+            name: it.name,
+            qty: it.qty,
+            price: it.price,
+            cost: it.cost ?? 0,
+          })),
         }),
         SALE_WRITE_TIMEOUT_MS,
       );
-      if (e1) {
-        console.error(e1);
-        return { ok: false, error: e1.message, isNetworkError: isNetworkErrorMessage(e1.message) };
+
+      if (error) {
+        console.error(error);
+        return { ok: false, error: error.message, isNetworkError: isNetworkErrorMessage(error.message) };
       }
 
-      if (s.items.length) {
-        const { error: e2 } = await withTimeout(
-          supabase.from("sale_items").insert(
-            s.items.map((it) => ({
-              sale_id: s.id, product_id: it.productId || null, name: it.name,
-              qty: it.qty, price: it.price, cost: it.cost ?? 0,
-            })),
-          ),
-          SALE_WRITE_TIMEOUT_MS,
-        );
-        // NOTE: if the sale header above succeeded but this fails for a
-        // genuine (non-network) reason, the sale row exists server-side
-        // with no line items. Fully closing this requires wrapping both
-        // inserts in one DB transaction via an Edge Function, similar to
-        // confirm-seat-payment. Flagging as a possible follow-up.
-        if (e2) {
-          console.error(e2);
-          return { ok: false, error: e2.message, isNetworkError: isNetworkErrorMessage(e2.message) };
-        }
-      }
-
-      for (const it of s.items) {
-        const p = db.products.find((p) => p.id === it.productId);
-        if (p) await supabasePush.updateProduct(p.id, { quantity: p.quantity });
-      }
       return { ok: true };
     } catch (e: any) {
       // A thrown exception (rather than a returned {error}) means the
@@ -1211,17 +1359,49 @@ const supabasePush = {
     const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not delete supplier"); }
   },
-  async insertControlled(d: ControlledDispense) {
-    const ctx = await this._context(); if (!ctx) return;
-    const { error } = await (supabase.from as any)("controlled_dispense").insert({
-      id: d.id, user_id: ctx.uid, organization_id: ctx.orgId,
-      product_id: d.productId || null, product_name: d.productName,
-      batch: d.batch, quantity: d.quantity, amount: d.amount, patient_name: d.patientName,
-      patient_phone: d.patientPhone || null, prescriber: d.prescriber,
-      prescriber_reg_no: d.prescriberRegNo || null, prescription_ref: d.prescriptionRef,
-      cashier: d.cashier, at: d.at,
-    });
-    if (error) { console.error(error); toast.error("Could not sync controlled dispense"); }
+  // COMPLIANCE FIX (atomic dispense): swapped from a raw controlled_dispense
+  // table insert to the record_dispense_atomic RPC. The RPC now does the
+  // insert AND the stock decrement in one locked transaction, closing the
+  // same two-offline-devices race condition that record_sale_atomic
+  // already closed for ordinary sales — critical here because the Poisons
+  // Register is the exact record PCN will scrutinize most closely.
+  // Still wrapped in the same withTimeout + isNetworkErrorMessage
+  // classification as before, so offline queuing behavior is unchanged
+  // from the caller's point of view.
+  async insertControlled(d: ControlledDispense): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
+    const ctx = await this._context();
+    if (!ctx) {
+      return { ok: false, error: "offline", isNetworkError: true };
+    }
+
+    try {
+      const { error } = await withTimeout(
+        supabase.rpc("record_dispense_atomic", {
+          p_dispense_id: d.id,
+          p_organization_id: ctx.orgId,
+          p_user_id: ctx.uid,
+          p_product_id: d.productId || null,
+          p_product_name: d.productName,
+          p_batch: d.batch,
+          p_quantity: d.quantity,
+          p_amount: d.amount,
+          p_patient_name: d.patientName,
+          p_patient_phone: d.patientPhone || null,
+          p_prescriber: d.prescriber,
+          p_prescriber_reg_no: d.prescriberRegNo || null,
+          p_prescription_ref: d.prescriptionRef,
+          p_cashier: d.cashier,
+        }),
+        SALE_WRITE_TIMEOUT_MS,
+      );
+      if (error) {
+        console.error(error);
+        return { ok: false, error: error.message, isNetworkError: isNetworkErrorMessage(error.message) };
+      }
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || "Network error", isNetworkError: true };
+    }
   },
   async insertAudit(a: AuditEntry) {
     const ctx = await this._context(); if (!ctx) return;
@@ -1282,6 +1462,7 @@ if (typeof window !== "undefined") {
     db.isOffline = false;
     notify();
     void store.syncPendingSales();
+    void store.syncPendingControlledDispenses();
   });
   window.addEventListener("offline", () => {
     db.isOffline = true;
