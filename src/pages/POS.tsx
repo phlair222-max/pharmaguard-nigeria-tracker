@@ -307,7 +307,7 @@ export default function POS() {
       // fully-synced one so the cashier isn't misled into thinking it's
       // already in the cloud when it's actually still waiting to sync.
       if (result.offline) {
-        toast.info("Sale recorded offline — will sync automatically when connection returns", { duration: 6000 });
+        toast.info("Sale recorded — connection was slow/unavailable, it will sync automatically once reconnected.", { duration: 10000 });
       } else {
         toast.success("Sale recorded");
       }
