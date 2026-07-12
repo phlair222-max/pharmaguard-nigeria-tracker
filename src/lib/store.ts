@@ -544,27 +544,33 @@ export const store = {
   // hammering every pending sale on every retry.
   async syncPendingSales(): Promise<void> {
     if (!db.user?.organizationId) return;
+    if (this._syncingSales) return; // FIX: another sync pass is already in flight — no-op
     const pending = db.sales.filter((s) => s.syncStatus === "pending");
     if (!pending.length) return;
 
-    const ordered = [...pending].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
+    this._syncingSales = true;
+    try {
+      const ordered = [...pending].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
 
-    let syncedCount = 0;
-    for (const s of ordered) {
-      const result = await supabasePush.insertSale(s);
-      if (result.ok) {
-        const idx = db.sales.findIndex((x) => x.id === s.id);
-        if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced" };
-        syncedCount++;
-      } else {
-        break;
+      let syncedCount = 0;
+      for (const s of ordered) {
+        const result = await supabasePush.insertSale(s);
+        if (result.ok) {
+          const idx = db.sales.findIndex((x) => x.id === s.id);
+          if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced" };
+          syncedCount++;
+        } else {
+          break;
+        }
       }
-    }
-    if (syncedCount > 0) {
-      persist();
-      toast.success(`${syncedCount} offline sale${syncedCount > 1 ? "s" : ""} synced to the cloud`);
+      if (syncedCount > 0) {
+        persist();
+        toast.success(`${syncedCount} offline sale${syncedCount > 1 ? "s" : ""} synced to the cloud`);
+      }
+    } finally {
+      this._syncingSales = false;
     }
   },
 
@@ -724,27 +730,33 @@ export const store = {
   // hydrate, the 30s poll, and the browser 'online' event.
   async syncPendingControlledDispenses(): Promise<void> {
     if (!db.user?.organizationId) return;
+    if (this._syncingControlled) return; // FIX: another sync pass is already in flight — no-op
     const pending = db.controlledDispense.filter((c) => c.syncStatus === "pending");
     if (!pending.length) return;
 
-    const ordered = [...pending].sort(
-      (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()
-    );
+    this._syncingControlled = true;
+    try {
+      const ordered = [...pending].sort(
+        (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()
+      );
 
-    let syncedCount = 0;
-    for (const c of ordered) {
-      const result = await supabasePush.insertControlled(c);
-      if (result.ok) {
-        const idx = db.controlledDispense.findIndex((x) => x.id === c.id);
-        if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced" };
-        syncedCount++;
-      } else {
-        break;
+      let syncedCount = 0;
+      for (const c of ordered) {
+        const result = await supabasePush.insertControlled(c);
+        if (result.ok) {
+          const idx = db.controlledDispense.findIndex((x) => x.id === c.id);
+          if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced" };
+          syncedCount++;
+        } else {
+          break;
+        }
       }
-    }
-    if (syncedCount > 0) {
-      persist();
-      toast.success(`${syncedCount} offline controlled-dispense record${syncedCount > 1 ? "s" : ""} synced to the cloud`);
+      if (syncedCount > 0) {
+        persist();
+        toast.success(`${syncedCount} offline controlled-dispense record${syncedCount > 1 ? "s" : ""} synced to the cloud`);
+      }
+    } finally {
+      this._syncingControlled = false;
     }
   },
   importProducts(rows: Omit<Product, "id">[]) {
@@ -805,6 +817,19 @@ export const store = {
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
   _pollInterval: null as ReturnType<typeof setInterval> | null,
   _hydrating: false,
+  // FIX (duplicate sync toasts): syncPendingSales/syncPendingControlledDispenses
+  // are called from three independent triggers — the 30s poll, hydrate, and
+  // the browser 'online' event — with no coordination between them. If two
+  // fire close together (very likely right after reconnecting, which is
+  // exactly when all three tend to trigger near-simultaneously), each one
+  // independently reads the same "pending" record before the other has
+  // finished writing "synced" back, so both proceed to sync it — the RPC's
+  // idempotency means neither call errors, but the record gets reported as
+  // synced multiple times, producing duplicate/stacked toasts for what is
+  // really one sync. These flags make each sync function a no-op while a
+  // previous call of the same kind is still in flight.
+  _syncingSales: false,
+  _syncingControlled: false,
 
   stopRealtime() {
     if (this._realtimeChannel) {
