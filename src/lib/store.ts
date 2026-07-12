@@ -187,7 +187,17 @@ function salesCutoffISO(): string {
 // timeout fires, the promise rejects and the caller's catch block treats it
 // exactly like a network failure — the sale is queued for background sync
 // instead of blocking the till.
-const SALE_WRITE_TIMEOUT_MS = 8000;
+// FIX (false "offline" toast on genuinely online sales): originally 8000ms,
+// sized for the old two-separate-insert pattern. record_sale_atomic and
+// record_dispense_atomic now do more work per call — a row lock (FOR
+// UPDATE) plus multiple inserts, all inside one transaction, all in one
+// round-trip — so 8s was tight enough to occasionally fire on a slow-but-
+// working connection, and the timeout's own error message ("timed out")
+// matches the network-error classifier, which misrouted a genuinely
+// online sale into the "recorded offline" path. 15s gives the atomic RPC
+// realistic headroom while still catching a truly dead connection well
+// before a cashier would give up waiting.
+const SALE_WRITE_TIMEOUT_MS = 15000;
 function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Request timed out — weak or no connection")), ms);
