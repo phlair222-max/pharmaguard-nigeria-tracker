@@ -958,8 +958,6 @@ export const store = {
         .eq("status", "active")
         .maybeSingle();
 
-      console.log("[hydrate] membership lookup: found=", !!membership, "error=", membershipError?.message);
-
       if (!membership) {
         if (membershipError) {
           console.error("[hydrate] membership query failed:", membershipError.message);
