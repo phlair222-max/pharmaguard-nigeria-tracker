@@ -25,6 +25,21 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Building2,
   Users,
   Package,
@@ -34,7 +49,6 @@ import {
   Trash2,
   RefreshCw,
   LogIn,
-  AlertTriangle,
   Save,
   KeyRound,
   Plus,
@@ -44,6 +58,8 @@ import {
   ChevronDown,
   ChevronUp,
   Check,
+  Lock,
+  Loader2,
 } from "lucide-react";
 import {
   ALL_SCOPES,
@@ -94,6 +110,52 @@ type PlanRow = {
   can_audit_trail: boolean;
 };
 
+// ── View As snapshot shape ─────────────────────────────────────────────────
+// Mirrors exactly what admin_get_org_snapshot() returns. Deliberately does
+// NOT include controlled_dispense — see the RPC's own comments for why.
+type OrgSnapshotProduct = {
+  id: string;
+  name: string;
+  generic: string;
+  quantity: number;
+  reorder_level: number;
+  selling_price: number;
+  cost_price: number | null;
+  expiry: string | null;
+  supplier: string;
+  category: string;
+};
+type OrgSnapshotSaleItem = {
+  product_id: string | null;
+  name: string;
+  qty: number;
+  price: number;
+  cost: number | null;
+};
+type OrgSnapshotSale = {
+  id: string;
+  total: number;
+  profit: number;
+  payment: string;
+  cashier: string;
+  customer: string | null;
+  created_at: string;
+  sale_items: OrgSnapshotSaleItem[];
+};
+type OrgSnapshotSupplier = {
+  id: string;
+  name: string;
+  contact_person: string | null;
+  phone: string | null;
+  email: string | null;
+};
+type OrgSnapshot = {
+  organization: { id: string; name: string } & Record<string, unknown>;
+  products: OrgSnapshotProduct[];
+  suppliers: OrgSnapshotSupplier[];
+  sales: OrgSnapshotSale[];
+};
+
 function tierColor(tier: string) {
   if (tier === "pro") return "bg-violet-500/15 text-violet-400 border-violet-500/30";
   if (tier === "basic") return "bg-blue-500/15 text-blue-400 border-blue-500/30";
@@ -110,9 +172,20 @@ export default function AdminDashboard() {
   const [orgs, setOrgs] = useState<OrgRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [impersonating, setImpersonating] = useState<OrgRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<OrgRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // ── View As state ──────────────────────────────────────────────────────
+  // Everything the panel needs lives here, in this one component, sourced
+  // from exactly one place: the admin_get_org_snapshot RPC result. There is
+  // no separate "banner state" and "data state" to drift apart — the label
+  // shown in the dialog title and the tables rendered below it come from
+  // the same `snapshot` object.
+  const [viewingOrg, setViewingOrg] = useState<OrgRow | null>(null);
+  const [snapshot, setSnapshot] = useState<OrgSnapshot | null>(null);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
 
   // Gate: only render for the platform admin
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
@@ -204,8 +277,24 @@ export default function AdminDashboard() {
     setUpdatingId(null);
   };
 
+  // FIX: org deletion now goes through admin_delete_organization() instead
+  // of a raw `supabase.from("organizations").delete()`. Reasons:
+  //   1. sales -> sale_items is ON DELETE RESTRICT (deliberately, so Owners
+  //      can't hard-delete a single sale). That RESTRICT also blocked the
+  //      cascade path for a full org deletion — a raw delete would fail
+  //      with a FK violation for any org that has ever recorded a sale
+  //      with line items. The RPC explicitly clears sale_items first.
+  //   2. The RPC logs the deletion to audit_logs (with organization_id
+  //      set to NULL, since that column also cascades from organizations
+  //      — logging it null keeps the record after the org itself is gone)
+  //      BEFORE deleting anything, so there's a durable record of who
+  //      deleted what and when.
   const deleteOrg = async (org: OrgRow) => {
-    const { error } = await supabase.from("organizations").delete().eq("id", org.id);
+    setDeleting(true);
+    const { error } = await supabase.rpc("admin_delete_organization", {
+      p_org_id: org.id,
+    });
+    setDeleting(false);
     if (error) {
       toast.error("Delete failed: " + error.message);
     } else {
@@ -213,6 +302,38 @@ export default function AdminDashboard() {
       setOrgs((prev) => prev.filter((o) => o.id !== org.id));
     }
     setDeleteTarget(null);
+  };
+
+  // FIX: real "View As". Calls admin_get_org_snapshot(), a read-only,
+  // audit-logged RPC scoped to exactly this org. The dialog that renders
+  // below is the ONLY consumer of this data — the sidebar, Dashboard,
+  // Inventory, etc. are completely untouched by this action, so there is
+  // no possibility of the banner claiming one org while some other part
+  // of the UI shows a different one. See admin_get_org_snapshot_rpc.sql
+  // for why controlled_dispense (Poisons Register) is deliberately
+  // excluded from this payload.
+  const openViewAs = async (org: OrgRow) => {
+    setViewingOrg(org);
+    setSnapshot(null);
+    setSnapshotError(null);
+    setSnapshotLoading(true);
+    try {
+      const { data, error } = await supabase.rpc("admin_get_org_snapshot", {
+        p_org_id: org.id,
+      });
+      if (error) throw error;
+      setSnapshot(data as OrgSnapshot);
+    } catch (e: unknown) {
+      setSnapshotError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSnapshotLoading(false);
+    }
+  };
+
+  const closeViewAs = () => {
+    setViewingOrg(null);
+    setSnapshot(null);
+    setSnapshotError(null);
   };
 
   // ── Stats ─────────────────────────────────────────────────
@@ -242,24 +363,6 @@ export default function AdminDashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Impersonation banner */}
-      {impersonating && (
-        <div className="flex items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
-          <span className="text-sm text-amber-300 flex-1">
-            Viewing as <strong>{impersonating.name}</strong> — this is a read-only preview of their org data.
-          </span>
-          <Button
-            size="sm"
-            variant="outline"
-            className="border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
-            onClick={() => setImpersonating(null)}
-          >
-            Exit view
-          </Button>
-        </div>
-      )}
-
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -445,11 +548,8 @@ export default function AdminDashboard() {
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                            title="View as this org"
-                            onClick={() => {
-                              setImpersonating(org);
-                              toast.info(`Now previewing "${org.name}"`);
-                            }}
+                            title="View as this org (read-only)"
+                            onClick={() => openViewAs(org)}
                           >
                             <Eye className="h-3.5 w-3.5" />
                           </Button>
@@ -497,7 +597,7 @@ export default function AdminDashboard() {
       </Tabs>
 
       {/* Delete confirm dialog */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+      <AlertDialog open={!!deleteTarget} onOpenChange={() => !deleting && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete "{deleteTarget?.name}"?</AlertDialogTitle>
@@ -508,16 +608,164 @@ export default function AdminDashboard() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-red-600 hover:bg-red-700"
+              disabled={deleting}
               onClick={() => deleteTarget && deleteOrg(deleteTarget)}
             >
-              Delete permanently
+              {deleting ? "Deleting…" : "Delete permanently"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ── View As dialog ──────────────────────────────────────────────
+          The ONLY place this org's data is rendered. Title and tables are
+          both driven by `snapshot`, fetched fresh from
+          admin_get_org_snapshot() each time this opens — nothing here
+          reads from global app state, so there is no way for this label
+          to say one org while the data shown is actually another's. */}
+      <Dialog open={!!viewingOrg} onOpenChange={(o) => !o && closeViewAs()}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="h-4 w-4 text-amber-400" />
+              Viewing "{viewingOrg?.name}" — read-only
+            </DialogTitle>
+            <DialogDescription>
+              This preview is logged to the audit trail. It does not include Poisons
+              Register / controlled-dispense records. Nothing here can be edited.
+            </DialogDescription>
+          </DialogHeader>
+
+          {snapshotLoading && (
+            <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Loading org data…</span>
+            </div>
+          )}
+
+          {snapshotError && (
+            <div className="text-sm text-red-400 py-6 text-center">
+              Failed to load preview: {snapshotError}
+            </div>
+          )}
+
+          {snapshot && !snapshotLoading && (
+            <Tabs defaultValue="products" className="w-full">
+              <TabsList>
+                <TabsTrigger value="products">
+                  Products ({snapshot.products.length})
+                </TabsTrigger>
+                <TabsTrigger value="sales">
+                  Sales, last 90d ({snapshot.sales.length})
+                </TabsTrigger>
+                <TabsTrigger value="suppliers">
+                  Suppliers ({snapshot.suppliers.length})
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="products" className="mt-3">
+                {snapshot.products.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-6 text-center">No products.</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead className="text-right">Qty</TableHead>
+                        <TableHead className="text-right">Reorder</TableHead>
+                        <TableHead className="text-right">Price</TableHead>
+                        <TableHead>Supplier</TableHead>
+                        <TableHead>Expiry</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {snapshot.products.map((p) => (
+                        <TableRow key={p.id}>
+                          <TableCell className="text-xs">{p.name}</TableCell>
+                          <TableCell className="text-right text-xs">{p.quantity}</TableCell>
+                          <TableCell className="text-right text-xs">{p.reorder_level}</TableCell>
+                          <TableCell className="text-right text-xs">
+                            ₦{Number(p.selling_price).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-xs">{p.supplier}</TableCell>
+                          <TableCell className="text-xs">{p.expiry || "—"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </TabsContent>
+
+              <TabsContent value="sales" className="mt-3">
+                {snapshot.sales.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-6 text-center">
+                    No sales in the last 90 days.
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Cashier</TableHead>
+                        <TableHead>Items</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
+                        <TableHead>Payment</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {snapshot.sales.map((s) => (
+                        <TableRow key={s.id}>
+                          <TableCell className="text-xs">
+                            {new Date(s.created_at).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-xs">{s.cashier}</TableCell>
+                          <TableCell className="text-xs">{s.sale_items.length}</TableCell>
+                          <TableCell className="text-right text-xs">
+                            ₦{Number(s.total).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <Badge variant="outline">{s.payment}</Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </TabsContent>
+
+              <TabsContent value="suppliers" className="mt-3">
+                {snapshot.suppliers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-6 text-center">No suppliers.</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Contact</TableHead>
+                        <TableHead>Phone</TableHead>
+                        <TableHead>Email</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {snapshot.suppliers.map((s) => (
+                        <TableRow key={s.id}>
+                          <TableCell className="text-xs">{s.name}</TableCell>
+                          <TableCell className="text-xs">{s.contact_person || "—"}</TableCell>
+                          <TableCell className="text-xs">{s.phone || "—"}</TableCell>
+                          <TableCell className="text-xs">{s.email || "—"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </TabsContent>
+            </Tabs>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
