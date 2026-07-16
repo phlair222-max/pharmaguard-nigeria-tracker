@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -170,6 +170,23 @@ export default function Inventory() {
     });
   }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir]);
 
+  // FIX (slow mobile load): the table was rendering every row in `list`
+  // directly with no upper bound — with ~1000+ products that's 1000+
+  // <TableRow> elements (each with badges, buttons, computed status) built
+  // and diffed on every keystroke/filter change, which is what made
+  // Inventory noticeably slow, especially on mobile hardware. This slices
+  // the already-filtered/sorted list into pages of 50 for rendering, while
+  // search/filter/sort still operate over the full product set.
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageList = useMemo(
+    () => list.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [list, safePage]
+  );
+  useEffect(() => { setPage(1); }, [q, cat, filter, supFilter, expFilter, moveFilter]);
+
   const openNew = () => {
     setEditing(null); setDraft(empty); setSelectedNeml(null);
     setNemlResults([]); setNemlOpen(false);
@@ -266,7 +283,7 @@ export default function Inventory() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex flex-col gap-4 lg:h-full lg:min-h-0">
       <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Inventory</h1>
@@ -282,66 +299,76 @@ export default function Inventory() {
         </div>
       </div>
 
-      <Card className="flex min-h-0 flex-1 flex-col shadow-card">
+      <Card className="flex flex-col shadow-card lg:min-h-0 lg:flex-1">
         <CardHeader className="shrink-0 pb-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input placeholder="Search by name, generic, NAFDAC, batch..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
               </div>
-              <Button variant="outline" size="icon" title="Scan barcode to search" onClick={() => setBarcodeSearchOpen(true)}>
+              <Button variant="outline" size="icon" className="shrink-0" title="Scan barcode to search" onClick={() => setBarcodeSearchOpen(true)}>
                 <ScanLine className="h-4 w-4" />
               </Button>
             </div>
-            <Select value={cat} onValueChange={setCat}>
-              <SelectTrigger className="w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
-                {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={supFilter} onValueChange={setSupFilter}>
-              <SelectTrigger className="w-[160px]"><SelectValue placeholder="Supplier" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Suppliers</SelectItem>
-                {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={expFilter} onValueChange={setExpFilter}>
-              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Expiry" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All expiry</SelectItem>
-                <SelectItem value="green">Safe (&gt;6mo)</SelectItem>
-                <SelectItem value="yellow">1–6 months</SelectItem>
-                <SelectItem value="red">≤30 days / Expired</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={moveFilter} onValueChange={setMoveFilter}>
-              <SelectTrigger className="w-[140px]"><SelectValue placeholder="Movement" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All movement</SelectItem>
-                <SelectItem value="Fast">Fast</SelectItem>
-                <SelectItem value="Medium">Medium</SelectItem>
-                <SelectItem value="Slow">Slow</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filter} onValueChange={(v) => setParams(v === "all" ? {} : { filter: v })}>
-              <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All items</SelectItem>
-                <SelectItem value="low">Low stock</SelectItem>
-                <SelectItem value="near">Near expiry</SelectItem>
-                <SelectItem value="expired">Expired</SelectItem>
-                <SelectItem value="controlled">Controlled drugs</SelectItem>
-              </SelectContent>
-            </Select>
+            {/* FIX (mobile layout bug): these 5 selects used to be fixed-width
+                (170/160/150/140/150px) inside a flex-wrap row. On a ~375-425px
+                phone screen that meant one select per row — 5+ stacked rows —
+                which pushed the CardHeader tall enough to squeeze the table
+                below it down to almost nothing (that's the "can't scroll
+                down, only filters visible" bug). A 2-column grid on mobile
+                keeps this compact; sm: and up restores the original
+                horizontal flex-wrap layout with fixed widths. */}
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              <Select value={cat} onValueChange={setCat}>
+                <SelectTrigger className="w-full sm:w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={supFilter} onValueChange={setSupFilter}>
+                <SelectTrigger className="w-full sm:w-[160px]"><SelectValue placeholder="Supplier" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Suppliers</SelectItem>
+                  {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={expFilter} onValueChange={setExpFilter}>
+                <SelectTrigger className="w-full sm:w-[150px]"><SelectValue placeholder="Expiry" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All expiry</SelectItem>
+                  <SelectItem value="green">Safe (&gt;6mo)</SelectItem>
+                  <SelectItem value="yellow">1–6 months</SelectItem>
+                  <SelectItem value="red">≤30 days / Expired</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={moveFilter} onValueChange={setMoveFilter}>
+                <SelectTrigger className="w-full sm:w-[140px]"><SelectValue placeholder="Movement" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All movement</SelectItem>
+                  <SelectItem value="Fast">Fast</SelectItem>
+                  <SelectItem value="Medium">Medium</SelectItem>
+                  <SelectItem value="Slow">Slow</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={filter} onValueChange={(v) => setParams(v === "all" ? {} : { filter: v })}>
+                <SelectTrigger className="w-full col-span-2 sm:col-span-1 sm:w-[150px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All items</SelectItem>
+                  <SelectItem value="low">Low stock</SelectItem>
+                  <SelectItem value="near">Near expiry</SelectItem>
+                  <SelectItem value="expired">Expired</SelectItem>
+                  <SelectItem value="controlled">Controlled drugs</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardHeader>
-        <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
+        <CardContent className="p-0 lg:min-h-0 lg:flex-1 lg:overflow-hidden">
           <Table
             className="min-w-[1050px]"
-            containerClassName="h-full w-full overflow-x-scroll overflow-y-scroll [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
+            containerClassName="w-full overflow-x-auto lg:h-full lg:overflow-y-scroll [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
           >
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
@@ -382,7 +409,7 @@ export default function Inventory() {
                 {list.length === 0 && (
                   <TableRow><TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">No products found</TableCell></TableRow>
                 )}
-                {list.map((p) => {
+                {pageList.map((p) => {
                   const tier = expiryTier(p.expiry);
                   const days = daysUntil(p.expiry);
                   const low = p.quantity <= p.reorderLevel;
@@ -441,6 +468,18 @@ export default function Inventory() {
               </TableBody>
           </Table>
         </CardContent>
+        {list.length > 0 && (
+          <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-2.5 text-sm">
+            <span className="text-muted-foreground">
+              {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, list.length)} of {list.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Prev</Button>
+              <span className="text-xs text-muted-foreground">Page {safePage} of {totalPages}</span>
+              <Button size="sm" variant="outline" disabled={safePage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>Next</Button>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Add / Edit Product Dialog */}
