@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -173,17 +173,25 @@ export default function POS() {
         p.nafdac.toLowerCase().includes(term)
       );
     }
-    // FIX (slow mobile load): with no search term and the "All" filter
-    // selected, this rendered every product as its own button — 1000+ of
-    // them, all at once. POS is a search-first workflow (barcode scan or
-    // typeahead), so browsing the full unfiltered catalogue as a button
-    // grid isn't the intended path anyway. Cap it to a manageable batch
-    // until the person actually searches or picks Controlled/Low stock,
-    // which already narrow things down to a normal size.
-    if (!term && filter === "all") return list.slice(0, 60);
     return list;
   }, [q, products, filter]);
-  const cappedByDefault = !q.trim() && filter === "all" && products.length > 60;
+
+  // FIX (POS catalogue access): this used to hard-cap the unfiltered "All"
+  // view to the first 60 products with no way to see the rest except
+  // search/barcode — fine at ~65 products, not fine once inventory grew to
+  // 1000+. Now every filtered view (All/Controlled/Low stock, searched or
+  // not) is paginated instead of silently truncated, same Prev/Next pattern
+  // as Inventory, so the full catalogue is reachable by paging through it
+  // as well as by searching.
+  const POS_PAGE_SIZE = 60;
+  const [posPage, setPosPage] = useState(1);
+  const posTotalPages = Math.max(1, Math.ceil(results.length / POS_PAGE_SIZE));
+  const posSafePage = Math.min(posPage, posTotalPages);
+  const pageResults = useMemo(
+    () => results.slice((posSafePage - 1) * POS_PAGE_SIZE, posSafePage * POS_PAGE_SIZE),
+    [results, posSafePage]
+  );
+  useEffect(() => { setPosPage(1); }, [q, filter]);
 
   const counts = useMemo(() => ({
     all: products.length,
@@ -420,10 +428,10 @@ export default function POS() {
                   dashboard layout and needs its own scroll region. */}
               <div className="lg:max-h-[60vh] lg:overflow-auto pr-1">
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-                  {results.length === 0 && (
+                  {pageResults.length === 0 && (
                     <div className="col-span-full py-8 text-center text-sm text-muted-foreground">No products match</div>
                   )}
-                  {results.map((p) => {
+                  {pageResults.map((p) => {
                     const s = expiryStatus(p.expiry);
                     return (
                       <button key={p.id} onClick={() => add(p.id)}
@@ -442,9 +450,16 @@ export default function POS() {
                     );
                   })}
                 </div>
-                {cappedByDefault && (
-                  <div className="pt-2 text-center text-xs text-muted-foreground">
-                    Showing first 60 of {products.length} products — search by name or scan a barcode to find others.
+                {results.length > 0 && (
+                  <div className="flex items-center justify-between gap-2 pt-3 text-xs text-muted-foreground">
+                    <span>
+                      {(posSafePage - 1) * POS_PAGE_SIZE + 1}–{Math.min(posSafePage * POS_PAGE_SIZE, results.length)} of {results.length}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="outline" disabled={posSafePage <= 1} onClick={() => setPosPage((p) => Math.max(1, p - 1))}>Prev</Button>
+                      <span>Page {posSafePage} of {posTotalPages}</span>
+                      <Button size="sm" variant="outline" disabled={posSafePage >= posTotalPages} onClick={() => setPosPage((p) => Math.min(posTotalPages, p + 1))}>Next</Button>
+                    </div>
                   </div>
                 )}
               </div>
