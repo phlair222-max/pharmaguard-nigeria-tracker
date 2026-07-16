@@ -65,6 +65,8 @@ export default function Inventory() {
   const [receiveFor, setReceiveFor] = useState<Product | null>(null);
   const [receiveQty, setReceiveQty] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState<Product | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const [dupWarn, setDupWarn] = useState<Product[] | null>(null);
   const [customCats, setCustomCats] = useState<string[]>(() => loadCustom(CAT_KEY));
   const [customPacks, setCustomPacks] = useState<string[]>(() => loadCustom(PACK_KEY));
@@ -138,6 +140,14 @@ export default function Inventory() {
 
   const list = useMemo(() => {
     const filtered = products.filter((p) => {
+      // FIX (deleteProduct orphaning): archived products (active: false)
+      // stay in db.products so local state matches the DB row, but are
+      // hidden from the normal Inventory view by default. showArchived
+      // flips this to an archive-only view instead of adding archived
+      // items into the regular list, so daily use stays uncluttered.
+      const isActive = p.active !== false;
+      if (showArchived) { if (isActive) return false; }
+      else { if (!isActive) return false; }
       const t = expiryTier(p.expiry);
       const sold30 = velocity.get(p.id) || 0;
       const speed = movementSpeed(sold30);
@@ -168,7 +178,7 @@ export default function Inventory() {
       if (av > bv) return 1 * dir;
       return 0;
     });
-  }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir]);
+  }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir, showArchived]);
 
   // FIX (slow mobile load): the table was rendering every row in `list`
   // directly with no upper bound — with ~1000+ products that's 1000+
@@ -185,7 +195,7 @@ export default function Inventory() {
     () => list.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
     [list, safePage]
   );
-  useEffect(() => { setPage(1); }, [q, cat, filter, supFilter, expFilter, moveFilter]);
+  useEffect(() => { setPage(1); }, [q, cat, filter, supFilter, expFilter, moveFilter, showArchived]);
 
   const openNew = () => {
     setEditing(null); setDraft(empty); setSelectedNeml(null);
@@ -434,6 +444,14 @@ export default function Inventory() {
                   <SelectItem value="controlled">Controlled drugs</SelectItem>
                 </SelectContent>
               </Select>
+              <Button
+                variant={showArchived ? "default" : "outline"}
+                className="w-full col-span-2 sm:w-auto"
+                onClick={() => setShowArchived((v) => !v)}
+                title="Products with sales or dispense history are archived instead of deleted"
+              >
+                {showArchived ? "Showing archived" : "Show archived"}
+              </Button>
             </div>
           </div>
         </CardHeader>
@@ -529,9 +547,20 @@ export default function Inventory() {
                       <TableCell className="text-xs">{p.supplier}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
-                          <Button size="icon" variant="ghost" title="Receive stock" onClick={() => { setReceiveFor(p); setReceiveQty(p.reorderQuantity || 0); }}><PackagePlus className="h-4 w-4" /></Button>
-                          <Button size="icon" variant="ghost" title="Edit" onClick={() => openEdit(p)}><Pencil className="h-4 w-4" /></Button>
-                          <Button size="icon" variant="ghost" title="Delete" onClick={() => setConfirmDelete(p)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                          {p.active === false ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              title="Restore to Inventory"
+                              onClick={() => { store.restoreProduct(p.id); toast.success("Product restored"); }}
+                            >Restore</Button>
+                          ) : (
+                            <>
+                              <Button size="icon" variant="ghost" title="Receive stock" onClick={() => { setReceiveFor(p); setReceiveQty(p.reorderQuantity || 0); }}><PackagePlus className="h-4 w-4" /></Button>
+                              <Button size="icon" variant="ghost" title="Edit" onClick={() => openEdit(p)}><Pencil className="h-4 w-4" /></Button>
+                              <Button size="icon" variant="ghost" title="Delete" onClick={() => setConfirmDelete(p)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                            </>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -799,20 +828,40 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
+      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && !deletingId && setConfirmDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this product?</AlertDialogTitle>
             <AlertDialogDescription>
-              Permanently delete <span className="font-semibold">{confirmDelete?.name}</span> (Batch {confirmDelete?.batch})? This action cannot be undone.
+              Delete <span className="font-semibold">{confirmDelete?.name}</span> (Batch {confirmDelete?.batch})?
+              {" "}If it has no sales or dispense history it's removed permanently. If it does, it's archived instead —
+              hidden from Inventory but kept for your records, since sales and Poisons Register entries can't
+              reference a deleted product.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={!!deletingId}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => { if (confirmDelete) { store.deleteProduct(confirmDelete.id); toast.success("Product deleted"); setConfirmDelete(null); } }}
-            >Delete</AlertDialogAction>
+              disabled={!!deletingId}
+              onClick={async () => {
+                if (!confirmDelete) return;
+                const target = confirmDelete;
+                setDeletingId(target.id);
+                const result = await store.deleteProduct(target.id);
+                setDeletingId(null);
+                if (!result.ok) {
+                  toast.error(`Could not delete "${target.name}": ${result.error}`);
+                  return;
+                }
+                if (result.outcome === "archived") {
+                  toast.success(`"${target.name}" archived — it has sales history so it's hidden from Inventory but preserved for your records`);
+                } else {
+                  toast.success("Product deleted");
+                }
+                setConfirmDelete(null);
+              }}
+            >{deletingId ? "Deleting..." : "Delete"}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
