@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +17,17 @@ export default function Login() {
   const [signingIn, setSigningIn] = useState(false);
   const [signingUp, setSigningUp] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+
+  // FIX (mobile auto sign-in bug): on mobile, browser/keyboard autofill can
+  // fire a native "submit" event on the <form> the instant both fields get
+  // filled (e.g. tapping a saved-password suggestion, or the keyboard's
+  // "Go" action) — with no real click on the Sign In / Create Account
+  // button involved. That's what was signing people in without them
+  // tapping anything. This ref is only set to true inside the button's own
+  // onClick, right before its type="submit" triggers the form's submit
+  // event, so the submit handlers below can tell a real tap apart from an
+  // autofill/keyboard-triggered submit and ignore the latter.
+  const armedByClick = useRef(false);
 
   useEffect(() => {
     if (window.location.hash.includes("error")) {
@@ -54,6 +65,8 @@ export default function Login() {
 
   const signIn = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!armedByClick.current) return; // ignore autofill/keyboard-triggered submits
+    armedByClick.current = false;
     setSigningIn(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setSigningIn(false);
@@ -64,6 +77,8 @@ export default function Login() {
 
   const signUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!armedByClick.current) return; // ignore autofill/keyboard-triggered submits
+    armedByClick.current = false;
     setSigningUp(true);
     const { error } = await supabase.auth.signUp({
       email, password,
@@ -126,7 +141,7 @@ export default function Login() {
                   <Input id="p1" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
                 </div>
                 {/* Sign In button only disabled by its own state — not googleBusy */}
-                <Button type="submit" className="w-full" disabled={signingIn}>
+                <Button type="submit" className="w-full" disabled={signingIn} onClick={() => { armedByClick.current = true; }}>
                   {signingIn
                     ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Signing in…</>
                     : "Sign In"
@@ -150,7 +165,7 @@ export default function Login() {
                   <Input id="p2" type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
                 </div>
                 {/* Sign Up button only disabled by its own state — not googleBusy */}
-                <Button type="submit" className="w-full" disabled={signingUp}>
+                <Button type="submit" className="w-full" disabled={signingUp} onClick={() => { armedByClick.current = true; }}>
                   {signingUp
                     ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Creating account…</>
                     : "Create Account"
