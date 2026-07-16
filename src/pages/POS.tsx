@@ -173,8 +173,17 @@ export default function POS() {
         p.nafdac.toLowerCase().includes(term)
       );
     }
+    // FIX (slow mobile load): with no search term and the "All" filter
+    // selected, this rendered every product as its own button — 1000+ of
+    // them, all at once. POS is a search-first workflow (barcode scan or
+    // typeahead), so browsing the full unfiltered catalogue as a button
+    // grid isn't the intended path anyway. Cap it to a manageable batch
+    // until the person actually searches or picks Controlled/Low stock,
+    // which already narrow things down to a normal size.
+    if (!term && filter === "all") return list.slice(0, 60);
     return list;
   }, [q, products, filter]);
+  const cappedByDefault = !q.trim() && filter === "all" && products.length > 60;
 
   const counts = useMemo(() => ({
     all: products.length,
@@ -395,7 +404,21 @@ export default function POS() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="max-h-[60vh] overflow-auto pr-1">
+              {/* FIX (mobile "only 2 products" bug): max-h-[60vh] capped this
+                  box's height and made it independently scrollable — but on
+                  a phone the box sits below the title, Quick Sale button,
+                  search bar and filter pills, so only its first ~1 row was
+                  visible in the actual viewport. Touch-scrolling inside the
+                  box scrolled *within* that small internal region instead of
+                  moving the page down to reveal the rest of it, making it
+                  look like only 2 products existed. Below lg (where the
+                  layout is a single stacked column, not the 3-column
+                  dashboard), this now flows naturally with the page so the
+                  whole page — including every product — scrolls together.
+                  The internal 60vh scroll pane is kept from lg up, where the
+                  product grid sits beside the cart in a fixed-height
+                  dashboard layout and needs its own scroll region. */}
+              <div className="lg:max-h-[60vh] lg:overflow-auto pr-1">
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
                   {results.length === 0 && (
                     <div className="col-span-full py-8 text-center text-sm text-muted-foreground">No products match</div>
@@ -419,6 +442,11 @@ export default function POS() {
                     );
                   })}
                 </div>
+                {cappedByDefault && (
+                  <div className="pt-2 text-center text-xs text-muted-foreground">
+                    Showing first 60 of {products.length} products — search by name or scan a barcode to find others.
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
