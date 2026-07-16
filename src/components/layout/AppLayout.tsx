@@ -35,7 +35,7 @@ const ALL_ITEMS = [
 ] as const;
 
 function AppSidebar() {
-  const { state } = useSidebar();
+  const { state, isMobile, setOpenMobile } = useSidebar();
   const collapsed = state === "collapsed";
   const settings = useStore((s) => s.settings);
   const user = useStore((s) => s.user);
@@ -44,6 +44,16 @@ function AppSidebar() {
   const role = resolveEffectiveRole(user);
 
   const adminItem = { title: "Platform Admin", url: "/admin", icon: ShieldCheck };
+
+  // FIX (mobile nav bug): on mobile the sidebar renders as an overlay Sheet
+  // (see ui/sidebar.tsx — `isMobile ? <Sheet open={openMobile} ...>`).
+  // Clicking a NavLink navigates the underlying route just fine, but nothing
+  // was ever telling the Sheet to close, so the overlay stayed open on top
+  // of the new page until the user manually collapsed it themselves. This
+  // closes the mobile drawer the instant a nav item is tapped.
+  const closeMobileNav = () => {
+    if (isMobile) setOpenMobile(false);
+  };
 
   return (
     <Sidebar collapsible="icon">
@@ -92,6 +102,7 @@ function AppSidebar() {
                         <NavLink
                           to={item.url}
                           end={item.url === "/"}
+                          onClick={closeMobileNav}
                           className={({ isActive }) =>
                             `flex items-center gap-2 ${isActive ? "bg-sidebar-accent text-sidebar-primary font-medium" : ""}`
                           }
@@ -109,6 +120,7 @@ function AppSidebar() {
                   <SidebarMenuButton asChild>
                     <NavLink
                       to={adminItem.url}
+                      onClick={closeMobileNav}
                       className={({ isActive }) =>
                         `flex items-center gap-2 ${isActive ? "bg-sidebar-accent text-sidebar-primary font-medium" : ""}`
                       }
@@ -194,16 +206,14 @@ function ThemeToggle() {
 
 export default function AppLayout() {
   return (
-    // SidebarProvider renders its OWN wrapper div around everything inside
-    // it, and that wrapper defaults to `min-h-screen` — not `h-screen`.
-    // That default wrapper is the true outermost boundary of the app, sitting
-    // above the div below. Overriding it here with `h-screen overflow-hidden`
-    // is the actual fix: without this, the page had no real ceiling at the
-    // very top of the tree, so everything nested inside (including
-    // `main`'s overflow-auto and Inventory's own table scroll container)
-    // never got a bounded height to work with, no matter what was set
-    // further down.
-    <SidebarProvider className="h-screen overflow-hidden">
+    // FIX (mobile display bug): h-screen resolves to 100vh, which on mobile
+    // browsers is the LARGEST possible viewport height — it does not shrink
+    // when the browser's address bar / toolbar is visible. That mismatch
+    // between the CSS height and the real visible viewport is what was
+    // cutting off / squishing Inventory, POS, and other pages on phones.
+    // h-dvh uses the dynamic viewport unit, which tracks the actual visible
+    // area as mobile browser chrome shows/hides.
+    <SidebarProvider className="h-dvh overflow-hidden">
       <div className="flex h-full w-full overflow-hidden bg-background">
         <AppSidebar />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
