@@ -24,6 +24,14 @@ export type Product = {
   barcode?: string;
   nemlDrugId?: string;
   itemType?: "pharmaceutical" | "non_pharmaceutical";
+  // FIX (deleteProduct orphaning): a product is archived (active: false)
+  // instead of hard-deleted whenever it has existing sale_items or
+  // controlled_dispense history, so those historical rows never point at
+  // nothing. Archived products are hidden from the default Inventory view
+  // but stay queryable for records/audits. Undefined/missing is treated as
+  // true (every product before this field existed was, by definition,
+  // active).
+  active?: boolean;
 };
 
 export type SaleItem = { productId: string; name: string; qty: number; price: number; cost?: number };
@@ -446,12 +454,53 @@ export const store = {
     persist();
     void supabasePush.updateProduct(id, patch);
   },
-  deleteProduct(id: string) {
+  // FIX (deleteProduct orphaning sales/dispense history): this used to
+  // remove the product from local state immediately and fire the cloud
+  // delete in the background (void supabasePush.deleteProduct(id)) with no
+  // check for existing sale_items/controlled_dispense rows pointing at it.
+  // 12 products deleted that way on 2026-06-19 orphaned 77 sale_items rows
+  // and 1 controlled_dispense (Poisons Register) row.
+  //
+  // Now this is async and awaits the delete_or_archive_product RPC before
+  // touching local state at all, so the local store can never disagree
+  // with what actually happened in the database:
+  //   - no history -> RPC hard-deletes -> removed from db.products, same
+  //     as before for genuine data-entry mistakes.
+  //   - has history -> RPC soft-archives (active: false) -> product stays
+  //     in db.products (so local state matches the DB row) but is filtered
+  //     out of the default Inventory view; sale_items/controlled_dispense
+  //     are never touched.
+  //   - offline/RPC error -> local state is left completely untouched and
+  //     the caller gets { ok: false }, so the UI can show an error instead
+  //     of silently pretending the delete happened.
+  async deleteProduct(id: string): Promise<
+    | { ok: true; outcome: "deleted" | "archived" }
+    | { ok: false; error: string }
+  > {
     const p = db.products.find((p) => p.id === id);
-    db.products = db.products.filter((p) => p.id !== id);
-    if (p) this.audit("Deleted product", p.name);
+    const result = await supabasePush.deleteOrArchiveProduct(id);
+    if (!result.ok) {
+      return { ok: false, error: result.error || "Could not reach server" };
+    }
+    if (result.outcome === "archived") {
+      db.products = db.products.map((pr) => (pr.id === id ? { ...pr, active: false } : pr));
+      if (p) this.audit("Archived product", p.name, "Has sales/dispense history — hidden from Inventory, preserved for records");
+    } else {
+      db.products = db.products.filter((pr) => pr.id !== id);
+      if (p) this.audit("Deleted product", p.name);
+    }
     persist();
-    void supabasePush.deleteProduct(id);
+    return { ok: true, outcome: result.outcome };
+  },
+  // Restores a previously archived product back into the default Inventory
+  // view. Does not touch sale_items/controlled_dispense — those were never
+  // affected by archiving in the first place.
+  restoreProduct(id: string) {
+    const p = db.products.find((p) => p.id === id);
+    db.products = db.products.map((pr) => (pr.id === id ? { ...pr, active: true } : pr));
+    if (p) this.audit("Restored product", p.name);
+    persist();
+    void supabasePush.updateProduct(id, { active: true });
   },
   receiveStock(id: string, qty: number) {
     const p = db.products.find((p) => p.id === id);
@@ -1186,6 +1235,7 @@ function rowToProduct(r: any): Product {
     supplierId: r.supplier_id || undefined, category: r.category || "", description: r.description || "",
     controlled: !!r.controlled, barcode: r.barcode || undefined,
     nemlDrugId: r.neml_drug_id || undefined, itemType: r.item_type || "pharmaceutical",
+    active: r.active !== false,
   };
 }
 function productPatchToRow(patch: Partial<Product>) {
@@ -1197,6 +1247,7 @@ function productPatchToRow(patch: Partial<Product>) {
     sellingPrice: "selling_price", supplier: "supplier", supplierId: "supplier_id",
     category: "category", description: "description", controlled: "controlled",
     barcode: "barcode", nemlDrugId: "neml_drug_id", itemType: "item_type",
+    active: "active",
   };
   for (const [k, v] of Object.entries(patch)) {
     if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
@@ -1308,10 +1359,33 @@ const supabasePush = {
     const { error } = await supabase.from("products").update(row).eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not sync product update"); }
   },
-  async deleteProduct(id: string) {
-    const ctx = await this._context(); if (!ctx) return;
-    const { error } = await supabase.from("products").delete().eq("id", id).eq("organization_id", ctx.orgId);
-    if (error) { console.error(error); toast.error("Could not delete product in cloud"); }
+  // FIX (deleteProduct orphaning): replaced the raw
+  // supabase.from("products").delete() with the delete_or_archive_product
+  // RPC (see migration_delete_or_archive_product.sql). The RPC does the
+  // history check and the delete-or-archive decision inside one locked
+  // transaction, so there's no window where the client could delete a
+  // product between checking and acting. Returns the outcome so
+  // store.deleteProduct() can keep local state in sync with what actually
+  // happened server-side, instead of assuming the delete always succeeded.
+  async deleteOrArchiveProduct(id: string): Promise<
+    { ok: true; outcome: "deleted" | "archived" } | { ok: false; error?: string }
+  > {
+    const ctx = await this._context();
+    if (!ctx) return { ok: false, error: "offline" };
+    try {
+      const { data, error } = await withTimeout(
+        supabase.rpc("delete_or_archive_product", { p_product_id: id }),
+        SALE_WRITE_TIMEOUT_MS,
+      );
+      if (error) {
+        console.error(error);
+        return { ok: false, error: error.message };
+      }
+      const outcome: "deleted" | "archived" = data === "archived" ? "archived" : "deleted";
+      return { ok: true, outcome };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || "Network error" };
+    }
   },
   // FIX (atomic stock decrement): swapped from the old two-insert
   // (sales + sale_items) plus a client-side loop of per-item
