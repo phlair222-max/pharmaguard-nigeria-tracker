@@ -276,8 +276,80 @@ export default function Inventory() {
         }
         return obj as Omit<Product, "id">;
       });
-      store.importProducts(rows);
-      toast.success(`Imported ${rows.length} products`);
+      // FIX (root cause of the mass duplicate-product bug, revised for
+      // restock support, revised AGAIN for expiry correctness):
+      //
+      // CSV import used to insert every row as a brand-new product
+      // unconditionally — that's how several products ended up with 29-32
+      // duplicate copies each. A flat "skip/merge if the NAME already
+      // exists" rule isn't right either: restocking almost always means a
+      // NEW BATCH with a NEW expiry date, even for the same drug —
+      // store.receiveStock() only bumps quantity, it doesn't touch batch
+      // or expiry. Matching on name alone would silently fold genuinely
+      // new stock into the old batch's record, corrupting the exact thing
+      // this app exists to track.
+      //
+      // So the match key is name + batch (the real-world identifier for a
+      // specific delivery). If a row has no batch number, expiry is used
+      // as the next-best differentiator, since a new expiry date almost
+      // always means a new delivery even without a batch number on hand.
+      // Only when name AND batch (or name AND expiry) match an existing
+      // row is it treated as "more of literally the same batch" and
+      // restocked via receiveStock(). Same name but a different batch/
+      // expiry creates a new row — a new batch of an existing drug,
+      // exactly what "Add anyway" already allows in the manual dialog.
+      const keyOf = (p: { name: string; batch?: string; expiry?: string }) => {
+        const name = p.name.trim().toLowerCase();
+        const batch = (p.batch || "").trim().toLowerCase();
+        const expiry = (p.expiry || "").trim();
+        if (batch) return `${name}__batch:${batch}`;
+        if (expiry) return `${name}__exp:${expiry}`;
+        return name; // no batch or expiry on either side — nothing to tell batches apart by
+      };
+
+      const grouped = new Map<string, Omit<Product, "id">>();
+      for (const row of rows) {
+        if (!row.name?.trim()) continue;
+        const key = keyOf(row);
+        const existing = grouped.get(key);
+        if (existing) existing.quantity += row.quantity; // same batch repeated within the file
+        else grouped.set(key, { ...row });
+      }
+
+      const existingByKey = new Map(products.map((p) => [keyOf(p), p]));
+      const toCreate: Omit<Product, "id">[] = [];
+      let restockedCount = 0;
+      let restockedQty = 0;
+      let newBatchCount = 0;
+
+      grouped.forEach((row, key) => {
+        const match = existingByKey.get(key);
+        if (match) {
+          if (row.quantity > 0) {
+            store.receiveStock(match.id, row.quantity);
+            restockedCount++;
+            restockedQty += row.quantity;
+          }
+        } else {
+          toCreate.push(row);
+          if (products.some((p) => p.name.trim().toLowerCase() === row.name.trim().toLowerCase())) {
+            newBatchCount++; // same drug name exists, but a different batch/expiry — new batch, not a dup
+          }
+        }
+      });
+
+      if (toCreate.length > 0) store.importProducts(toCreate);
+
+      if (toCreate.length === 0 && restockedCount === 0) {
+        toast.error("Nothing to import — the file had no usable rows");
+        return;
+      }
+      const parts: string[] = [];
+      const brandNewCount = toCreate.length - newBatchCount;
+      if (brandNewCount > 0) parts.push(`${brandNewCount} new product${brandNewCount === 1 ? "" : "s"} added`);
+      if (newBatchCount > 0) parts.push(`${newBatchCount} new batch${newBatchCount === 1 ? "" : "es"} of existing drugs added`);
+      if (restockedCount > 0) parts.push(`${restockedCount} batch${restockedCount === 1 ? "" : "es"} restocked (+${restockedQty} total units)`);
+      toast.success(parts.join(" · "));
     };
     reader.readAsText(file);
   };
