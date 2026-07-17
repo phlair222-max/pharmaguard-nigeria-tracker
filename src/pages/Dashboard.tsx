@@ -105,16 +105,22 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
       <head>
         <title>NAFDAC Disposal Report ${refNo}</title>
         <style>
+          /* FIX (misaligned printed table): this was "Times New Roman" — a
+             proportional serif font — while the on-screen preview just
+             above uses font-mono. A fixed-width, space-padded table only
+             lines up in a monospace font; in a proportional font every
+             character takes different width, so columns drift out of
+             alignment. Now print matches what's already shown on screen. */
           body {
-            font-family: "Times New Roman", Times, serif;
-            font-size: 12pt;
-            line-height: 1.6;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 10.5pt;
+            line-height: 1.5;
             margin: 2cm;
             color: #000;
           }
           pre {
-            font-family: "Times New Roman", Times, serif;
-            font-size: 12pt;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 10.5pt;
             white-space: pre-wrap;
             word-wrap: break-word;
             margin: 0;
