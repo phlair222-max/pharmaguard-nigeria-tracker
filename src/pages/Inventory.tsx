@@ -14,7 +14,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap, MapPin } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
@@ -31,6 +31,17 @@ const PACK_KEY = "pg_custom_pack_sizes";
 const loadCustom = (k: string): string[] => { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } };
 const saveCustom = (k: string, v: string[]) => localStorage.setItem(k, JSON.stringify(v));
 
+// FIX (shelf location): builds a compact "A3 / S2 / B1"-style display
+// string from whichever of the three fields are actually set — a product
+// might only have an aisle recorded, or all three. Returns null (render
+// nothing) when none are set, so products without a location don't show
+// an empty "Loc:" label cluttering the row.
+function formatShelfLocation(p: Pick<Product, "shelfAisle" | "shelfShelf" | "shelfBin">): string | null {
+  const parts = [p.shelfAisle, p.shelfShelf, p.shelfBin].filter((v) => v && v.trim());
+  if (parts.length === 0) return null;
+  return parts.join(" / ");
+}
+
 type NemlDrug = {
   id: string;
   name: string;
@@ -46,6 +57,7 @@ const empty: Omit<Product, "id"> = {
   reorderLevel: 10, reorderQuantity: 30, packSize: "10 Tablets",
   costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
   controlled: false, itemType: "pharmaceutical", nemlDrugId: undefined,
+  shelfAisle: "", shelfShelf: "", shelfBin: "",
 };
 
 export default function Inventory() {
@@ -140,11 +152,6 @@ export default function Inventory() {
 
   const list = useMemo(() => {
     const filtered = products.filter((p) => {
-      // FIX (deleteProduct orphaning): archived products (active: false)
-      // stay in db.products so local state matches the DB row, but are
-      // hidden from the normal Inventory view by default. showArchived
-      // flips this to an archive-only view instead of adding archived
-      // items into the regular list, so daily use stays uncluttered.
       const isActive = p.active !== false;
       if (showArchived) { if (isActive) return false; }
       else { if (!isActive) return false; }
@@ -164,7 +171,10 @@ export default function Inventory() {
       return p.name.toLowerCase().includes(term)
         || p.generic.toLowerCase().includes(term)
         || p.nafdac.toLowerCase().includes(term)
-        || p.batch.toLowerCase().includes(term);
+        || p.batch.toLowerCase().includes(term)
+        || (p.shelfAisle || "").toLowerCase().includes(term)
+        || (p.shelfShelf || "").toLowerCase().includes(term)
+        || (p.shelfBin || "").toLowerCase().includes(term);
     });
     const dir = sortDir === "asc" ? 1 : -1;
     const numericKeys = new Set(["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"]);
@@ -180,13 +190,6 @@ export default function Inventory() {
     });
   }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir, showArchived]);
 
-  // FIX (slow mobile load): the table was rendering every row in `list`
-  // directly with no upper bound — with ~1000+ products that's 1000+
-  // <TableRow> elements (each with badges, buttons, computed status) built
-  // and diffed on every keystroke/filter change, which is what made
-  // Inventory noticeably slow, especially on mobile hardware. This slices
-  // the already-filtered/sorted list into pages of 50 for rendering, while
-  // search/filter/sort still operate over the full product set.
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(1);
   const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
@@ -261,7 +264,7 @@ export default function Inventory() {
   };
 
   const exportCSV = () => {
-    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled"];
+    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled","shelfAisle","shelfShelf","shelfBin"];
     const rows = products.map((p) => headers.map((h) => JSON.stringify((p as any)[h] ?? "")).join(","));
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -286,35 +289,13 @@ export default function Inventory() {
         }
         return obj as Omit<Product, "id">;
       });
-      // FIX (root cause of the mass duplicate-product bug, revised for
-      // restock support, revised AGAIN for expiry correctness):
-      //
-      // CSV import used to insert every row as a brand-new product
-      // unconditionally — that's how several products ended up with 29-32
-      // duplicate copies each. A flat "skip/merge if the NAME already
-      // exists" rule isn't right either: restocking almost always means a
-      // NEW BATCH with a NEW expiry date, even for the same drug —
-      // store.receiveStock() only bumps quantity, it doesn't touch batch
-      // or expiry. Matching on name alone would silently fold genuinely
-      // new stock into the old batch's record, corrupting the exact thing
-      // this app exists to track.
-      //
-      // So the match key is name + batch (the real-world identifier for a
-      // specific delivery). If a row has no batch number, expiry is used
-      // as the next-best differentiator, since a new expiry date almost
-      // always means a new delivery even without a batch number on hand.
-      // Only when name AND batch (or name AND expiry) match an existing
-      // row is it treated as "more of literally the same batch" and
-      // restocked via receiveStock(). Same name but a different batch/
-      // expiry creates a new row — a new batch of an existing drug,
-      // exactly what "Add anyway" already allows in the manual dialog.
       const keyOf = (p: { name: string; batch?: string; expiry?: string }) => {
         const name = p.name.trim().toLowerCase();
         const batch = (p.batch || "").trim().toLowerCase();
         const expiry = (p.expiry || "").trim();
         if (batch) return `${name}__batch:${batch}`;
         if (expiry) return `${name}__exp:${expiry}`;
-        return name; // no batch or expiry on either side — nothing to tell batches apart by
+        return name;
       };
 
       const grouped = new Map<string, Omit<Product, "id">>();
@@ -322,7 +303,7 @@ export default function Inventory() {
         if (!row.name?.trim()) continue;
         const key = keyOf(row);
         const existing = grouped.get(key);
-        if (existing) existing.quantity += row.quantity; // same batch repeated within the file
+        if (existing) existing.quantity += row.quantity;
         else grouped.set(key, { ...row });
       }
 
@@ -343,7 +324,7 @@ export default function Inventory() {
         } else {
           toCreate.push(row);
           if (products.some((p) => p.name.trim().toLowerCase() === row.name.trim().toLowerCase())) {
-            newBatchCount++; // same drug name exists, but a different batch/expiry — new batch, not a dup
+            newBatchCount++;
           }
         }
       });
@@ -387,20 +368,12 @@ export default function Inventory() {
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input placeholder="Search by name, generic, NAFDAC, batch..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+                <Input placeholder="Search by name, generic, NAFDAC, batch, shelf location..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
               </div>
               <Button variant="outline" size="icon" className="shrink-0" title="Scan barcode to search" onClick={() => setBarcodeSearchOpen(true)}>
                 <ScanLine className="h-4 w-4" />
               </Button>
             </div>
-            {/* FIX (mobile layout bug): these 5 selects used to be fixed-width
-                (170/160/150/140/150px) inside a flex-wrap row. On a ~375-425px
-                phone screen that meant one select per row — 5+ stacked rows —
-                which pushed the CardHeader tall enough to squeeze the table
-                below it down to almost nothing (that's the "can't scroll
-                down, only filters visible" bug). A 2-column grid on mobile
-                keeps this compact; sm: and up restores the original
-                horizontal flex-wrap layout with fixed widths. */}
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
               <Select value={cat} onValueChange={setCat}>
                 <SelectTrigger className="w-full sm:w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
@@ -506,6 +479,18 @@ export default function Inventory() {
                   const sold30 = velocity.get(p.id) || 0;
                   const speed = movementSpeed(sold30);
                   const tierLabel = tier === "red" ? (days < 0 ? "Expired" : "Critical") : tier === "yellow" ? "Warning" : "Safe";
+                  const shelfLoc = formatShelfLocation(p);
+                  // FIX (controlled-drug location compliance nudge):
+                  // controlled substances are the one product category where
+                  // "we know exactly where this is" carries real regulatory
+                  // weight — this flags controlled products with NO shelf
+                  // location recorded at all, distinct from the general
+                  // shelf-location feature which is opt-in for every other
+                  // product. Not enforced (location is still free text, not
+                  // validated against a designated secure-storage setting),
+                  // just a visible prompt to fill it in for exactly the
+                  // products where it matters most.
+                  const controlledMissingLocation = !!p.controlled && !shelfLoc;
                   return (
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
                       <TableCell className="pl-4">
@@ -513,6 +498,14 @@ export default function Inventory() {
                           {p.name}
                           {p.itemType === "non_pharmaceutical" && <Package2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
                           {p.controlled && <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive" title="Controlled drug" />}
+                          {controlledMissingLocation && (
+                            <span
+                              className="inline-flex items-center gap-0.5 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[10px] font-medium text-amber-600 dark:text-amber-500"
+                              title="Controlled drug with no shelf location recorded — consider recording where this is securely stored"
+                            >
+                              <MapPin className="h-2.5 w-2.5" /> No location
+                            </span>
+                          )}
                           {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                         </div>
                         <div className="text-[11px] text-muted-foreground mt-0.5 space-x-2">
@@ -520,6 +513,11 @@ export default function Inventory() {
                           {p.generic && <span>· {p.generic}</span>}
                           {p.nafdac && <span>· {p.nafdac}</span>}
                           {p.packSize && <span>· {p.packSize}</span>}
+                          {shelfLoc && (
+                            <span className="inline-flex items-center gap-0.5">
+                              · <MapPin className="h-2.5 w-2.5" /> {shelfLoc}
+                            </span>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{p.batch}</TableCell>
@@ -798,6 +796,27 @@ export default function Inventory() {
                 >
                   <ScanLine className="h-4 w-4" />
                 </Button>
+              </div>
+            </div>
+
+            <div className="col-span-2">
+              <Label className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5 text-muted-foreground" /> Shelf Location (optional)</Label>
+              <div className="mt-1 grid grid-cols-3 gap-2">
+                <Input
+                  placeholder="Aisle (e.g. A3)"
+                  value={draft.shelfAisle || ""}
+                  onChange={(e) => setDraft({ ...draft, shelfAisle: e.target.value })}
+                />
+                <Input
+                  placeholder="Shelf (e.g. S2)"
+                  value={draft.shelfShelf || ""}
+                  onChange={(e) => setDraft({ ...draft, shelfShelf: e.target.value })}
+                />
+                <Input
+                  placeholder="Bin (e.g. B1)"
+                  value={draft.shelfBin || ""}
+                  onChange={(e) => setDraft({ ...draft, shelfBin: e.target.value })}
+                />
               </div>
             </div>
 
