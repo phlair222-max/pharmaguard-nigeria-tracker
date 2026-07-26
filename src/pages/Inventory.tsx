@@ -14,7 +14,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap, MapPin, Archive, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, ShoppingBasket, GraduationCap, MapPin, Archive, ChevronLeft, ChevronRight } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
@@ -509,7 +509,7 @@ export default function Inventory() {
                           <span className={cn("truncate max-w-[280px]", !p.name?.trim() && "italic text-muted-foreground font-normal")}>
                             {p.name?.trim() || "(unnamed product)"}
                           </span>
-                          {p.itemType === "non_pharmaceutical" && <Package2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
+                          {p.itemType === "non_pharmaceutical" && <ShoppingBasket className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
                           {p.controlled && <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive" title="Controlled drug" />}
                           {controlledMissingLocation && (
                             <span
@@ -645,7 +645,7 @@ export default function Inventory() {
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
-              <Package2 className="h-3.5 w-3.5" /> Non-Pharmaceutical
+              <ShoppingBasket className="h-3.5 w-3.5" /> Non-Pharmaceutical
             </button>
           </div>
 
