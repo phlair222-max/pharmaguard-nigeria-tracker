@@ -14,7 +14,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap, MapPin } from "lucide-react";
+import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, Package2, GraduationCap, MapPin, Archive, ChevronLeft, ChevronRight } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
 import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
 import { toast } from "sonner";
@@ -374,23 +374,31 @@ export default function Inventory() {
                 <ScanLine className="h-4 w-4" />
               </Button>
             </div>
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+            {/* FIX (layout density): previously a grid that wrapped onto a
+                second row on mid-width screens ("Show archived" ended up
+                stranded alone below the other filters) and a separate
+                2-column grid hack for mobile. Replaced with a single
+                horizontally-scrollable row — the same interaction pattern
+                the product table below already uses — so filters never
+                wrap into an uneven multi-row layout at any width; if they
+                don't all fit, the row scrolls instead. */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-0.5 [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30">
               <Select value={cat} onValueChange={setCat}>
-                <SelectTrigger className="w-full sm:w-[170px]"><SelectValue placeholder="Category" /></SelectTrigger>
+                <SelectTrigger className="w-[150px] shrink-0"><SelectValue placeholder="Category" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Categories</SelectItem>
                   {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                 </SelectContent>
               </Select>
               <Select value={supFilter} onValueChange={setSupFilter}>
-                <SelectTrigger className="w-full sm:w-[160px]"><SelectValue placeholder="Supplier" /></SelectTrigger>
+                <SelectTrigger className="w-[140px] shrink-0"><SelectValue placeholder="Supplier" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Suppliers</SelectItem>
                   {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
               <Select value={expFilter} onValueChange={setExpFilter}>
-                <SelectTrigger className="w-full sm:w-[150px]"><SelectValue placeholder="Expiry" /></SelectTrigger>
+                <SelectTrigger className="w-[130px] shrink-0"><SelectValue placeholder="Expiry" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All expiry</SelectItem>
                   <SelectItem value="green">Safe (&gt;6mo)</SelectItem>
@@ -399,7 +407,7 @@ export default function Inventory() {
                 </SelectContent>
               </Select>
               <Select value={moveFilter} onValueChange={setMoveFilter}>
-                <SelectTrigger className="w-full sm:w-[140px]"><SelectValue placeholder="Movement" /></SelectTrigger>
+                <SelectTrigger className="w-[125px] shrink-0"><SelectValue placeholder="Movement" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All movement</SelectItem>
                   <SelectItem value="Fast">Fast</SelectItem>
@@ -408,7 +416,7 @@ export default function Inventory() {
                 </SelectContent>
               </Select>
               <Select value={filter} onValueChange={(v) => setParams(v === "all" ? {} : { filter: v })}>
-                <SelectTrigger className="w-full col-span-2 sm:col-span-1 sm:w-[150px]"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-[135px] shrink-0"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All items</SelectItem>
                   <SelectItem value="low">Low stock</SelectItem>
@@ -417,13 +425,16 @@ export default function Inventory() {
                   <SelectItem value="controlled">Controlled drugs</SelectItem>
                 </SelectContent>
               </Select>
+              <div className="h-6 w-px shrink-0 bg-border" />
               <Button
                 variant={showArchived ? "default" : "outline"}
-                className="w-full col-span-2 sm:w-auto"
+                size="sm"
+                className="shrink-0 gap-1.5"
                 onClick={() => setShowArchived((v) => !v)}
                 title="Products with sales or dispense history are archived instead of deleted"
               >
-                {showArchived ? "Showing archived" : "Show archived"}
+                <Archive className="h-3.5 w-3.5" />
+                {showArchived ? "Archived" : "Archive"}
               </Button>
             </div>
           </div>
@@ -433,8 +444,8 @@ export default function Inventory() {
             className="min-w-[1050px]"
             containerClassName="w-full overflow-x-auto lg:h-full lg:overflow-y-scroll [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
           >
-              <TableHeader className="sticky top-0 z-10 bg-card">
-                <TableRow>
+              <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_hsl(var(--border))]">
+                <TableRow className="hover:bg-transparent">
                   {(() => {
                     const SortBtn = ({ k, label, align = "left" }: { k: SortKey; label: string; align?: "left" | "right" }) => (
                       <button
@@ -453,9 +464,9 @@ export default function Inventory() {
                       </button>
                     );
                     return <>
-                      <TableHead className="min-w-[180px] pl-4"><SortBtn k="name" label="Product" /></TableHead>
-                      <TableHead className="min-w-[90px]"><SortBtn k="batch" label="Batch" /></TableHead>
-                      <TableHead className="min-w-[110px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
+                      <TableHead className="min-w-[220px] pl-4"><SortBtn k="name" label="Product" /></TableHead>
+                      <TableHead className="min-w-[130px]"><SortBtn k="batch" label="Batch" /></TableHead>
+                      <TableHead className="min-w-[120px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
                       <TableHead className="min-w-[80px]">Status</TableHead>
                       <TableHead className="text-right min-w-[70px]"><SortBtn k="quantity" label="Stock" align="right" /></TableHead>
                       <TableHead className="text-right min-w-[70px]"><SortBtn k="reorderLevel" label="Reorder" align="right" /></TableHead>
@@ -493,9 +504,11 @@ export default function Inventory() {
                   const controlledMissingLocation = !!p.controlled && !shelfLoc;
                   return (
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
-                      <TableCell className="pl-4">
-                        <div className="font-medium flex items-center gap-1.5 leading-tight">
-                          {p.name}
+                      <TableCell className="pl-4 py-3.5">
+                        <div className="font-medium flex items-center gap-1.5 leading-tight" title={p.name || "(unnamed product)"}>
+                          <span className={cn("truncate max-w-[280px]", !p.name?.trim() && "italic text-muted-foreground font-normal")}>
+                            {p.name?.trim() || "(unnamed product)"}
+                          </span>
                           {p.itemType === "non_pharmaceutical" && <Package2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
                           {p.controlled && <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive" title="Controlled drug" />}
                           {controlledMissingLocation && (
@@ -508,42 +521,47 @@ export default function Inventory() {
                           )}
                           {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                         </div>
-                        <div className="text-[11px] text-muted-foreground mt-0.5 space-x-2">
-                          <span>{p.category}</span>
-                          {p.generic && <span>· {p.generic}</span>}
-                          {p.nafdac && <span>· {p.nafdac}</span>}
-                          {p.packSize && <span>· {p.packSize}</span>}
+                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <span className="truncate">
+                            {[p.category, p.generic, p.nafdac, p.packSize].filter(Boolean).join(" · ")}
+                          </span>
                           {shelfLoc && (
-                            <span className="inline-flex items-center gap-0.5">
-                              · <MapPin className="h-2.5 w-2.5" /> {shelfLoc}
+                            <span className="inline-flex shrink-0 items-center gap-0.5">
+                              <MapPin className="h-2.5 w-2.5" /> {shelfLoc}
                             </span>
                           )}
                         </div>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{p.batch}</TableCell>
-                      <TableCell className="text-xs whitespace-nowrap">
+                      <TableCell className="py-3.5 text-xs">
+                        {p.batch ? (
+                          <span className="font-mono text-muted-foreground whitespace-nowrap">{p.batch}</span>
+                        ) : (
+                          <span className="text-muted-foreground/50">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="py-3.5 text-xs whitespace-nowrap">
                         <div>{format(new Date(p.expiry), "dd MMM yyyy")}</div>
                         <div className="text-[11px] text-muted-foreground">{days < 0 ? `${-days}d ago` : `${days}d left`}</div>
                       </TableCell>
-                      <TableCell>
-                        <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold", expiryBadgeClass(tier))}>
-                          <span className={cn("h-2 w-2 rounded-full", tier === "red" ? "bg-destructive" : tier === "yellow" ? "bg-warning" : "bg-success")} />
+                      <TableCell className="py-3.5">
+                        <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap", expiryBadgeClass(tier))}>
+                          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tier === "red" ? "bg-destructive" : tier === "yellow" ? "bg-warning" : "bg-success")} />
                           {tierLabel}
                         </span>
                       </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn("font-semibold", low && "text-destructive")}>{p.quantity}</span>
-                        {low && <div className="text-[10px] text-destructive">LOW STOCK</div>}
+                      <TableCell className="py-3.5 text-right">
+                        <span className={cn("font-semibold tabular-nums", low && "text-destructive")}>{p.quantity}</span>
+                        {low && <div className="text-[10px] font-medium text-destructive whitespace-nowrap">LOW STOCK</div>}
                       </TableCell>
-                      <TableCell className="text-right text-xs">{p.reorderLevel}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={movementBadgeClass(speed)}>{speed}</Badge>
-                        <div className="text-[10px] text-muted-foreground">{sold30}/30d</div>
+                      <TableCell className="py-3.5 text-right text-xs tabular-nums text-muted-foreground">{p.reorderLevel}</TableCell>
+                      <TableCell className="py-3.5">
+                        <Badge variant="outline" className={cn("whitespace-nowrap", movementBadgeClass(speed))}>{speed}</Badge>
+                        <div className="text-[10px] text-muted-foreground mt-1">{sold30}/30d</div>
                       </TableCell>
-                      <TableCell className="text-right text-xs">{p.costPrice != null ? NGN(p.costPrice) : <span className="text-muted-foreground">—</span>}</TableCell>
-                      <TableCell className="text-right font-medium">{NGN(p.sellingPrice)}</TableCell>
-                      <TableCell className="text-xs">{p.supplier}</TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="py-3.5 text-right text-xs tabular-nums">{p.costPrice != null ? NGN(p.costPrice) : <span className="text-muted-foreground">—</span>}</TableCell>
+                      <TableCell className="py-3.5 text-right font-medium tabular-nums">{NGN(p.sellingPrice)}</TableCell>
+                      <TableCell className="py-3.5 text-xs truncate max-w-[110px]" title={p.supplier}>{p.supplier || <span className="text-muted-foreground/50">—</span>}</TableCell>
+                      <TableCell className="py-3.5 text-right">
                         <div className="flex justify-end gap-1">
                           {p.active === false ? (
                             <Button
@@ -568,14 +586,32 @@ export default function Inventory() {
           </Table>
         </CardContent>
         {list.length > 0 && (
-          <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-2.5 text-sm">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-2 text-xs">
             <span className="text-muted-foreground">
               {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, list.length)} of {list.length}
             </span>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Prev</Button>
-              <span className="text-xs text-muted-foreground">Page {safePage} of {totalPages}</span>
-              <Button size="sm" variant="outline" disabled={safePage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>Next</Button>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="icon"
+                variant="outline"
+                className="h-7 w-7"
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                title="Previous page"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <span className="px-1 text-muted-foreground whitespace-nowrap">Page {safePage} of {totalPages}</span>
+              <Button
+                size="icon"
+                variant="outline"
+                className="h-7 w-7"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                title="Next page"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
             </div>
           </div>
         )}
