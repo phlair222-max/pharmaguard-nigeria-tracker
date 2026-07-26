@@ -24,14 +24,15 @@ export type Product = {
   barcode?: string;
   nemlDrugId?: string;
   itemType?: "pharmaceutical" | "non_pharmaceutical";
-  // FIX (deleteProduct orphaning): a product is archived (active: false)
-  // instead of hard-deleted whenever it has existing sale_items or
-  // controlled_dispense history, so those historical rows never point at
-  // nothing. Archived products are hidden from the default Inventory view
-  // but stay queryable for records/audits. Undefined/missing is treated as
-  // true (every product before this field existed was, by definition,
-  // active).
   active?: boolean;
+  // FIX (shelf location): structured as Aisle / Shelf / Bin rather than a
+  // single free-text field — sortable/filterable independently, and
+  // extensible later (e.g. a branch/zone layer for multi-branch pharmacies)
+  // without reworking the shape. All three optional — location tracking is
+  // opt-in per product.
+  shelfAisle?: string;
+  shelfShelf?: string;
+  shelfBin?: string;
 };
 
 export type SaleItem = { productId: string; name: string; qty: number; price: number; cost?: number };
@@ -44,12 +45,6 @@ export type Sale = {
   cashier: string;
   customer?: string;
   createdAt: string;
-  // FIX (offline support): "pending" means this sale exists locally and
-  // has NOT yet been confirmed saved to Supabase — it will keep retrying
-  // in the background via syncPendingSales(). "synced" means Supabase has
-  // confirmed the write. Sales loaded directly from Supabase are always
-  // "synced" by definition. Missing/undefined is treated as "synced" for
-  // backward compatibility with sales recorded before this field existed.
   syncStatus?: "synced" | "pending";
 };
 
@@ -64,21 +59,12 @@ export type AuditEntry = {
 
 export type User = {
   username: string;
-  // FIX: role is not guaranteed to be set the instant a session resolves.
-  // For a genuinely new/unverified session it stays undefined (fail-closed)
-  // until hydrateFromSupabase() confirms the real membership row. For a
-  // RETURNING session (same user as last time, on this device), setAuthUser
-  // bridges in the last confirmed role immediately so the app stays usable
-  // offline — hydrateFromSupabase then silently re-confirms/corrects it
-  // once a connection is available. See setAuthUser() for details.
   role?: "Admin" | "Pharmacist";
   organizationId?: string;
   memberRole?: "Owner" | "Pharmacist" | "Cashier";
   canViewMargins?: boolean;
   subscriptionTier?: string;
   subscriptionExpiresAt?: string | null;
-  // FIX: surfaces recurring-billing state so the UI can show a grace-period
-  // warning and days-remaining before an automatic downgrade to Free.
   billingStatus?: "active" | "grace_period";
   gracePeriodStartedAt?: string | null;
 };
@@ -87,9 +73,9 @@ export type PlanConfig = {
   tier: string;
   displayName: string;
   priceMonthly: number;
-  maxProducts: number;          // -1 = unlimited
-  maxStaff: number;             // -1 = unlimited
-  maxSalesHistoryDays: number;  // -1 = unlimited
+  maxProducts: number;
+  maxStaff: number;
+  maxSalesHistoryDays: number;
   canAiForecast: boolean;
   canPoisonsRegister: boolean;
   canReports: boolean;
@@ -113,10 +99,6 @@ export type ControlledDispense = {
   prescriptionRef: string;
   cashier: string;
   at: string;
-  // COMPLIANCE FIX: mirrors Sale.syncStatus. A Poisons Register entry must
-  // never be silently lost to a dropped connection — "pending" means it
-  // exists locally and is actively being retried in the background until
-  // Supabase confirms it; "synced" means it's confirmed durable server-side.
   syncStatus?: "synced" | "pending";
 };
 
@@ -165,46 +147,18 @@ type DB = {
   credentials: Credential[];
   plan: PlanConfig | null;
   extendedSalesLoaded: boolean;
-  // FIX: true once we have a role we're willing to act on — either freshly
-  // confirmed by hydrateFromSupabase(), or bridged in from a returning
-  // session's last confirmed state (see setAuthUser). RouteGuard should
-  // show a neutral loading state while this is false, rather than either
-  // granting or denying access based on incomplete information.
   authReady: boolean;
-  // FIX: best-effort connectivity flag, updated by the browser's
-  // online/offline events. Not a perfect signal (a device can report
-  // "online" while actually having no usable connection), but useful for
-  // UI messaging. The real source of truth for "did this request actually
-  // reach Supabase" is always the try/catch around the request itself.
   isOffline: boolean;
 };
 
 const KEY = "pharmaguard_db_v3";
 const ADMIN_EMAIL = "phlair222@gmail.com";
 
-// ── PERFORMANCE FIX (Session 8) ──────────────────────────────────────────────
 const SALES_HYDRATE_DAYS = 90;
 function salesCutoffISO(): string {
   return new Date(Date.now() - SALES_HYDRATE_DAYS * 86400000).toISOString();
 }
 
-// FIX (offline support): wraps a Supabase call with a hard timeout. On weak
-// connections common on Nigerian mobile networks, a request can hang for a
-// long time without ever technically erroring out. Without this, a cashier
-// on a bad connection would see "Saving sale..." indefinitely. If the
-// timeout fires, the promise rejects and the caller's catch block treats it
-// exactly like a network failure — the sale is queued for background sync
-// instead of blocking the till.
-// FIX (false "offline" toast on genuinely online sales): originally 8000ms,
-// sized for the old two-separate-insert pattern. record_sale_atomic and
-// record_dispense_atomic now do more work per call — a row lock (FOR
-// UPDATE) plus multiple inserts, all inside one transaction, all in one
-// round-trip — so 8s was tight enough to occasionally fire on a slow-but-
-// working connection, and the timeout's own error message ("timed out")
-// matches the network-error classifier, which misrouted a genuinely
-// online sale into the "recorded offline" path. 15s gives the atomic RPC
-// realistic headroom while still catching a truly dead connection well
-// before a cashier would give up waiting.
 const SALE_WRITE_TIMEOUT_MS = 15000;
 function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -216,14 +170,6 @@ function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
   });
 }
 
-// FIX (offline support): best-effort classifier for "this failed because
-// we couldn't reach the server" vs "this failed because the server
-// rejected it". A thrown exception (network down, DNS failure, our own
-// timeout above) is always treated as network-related. A structured
-// {error} object returned BY Supabase (e.g. an RLS rejection, a constraint
-// violation) means the request did reach the server and got a real
-// answer — that should not be silently queued and retried forever, since
-// retrying an intrinsically-rejected write will never succeed.
 function isNetworkErrorMessage(msg: string | undefined | null): boolean {
   if (!msg) return true;
   return /fetch|network|timed out|timeout|offline|ENOTFOUND|Failed to fetch/i.test(msg);
@@ -357,22 +303,7 @@ function load(): DB {
     parsed.loginActivity = parsed.loginActivity || [];
     parsed.credentials = parsed.credentials || [];
     parsed.extendedSalesLoaded = parsed.extendedSalesLoaded || false;
-    // FIX (offline support): sales recorded before this update have no
-    // syncStatus. We assume they're already synced rather than re-pushing
-    // them blindly (we can't safely tell whether they already exist
-    // server-side, and re-inserting could create duplicates). Any sale
-    // that was truly lost by the old bug, before this fix shipped, is not
-    // auto-recovered by this migration — that's a one-time historical gap,
-    // not an ongoing one.
     parsed.sales = (parsed.sales || []).map((s) => ({ ...s, syncStatus: s.syncStatus ?? "synced" }));
-    // FIX: authReady always starts false on a fresh page load and must be
-    // earned again via setAuthUser()/hydrateFromSupabase() — but we
-    // deliberately KEEP the persisted user.role/memberRole (unlike an
-    // earlier version of this fix, which stripped them). Wiping them here
-    // would defeat offline bootstrapping: setAuthUser() below is what
-    // decides whether a cached role can be trusted, based on whether this
-    // is the SAME user as last time. See setAuthUser() for the actual
-    // security boundary.
     parsed.authReady = false;
     parsed.isOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
     return parsed;
@@ -384,34 +315,9 @@ function load(): DB {
 let db: DB = load();
 const listeners = new Set<() => void>();
 
-// SECURITY FIX (transient-layer caching leak): controlledDispense and
-// sales.customer can carry patient/customer identifiers — for a Poisons
-// Register, this is compliance-sensitive data. Writing it to localStorage
-// unencrypted and indefinitely means it's readable by any XSS on this
-// origin, any browser extension with storage access, or anyone with
-// physical/DevTools access to an unlocked till — and it outlives logout
-// unless explicitly cleared.
-//
-// Once a record has synced to Supabase, the local device no longer needs
-// to hold the identifying fields — Supabase is the source of truth and the
-// data is encrypted at rest there. So we redact identifiers from the
-// LOCAL PERSISTED COPY as soon as syncStatus is "synced", while leaving
-// them intact in the in-memory `db` object (so the current session's UI —
-// e.g. "last dispensed to Jane Doe" — still displays correctly until the
-// next reload). The only identifiers that ever sit on disk in plaintext
-// are ones still genuinely offline-pending, and only until the next
-// successful sync.
 function sanitizeForPersist(state: DB): DB {
   return {
     ...state,
-    // Now that ControlledDispense tracks syncStatus (see COMPLIANCE FIX
-    // above), gate redaction on it the same way sales already are:
-    // "pending" entries keep their real identifiers on disk because
-    // syncPendingControlledDispenses() needs the actual data to retry the
-    // write — redacting a still-unsynced entry would permanently lose the
-    // patient/prescriber details it needs to eventually reach Supabase.
-    // Once synced, the source of truth is the (encrypted-at-rest) server
-    // copy, so the local disk copy is redacted.
     controlledDispense: state.controlledDispense.map((d) =>
       d.syncStatus === "synced" || d.syncStatus === undefined
         ? { ...d, patientName: "[synced — see cloud record]", patientPhone: undefined, prescriber: "[synced — see cloud record]", prescriberRegNo: undefined }
@@ -454,25 +360,6 @@ export const store = {
     persist();
     void supabasePush.updateProduct(id, patch);
   },
-  // FIX (deleteProduct orphaning sales/dispense history): this used to
-  // remove the product from local state immediately and fire the cloud
-  // delete in the background (void supabasePush.deleteProduct(id)) with no
-  // check for existing sale_items/controlled_dispense rows pointing at it.
-  // 12 products deleted that way on 2026-06-19 orphaned 77 sale_items rows
-  // and 1 controlled_dispense (Poisons Register) row.
-  //
-  // Now this is async and awaits the delete_or_archive_product RPC before
-  // touching local state at all, so the local store can never disagree
-  // with what actually happened in the database:
-  //   - no history -> RPC hard-deletes -> removed from db.products, same
-  //     as before for genuine data-entry mistakes.
-  //   - has history -> RPC soft-archives (active: false) -> product stays
-  //     in db.products (so local state matches the DB row) but is filtered
-  //     out of the default Inventory view; sale_items/controlled_dispense
-  //     are never touched.
-  //   - offline/RPC error -> local state is left completely untouched and
-  //     the caller gets { ok: false }, so the UI can show an error instead
-  //     of silently pretending the delete happened.
   async deleteProduct(id: string): Promise<
     | { ok: true; outcome: "deleted" | "archived" }
     | { ok: false; error: string }
@@ -492,9 +379,6 @@ export const store = {
     persist();
     return { ok: true, outcome: result.outcome };
   },
-  // Restores a previously archived product back into the default Inventory
-  // view. Does not touch sale_items/controlled_dispense — those were never
-  // affected by archiving in the first place.
   restoreProduct(id: string) {
     const p = db.products.find((p) => p.id === id);
     db.products = db.products.map((pr) => (pr.id === id ? { ...pr, active: true } : pr));
@@ -520,26 +404,6 @@ export const store = {
     void supabasePush.updateProduct(id, { quantity: p.quantity });
   },
 
-  // FIX (offline support — this is the core of the offline promise):
-  //
-  // The sale is written to local state and persisted FIRST, unconditionally,
-  // so the cashier is never blocked by connectivity. It's marked
-  // syncStatus: "pending". We then attempt the Supabase write:
-  //
-  //   • Write succeeds            → marked "synced". Done.
-  //   • Write fails, network-y    → stays "pending" locally. Stock is
-  //                                  already deducted, receipt can still
-  //                                  print, cashier keeps working. A
-  //                                  background process (syncPendingSales)
-  //                                  will push it up automatically the
-  //                                  moment a connection is available.
-  //   • Write fails, NOT network  → rolled back entirely. This is a real
-  //                                  rejection (bad data, permissions,
-  //                                  etc.) that will never succeed just by
-  //                                  retrying, so we don't pretend it
-  //                                  worked — the cashier is told plainly
-  //                                  and can retry after checking with the
-  //                                  Owner.
   async recordSale(sale: Omit<Sale, "id" | "createdAt" | "syncStatus">): Promise<
     | { ok: true; sale: Sale; offline: boolean }
     | { ok: false; error?: string }
@@ -575,25 +439,14 @@ export const store = {
     db.sales = prevSales;
     db.products = prevProducts;
     persist();
-    // SECURITY FIX: no longer interpolates the raw Postgres/Supabase error
-    // string into the on-screen toast — that string can contain schema
-    // details (column names, constraint names, RLS policy names) which
-    // shouldn't be visible to an unprivileged, possibly walk-up cashier.
-    // The real detail still goes to the console for whoever's debugging.
     console.error("[recordSale] failed:", result.error);
     toast.error("Sale could not be saved. Please try again, or contact your pharmacy owner if this continues.", { duration: 8000 });
     return { ok: false, error: result.error };
   },
 
-  // FIX (offline support): retries every locally-pending (unsynced) sale,
-  // oldest first, so receipts land on the server in chronological order.
-  // Called on: successful hydrate, the 30s poll (_syncFromServer), and the
-  // browser's 'online' event. Stops at the first still-failing sale in a
-  // given pass (almost always means we're still offline) rather than
-  // hammering every pending sale on every retry.
   async syncPendingSales(): Promise<void> {
     if (!db.user?.organizationId) return;
-    if (this._syncingSales) return; // FIX: another sync pass is already in flight — no-op
+    if (this._syncingSales) return;
     const pending = db.sales.filter((s) => s.syncStatus === "pending");
     if (!pending.length) return;
 
@@ -667,22 +520,12 @@ export const store = {
     if (db.loginActivity.length > 100) db.loginActivity.length = 100;
     if (!ok || !role) { persist(); return false; }
     db.user = { username, role };
-    // FIX: this legacy local-credential login path doesn't go through
-    // hydrateFromSupabase() at all, so it must set authReady itself —
-    // otherwise RouteGuard would show "Checking access..." forever for
-    // these demo accounts.
     db.authReady = true;
     this.audit("Login", username);
     persist(); return true;
   },
   logout() {
     if (db.user) this.audit("Logout", db.user.username);
-    // SECURITY FIX (transient-layer caching leak): logout previously only
-    // cleared db.user, leaving the entire cached dataset — including any
-    // still-pending (unredacted) controlled-dispense or sale customer
-    // data — sitting in localStorage on a shared/handoff device after the
-    // cashier walks away. Purge the persisted cache outright on logout;
-    // the next login re-hydrates cleanly from Supabase.
     this.stopRealtime();
     localStorage.removeItem(KEY);
     db = emptyDb();
@@ -708,22 +551,6 @@ export const store = {
     this.audit("Cleared other sessions", currentUser ?? "system");
     persist();
   },
-  // COMPLIANCE FIX (offline durability for the Poisons Register): this
-  // used to fire-and-forget the Supabase insert (`void
-  // supabasePush.insertControlled(entry)`), with no retry, no pending
-  // state, and no way to know if it ever actually landed. On a dropped
-  // connection, the entry existed ONLY in local state and — unlike
-  // sales, which already had this fixed — there was no
-  // syncPendingControlledDispenses() to recover it. A controlled
-  // dispense recorded while offline could be silently lost forever the
-  // moment the tab closed or localStorage was cleared.
-  //
-  // Now mirrors recordSale() exactly: optimistic local write marked
-  // "pending" → attempt Supabase write → network failure stays "pending"
-  // and is retried by syncPendingControlledDispenses() (called on hydrate,
-  // the 30s poll, and the browser 'online' event) → genuine rejection
-  // (bad data, permissions) rolls back entirely and tells the pharmacist
-  // plainly, since retrying a real rejection will never succeed.
   async recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier" | "syncStatus">): Promise<
     | { ok: true; entry: ControlledDispense; offline: boolean }
     | { ok: false; error?: string }
@@ -748,10 +575,6 @@ export const store = {
       const idx = db.controlledDispense.findIndex((c) => c.id === entry.id);
       if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced" };
       this.audit("Controlled dispense", d.productName, `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`);
-      // NOTE: no client-side updateProduct push here — record_dispense_atomic
-      // already decremented stock server-side inside its own locked
-      // transaction. The true server quantity flows back down naturally on
-      // the next poll/hydrate, same pattern as record_sale_atomic.
       persist();
       return { ok: true, entry: (idx !== -1 ? db.controlledDispense[idx] : entry), offline: false };
     }
@@ -774,12 +597,9 @@ export const store = {
     return { ok: false, error: result.error };
   },
 
-  // COMPLIANCE FIX: retries every locally-pending controlled-dispense
-  // record, oldest first — same pattern as syncPendingSales(). Called on
-  // hydrate, the 30s poll, and the browser 'online' event.
   async syncPendingControlledDispenses(): Promise<void> {
     if (!db.user?.organizationId) return;
-    if (this._syncingControlled) return; // FIX: another sync pass is already in flight — no-op
+    if (this._syncingControlled) return;
     const pending = db.controlledDispense.filter((c) => c.syncStatus === "pending");
     if (!pending.length) return;
 
@@ -816,29 +636,6 @@ export const store = {
     void supabasePush.insertProducts(newRows);
   },
 
-  // FIX (root fix for both the Owner-flash bug AND offline usability):
-  //
-  // If this is the SAME user who was last confirmed on this device (we
-  // still have their username + a confirmed memberRole from a previous
-  // successful hydrate), we bridge that cached role in immediately and
-  // mark authReady = true right away. This is what lets a Cashier open
-  // the app with no signal and still ring up sales — we already know who
-  // they are and what they're allowed to do, from last time we could
-  // verify it. hydrateFromSupabase() then re-confirms (or corrects) this
-  // in the background the moment a connection is available.
-  //
-  // If this is a NEW or unrecognized session (different email than what
-  // was cached, or nothing cached at all), we do NOT guess a role — it
-  // stays undefined and authReady stays false until Supabase confirms the
-  // real membership. This is the fix for the original bug, where every
-  // fresh session was briefly (or, on a bad connection, not-so-briefly)
-  // treated as "Admin" regardless of the person's real role.
-  //
-  // Trade-off worth knowing: if an Owner changes a Cashier's role, or the
-  // org's subscription lapses, while that Cashier's device is offline, the
-  // device won't find out until it reconnects. This is the same trade-off
-  // every offline-capable POS makes (Square, Shopify POS, etc.) — treat it
-  // as "reconciles automatically on reconnect", not "instant everywhere".
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
       db.user = null;
@@ -852,7 +649,6 @@ export const store = {
     }
 
     if (db.user && db.user.username === u.email && db.user.memberRole) {
-      // Returning, already-verified session — trust it provisionally.
       db.authReady = true;
       persist();
       return;
@@ -866,17 +662,6 @@ export const store = {
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
   _pollInterval: null as ReturnType<typeof setInterval> | null,
   _hydrating: false,
-  // FIX (duplicate sync toasts): syncPendingSales/syncPendingControlledDispenses
-  // are called from three independent triggers — the 30s poll, hydrate, and
-  // the browser 'online' event — with no coordination between them. If two
-  // fire close together (very likely right after reconnecting, which is
-  // exactly when all three tend to trigger near-simultaneously), each one
-  // independently reads the same "pending" record before the other has
-  // finished writing "synced" back, so both proceed to sync it — the RPC's
-  // idempotency means neither call errors, but the record gets reported as
-  // synced multiple times, producing duplicate/stacked toasts for what is
-  // really one sync. These flags make each sync function a no-op while a
-  // previous call of the same kind is still in flight.
   _syncingSales: false,
   _syncingControlled: false,
 
@@ -892,8 +677,6 @@ export const store = {
   },
 
   async _syncFromServer(orgId: string) {
-    // FIX (offline support): always give pending sales AND pending
-    // controlled-dispense records a chance to sync on the same cadence.
     void this.syncPendingSales();
     void this.syncPendingControlledDispenses();
 
@@ -908,11 +691,6 @@ export const store = {
       ]);
       let changed = false;
       if (salesR.data) {
-        // FIX (offline support): MERGE instead of overwrite. Overwriting
-        // db.sales wholesale with the server's copy would silently delete
-        // any locally-pending (not-yet-synced) offline sale that the
-        // server doesn't know about yet — exactly the "sale disappeared"
-        // symptom, just from a different code path.
         const serverSales = salesR.data.map(rowToSale);
         const serverIds = new Set(serverSales.map((s) => s.id));
         const pendingLocal = db.sales.filter((s) => s.syncStatus === "pending" && !serverIds.has(s.id));
@@ -934,10 +712,6 @@ export const store = {
           db.settings = { ...db.settings, ...rowToSettings(orgR.data) };
           changed = true;
         }
-        // FIX: keep billing/tier state fresh via the same poll/realtime
-        // path — so a renewal or grace-period change made by the
-        // scheduled renew-subscriptions job shows up without a full
-        // re-login.
         if (db.user) {
           const newTier = orgR.data.subscription_tier ?? "free";
           const newExpiry = orgR.data.subscription_expires_at ?? null;
@@ -1010,11 +784,6 @@ export const store = {
       if (!membership) {
         if (membershipError) {
           console.error("[hydrate] membership query failed:", membershipError.message);
-          // FIX (offline support): if we already bridged in a cached role
-          // for this exact user in setAuthUser(), authReady is already
-          // true and the app is usable — this is just a background
-          // refresh that couldn't complete, not a hard stop. Only alert
-          // if we have NO usable cached state at all.
           if (!db.authReady) {
             toast.error("Could not verify your pharmacy account — check your connection and reload.");
           }
@@ -1076,15 +845,9 @@ export const store = {
         memberRole,
         canViewMargins,
       };
-      // FIX: this is the moment the role is actually confirmed by
-      // Supabase — authoritative, overrides any bridged/cached value.
       db.authReady = true;
       persist();
 
-      // FIX (offline support): now that org context is confirmed, give
-      // any offline-queued sales AND controlled-dispense records from
-      // before this login/reconnect a chance to sync right away, instead
-      // of waiting for the next poll.
       void this.syncPendingSales();
       void this.syncPendingControlledDispenses();
 
@@ -1105,9 +868,6 @@ export const store = {
 
       db.products = (prodsR.data || []).map(rowToProduct);
 
-      // FIX (offline support): same merge logic as _syncFromServer — keep
-      // any locally-pending sale that the server doesn't have yet, so a
-      // reload right after an offline sale doesn't wipe it out.
       const serverSales = (salesR.data || []).map(rowToSale);
       const serverIds = new Set(serverSales.map((s: Sale) => s.id));
       const pendingLocal = db.sales.filter((s) => s.syncStatus === "pending" && !serverIds.has(s.id));
@@ -1223,6 +983,7 @@ function productToRow(p: Product, userId: string, orgId: string) {
     supplier_id: p.supplierId || null, category: p.category, description: p.description || null,
     controlled: !!p.controlled, barcode: p.barcode || null,
     neml_drug_id: p.nemlDrugId || null, item_type: p.itemType || "pharmaceutical",
+    shelf_aisle: p.shelfAisle || null, shelf_shelf: p.shelfShelf || null, shelf_bin: p.shelfBin || null,
   };
 }
 function rowToProduct(r: any): Product {
@@ -1236,6 +997,7 @@ function rowToProduct(r: any): Product {
     controlled: !!r.controlled, barcode: r.barcode || undefined,
     nemlDrugId: r.neml_drug_id || undefined, itemType: r.item_type || "pharmaceutical",
     active: r.active !== false,
+    shelfAisle: r.shelf_aisle || undefined, shelfShelf: r.shelf_shelf || undefined, shelfBin: r.shelf_bin || undefined,
   };
 }
 function productPatchToRow(patch: Partial<Product>) {
@@ -1248,6 +1010,7 @@ function productPatchToRow(patch: Partial<Product>) {
     category: "category", description: "description", controlled: "controlled",
     barcode: "barcode", nemlDrugId: "neml_drug_id", itemType: "item_type",
     active: "active",
+    shelfAisle: "shelf_aisle", shelfShelf: "shelf_shelf", shelfBin: "shelf_bin",
   };
   for (const [k, v] of Object.entries(patch)) {
     if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
@@ -1259,7 +1022,6 @@ function rowToSale(r: any): Sale {
     id: r.id, total: Number(r.total) || 0, profit: Number(r.profit) || 0,
     payment: r.payment, cashier: r.cashier || "", customer: r.customer || undefined,
     createdAt: r.created_at,
-    // Any row loaded FROM Supabase is, by definition, already saved there.
     syncStatus: "synced",
     items: (r.sale_items || []).map((it: any) => ({
       productId: it.product_id, name: it.name, qty: it.qty,
@@ -1292,7 +1054,6 @@ function rowToControlled(r: any): ControlledDispense {
     quantity: r.quantity || 0, amount: Number(r.amount) || 0, patientName: r.patient_name,
     patientPhone: r.patient_phone || "", prescriber: r.prescriber, prescriberRegNo: r.prescriber_reg_no || "",
     prescriptionRef: r.prescription_ref, cashier: r.cashier || "", at: r.at,
-    // Any row loaded FROM Supabase is, by definition, already saved there.
     syncStatus: "synced",
   };
 }
@@ -1324,13 +1085,6 @@ function settingsPatchToRow(p: Partial<PharmacySettings>) {
 }
 
 const supabasePush = {
-  // FIX (offline support): getSession() reads the session already persisted
-  // to localStorage by supabase-js and does NOT make a network call, unlike
-  // getUser() which always re-validates against the Auth server. Using
-  // getSession() here means we can still resolve "who is this" while
-  // offline, so a sale write attempt gets far enough to correctly fail as
-  // a network error (and get queued) instead of failing this earlier check
-  // for an unrelated reason and being silently dropped.
   async _context(): Promise<{ uid: string; orgId: string } | null> {
     try {
       const { data } = await supabase.auth.getSession();
@@ -1359,14 +1113,6 @@ const supabasePush = {
     const { error } = await supabase.from("products").update(row).eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not sync product update"); }
   },
-  // FIX (deleteProduct orphaning): replaced the raw
-  // supabase.from("products").delete() with the delete_or_archive_product
-  // RPC (see migration_delete_or_archive_product.sql). The RPC does the
-  // history check and the delete-or-archive decision inside one locked
-  // transaction, so there's no window where the client could delete a
-  // product between checking and acting. Returns the outcome so
-  // store.deleteProduct() can keep local state in sync with what actually
-  // happened server-side, instead of assuming the delete always succeeded.
   async deleteOrArchiveProduct(id: string): Promise<
     { ok: true; outcome: "deleted" | "archived" } | { ok: false; error?: string }
   > {
@@ -1387,30 +1133,9 @@ const supabasePush = {
       return { ok: false, error: e?.message || "Network error" };
     }
   },
-  // FIX (atomic stock decrement): swapped from the old two-insert
-  // (sales + sale_items) plus a client-side loop of per-item
-  // updateProduct calls, to a single call to the record_sale_atomic
-  // Postgres RPC. The RPC does everything — sale header insert, sale_items
-  // insert, and stock decrement with a row-level lock per product — inside
-  // ONE database transaction. This closes two gaps the old client-side
-  // approach had: (1) a crash/network-drop between the sale insert and the
-  // stock-update loop could leave stock un-decremented even though the
-  // sale "succeeded"; (2) two offline devices selling the last unit of the
-  // same product could both read stale stock and both succeed, oversetting
-  // negative without anyone knowing. The RPC's FOR UPDATE row lock plus the
-  // audit_logs entry it writes on any negative-stock event fixes both.
-  //
-  // Still wrapped in the same try/catch + withTimeout + isNetworkErrorMessage
-  // classification as before, so offline queuing behavior in recordSale()
-  // and syncPendingSales() is completely unchanged from the caller's point
-  // of view — it just doesn't know or care that the write is now one RPC
-  // call instead of three separate ones.
   async insertSale(s: Sale): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
     const ctx = await this._context();
     if (!ctx) {
-      // Most commonly: couldn't confirm the session because we're
-      // offline. Treat as network so the sale queues instead of being
-      // silently skipped like the old behavior.
       return { ok: false, error: "offline", isNetworkError: true };
     }
 
@@ -1443,9 +1168,6 @@ const supabasePush = {
 
       return { ok: true };
     } catch (e: any) {
-      // A thrown exception (rather than a returned {error}) means the
-      // request never got a real answer from the server — no internet,
-      // DNS failure, or our own timeout firing. Always network-classified.
       return { ok: false, error: e?.message || "Network error", isNetworkError: true };
     }
   },
@@ -1466,15 +1188,6 @@ const supabasePush = {
     const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not delete supplier"); }
   },
-  // COMPLIANCE FIX (atomic dispense): swapped from a raw controlled_dispense
-  // table insert to the record_dispense_atomic RPC. The RPC now does the
-  // insert AND the stock decrement in one locked transaction, closing the
-  // same two-offline-devices race condition that record_sale_atomic
-  // already closed for ordinary sales — critical here because the Poisons
-  // Register is the exact record PCN will scrutinize most closely.
-  // Still wrapped in the same withTimeout + isNetworkErrorMessage
-  // classification as before, so offline queuing behavior is unchanged
-  // from the caller's point of view.
   async insertControlled(d: ControlledDispense): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
     const ctx = await this._context();
     if (!ctx) {
@@ -1559,11 +1272,6 @@ async function seedAdminDemoData(uid: string, orgId: string) {
   }
 }
 
-// FIX (offline support): module-level connectivity listeners. Set up once
-// when this module first loads. On 'online', immediately attempt to sync
-// any pending sales rather than waiting for the next 30s poll — a cashier
-// who's been offline for a while shouldn't have to wait half a minute
-// after their signal comes back.
 if (typeof window !== "undefined") {
   window.addEventListener("online", () => {
     db.isOffline = false;
@@ -1628,8 +1336,6 @@ export function usePlan() {
       : products.length >= 50,
     productLimit: effectivePlan?.maxProducts ?? 50,
     staffLimit:   effectivePlan?.maxStaff   ?? 1,
-    // FIX: surfaces grace-period state so UI (Plan & Billing tab, sidebar)
-    // can warn the Owner before an automatic downgrade to Free happens.
     billingStatus: user?.billingStatus ?? "active",
     gracePeriodStartedAt: user?.gracePeriodStartedAt ?? null,
   };
