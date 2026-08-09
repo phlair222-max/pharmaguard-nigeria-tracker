@@ -346,7 +346,7 @@ export default function Inventory() {
   };
 
   return (
-    <div className="flex flex-col gap-4 lg:h-full lg:min-h-0">
+    <div className="flex flex-col gap-3 lg:h-full lg:min-h-0">
       <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Inventory</h1>
@@ -363,7 +363,7 @@ export default function Inventory() {
       </div>
 
       <Card className="flex flex-col shadow-card lg:min-h-0 lg:flex-1">
-        <CardHeader className="shrink-0 pb-3">
+        <CardHeader className="shrink-0 px-4 pt-4 pb-3">
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -441,9 +441,36 @@ export default function Inventory() {
         </CardHeader>
         <CardContent className="p-0 lg:min-h-0 lg:flex-1 lg:overflow-hidden">
           <Table
-            className="min-w-[1050px]"
+            // FIX ("hanging"/cut-off table): this was min-w-[1050px] with
+            // 11 columns each carrying their own fixed min-w-[Npx], summing
+            // to ~1160px. On a real layout (sidebar + padding eating into
+            // the viewport) that regularly exceeded the available width,
+            // so the table silently overflowed — Movement got cut mid-row
+            // and Cost/Price/Supplier/actions were scrolled off entirely,
+            // which is what looked like a floating/unfinished panel rather
+            // than a table using the space it had. Switched to
+            // table-fixed with percentage column widths (below) so on any
+            // normal desktop width the table fills the container edge to
+            // edge with every column visible. min-w-[880px] is kept only
+            // as a floor for genuinely narrow/mobile viewports, where the
+            // existing horizontal-scroll wrapper takes over exactly as it
+            // did before — that behavior is unchanged.
+            className="w-full min-w-[880px] table-fixed"
             containerClassName="w-full overflow-x-auto lg:h-full lg:overflow-y-scroll [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40"
           >
+              <colgroup>
+                <col style={{ width: "19%" }} />
+                <col style={{ width: "11%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "7%" }} />
+                <col style={{ width: "6%" }} />
+                <col style={{ width: "6%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "9%" }} />
+              </colgroup>
               <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_hsl(var(--border))]">
                 <TableRow className="hover:bg-transparent">
                   {(() => {
@@ -464,17 +491,17 @@ export default function Inventory() {
                       </button>
                     );
                     return <>
-                      <TableHead className="min-w-[220px] pl-4"><SortBtn k="name" label="Product" /></TableHead>
-                      <TableHead className="min-w-[130px]"><SortBtn k="batch" label="Batch" /></TableHead>
-                      <TableHead className="min-w-[120px]"><SortBtn k="expiry" label="Expiry" /></TableHead>
-                      <TableHead className="min-w-[80px]">Status</TableHead>
-                      <TableHead className="text-right min-w-[70px]"><SortBtn k="quantity" label="Stock" align="right" /></TableHead>
-                      <TableHead className="text-right min-w-[70px]"><SortBtn k="reorderLevel" label="Reorder" align="right" /></TableHead>
-                      <TableHead className="min-w-[90px]">Movement</TableHead>
-                      <TableHead className="text-right min-w-[90px]"><SortBtn k="costPrice" label="Cost" align="right" /></TableHead>
-                      <TableHead className="text-right min-w-[90px]"><SortBtn k="sellingPrice" label="Price" align="right" /></TableHead>
-                      <TableHead className="min-w-[100px]"><SortBtn k="supplier" label="Supplier" /></TableHead>
-                      <TableHead className="w-[100px]"></TableHead>
+                      <TableHead className="pl-4"><SortBtn k="name" label="Product" /></TableHead>
+                      <TableHead><SortBtn k="batch" label="Batch" /></TableHead>
+                      <TableHead><SortBtn k="expiry" label="Expiry" /></TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right"><SortBtn k="quantity" label="Stock" align="right" /></TableHead>
+                      <TableHead className="text-right"><SortBtn k="reorderLevel" label="Reorder" align="right" /></TableHead>
+                      <TableHead>Movement</TableHead>
+                      <TableHead className="text-right"><SortBtn k="costPrice" label="Cost" align="right" /></TableHead>
+                      <TableHead className="text-right"><SortBtn k="sellingPrice" label="Price" align="right" /></TableHead>
+                      <TableHead><SortBtn k="supplier" label="Supplier" /></TableHead>
+                      <TableHead></TableHead>
                     </>;
                   })()}
                 </TableRow>
@@ -506,7 +533,7 @@ export default function Inventory() {
                     <TableRow key={p.id} className={cn(low && "bg-destructive/5 hover:bg-destructive/10", p.controlled && "border-l-4 border-l-destructive")}>
                       <TableCell className="pl-4 py-3.5">
                         <div className="font-medium flex items-center gap-1.5 leading-tight" title={p.name || "(unnamed product)"}>
-                          <span className={cn("truncate max-w-[280px]", !p.name?.trim() && "italic text-muted-foreground font-normal")}>
+                          <span className={cn("truncate", !p.name?.trim() && "italic text-muted-foreground font-normal")}>
                             {p.name?.trim() || "(unnamed product)"}
                           </span>
                           {p.itemType === "non_pharmaceutical" && <ShoppingBasket className="h-3.5 w-3.5 shrink-0 text-muted-foreground" title="Non-pharmaceutical item" />}
@@ -560,7 +587,7 @@ export default function Inventory() {
                       </TableCell>
                       <TableCell className="py-3.5 text-right text-xs tabular-nums">{p.costPrice != null ? NGN(p.costPrice) : <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="py-3.5 text-right font-medium tabular-nums">{NGN(p.sellingPrice)}</TableCell>
-                      <TableCell className="py-3.5 text-xs truncate max-w-[110px]" title={p.supplier}>{p.supplier || <span className="text-muted-foreground/50">—</span>}</TableCell>
+                      <TableCell className="py-3.5 text-xs truncate" title={p.supplier}>{p.supplier || <span className="text-muted-foreground/50">—</span>}</TableCell>
                       <TableCell className="py-3.5 text-right">
                         <div className="flex justify-end gap-1">
                           {p.active === false ? (
