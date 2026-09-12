@@ -37,6 +37,15 @@ function AuthCallback() {
   const [confirm, setConfirm] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Supabase includes "type=recovery" in the redirect hash for a
+  // password-reset link (an invite/magic-link redirect has no "type" param).
+  // Checked directly via the URL hash — NOT via listening for Supabase's
+  // PASSWORD_RECOVERY auth event — because that event can fire during the
+  // Supabase client's own module-load initialization, before this
+  // component's useEffect even runs, so a listener here could race and miss
+  // it. A direct hash check has no such race.
+  const isRecovery = window.location.hash.includes("type=recovery");
+
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (data.session) {
@@ -59,7 +68,7 @@ function AuthCallback() {
         const identities = data.session.user.identities || [];
         const hasPassword = identities.some(i => i.provider === "email" && i.identity_data?.email_verified);
         const createdRecently = Date.now() - new Date(data.session.user.created_at).getTime() < 5 * 60 * 1000;
-        if (createdRecently) {
+        if (isRecovery || createdRecently) {
           setNeedsPassword(true);
         } else {
           void store.hydrateFromSupabase();
@@ -98,8 +107,10 @@ function AuthCallback() {
                 </svg>
               </div>
             </div>
-            <h1 className="text-2xl font-bold">Set your password</h1>
-            <p className="text-sm text-muted-foreground">Create a password to secure your PharmaGuard NG account</p>
+            <h1 className="text-2xl font-bold">{isRecovery ? "Reset your password" : "Set your password"}</h1>
+            <p className="text-sm text-muted-foreground">
+              {isRecovery ? "Choose a new password for your PharmaGuard NG account" : "Create a password to secure your PharmaGuard NG account"}
+            </p>
           </div>
           <div className="space-y-4">
             <div className="space-y-2">
