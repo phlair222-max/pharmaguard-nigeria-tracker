@@ -147,7 +147,7 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
           <FileText className="h-4 w-4 text-destructive" />
           AI Disposal Report
         </CardTitle>
-        {plan.canAiForecast && near30.length > 0 && !report && (
+        {plan.canDisposalReport && near30.length > 0 && !report && (
           <button
             onClick={generate}
             disabled={loading}
@@ -159,7 +159,7 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
         )}
       </CardHeader>
       <CardContent>
-        {!plan.canAiForecast ? (
+        {!plan.canDisposalReport ? (
           <UpgradePrompt
             feature="AI Disposal Report"
             requiredPlan="pro"
