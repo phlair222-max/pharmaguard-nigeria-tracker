@@ -725,7 +725,9 @@ type Member = {
   id: string;
   user_id: string | null;
   role: "Owner" | "Pharmacist" | "Cashier";
-  status: "invited" | "active" | "suspended";
+  // STEP 7: "removed" = deactivated, record kept (three-tier model).
+  // "inactive" / "pending_payment" are legacy values the database still allows.
+  status: "invited" | "active" | "suspended" | "removed" | "inactive" | "pending_payment";
   payment_status: "active" | "pending_payment" | "failed";
   seat_fee_paid: boolean;
   invited_email: string | null;
@@ -741,6 +743,7 @@ function roleColor(role: string) {
 function statusColor(status: string) {
   if (status === "active") return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
   if (status === "invited") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+  if (status === "removed") return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
   return "bg-red-500/15 text-red-400 border-red-500/30";
 }
 function paymentStatusColor(status: string) {
@@ -921,38 +924,67 @@ function TeamTab({ organizationName }: { organizationName: string }) {
     );
   };
 
+  // STEP 7 FIX: these three actions used to write to the memberships
+  // table directly from the browser. Since Step 4 the database blocks
+  // that (it let any staff member change roles, including their own).
+  // They now call secure database functions that check the caller is
+  // the active Owner, refuse to touch the Owner's own record, and write
+  // an audit log entry. The database's own message is shown on failure.
+
   const toggleMargins = async (member: Member) => {
-    const { error } = await (supabase.from as any)("memberships")
-      .update({ can_view_margins: !member.can_view_margins })
-      .eq("id", member.id);
-    if (error) { toast.error("Update failed"); }
-    else {
-      setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, can_view_margins: !m.can_view_margins } : m));
-      toast.success("Updated");
+    const next = !member.can_view_margins;
+    const { error } = await (supabase.rpc as any)("set_member_margins", {
+      p_membership_id: member.id,
+      p_can_view: next,
+    });
+    if (error) {
+      toast.error(error.message || "Update failed");
+      return;
     }
+    setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, can_view_margins: next } : m));
+    toast.success(next ? "Margin access granted" : "Margin access revoked");
   };
 
   const toggleSuspend = async (member: Member) => {
-    const newStatus = member.status === "suspended" ? "active" : "suspended";
-    const { error } = await (supabase.from as any)("memberships")
-      .update({ status: newStatus })
-      .eq("id", member.id);
-    if (error) { toast.error("Update failed"); }
-    else {
-      setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, status: newStatus } : m));
-      toast.success(newStatus === "suspended" ? "Staff member suspended" : "Staff member reactivated");
+    const newStatus: Member["status"] = member.status === "suspended" ? "active" : "suspended";
+    const { error } = await (supabase.rpc as any)("set_member_status", {
+      p_membership_id: member.id,
+      p_status: newStatus,
+    });
+    if (error) {
+      toast.error(error.message || "Update failed");
+      return;
     }
+    setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, status: newStatus } : m));
+    toast.success(newStatus === "suspended" ? "Staff member suspended" : "Staff member reactivated");
   };
 
+  // Three-tier model: an invite nobody accepted or paid for is cancelled
+  // (deleted). Anyone who has accepted or been paid for is deactivated
+  // ("removed") and their record is KEPT for compliance.
   const removeMember = async (member: Member) => {
-    const { error } = await (supabase.from as any)("memberships").delete().eq("id", member.id);
-    if (error) { toast.error("Remove failed"); }
-    else {
+    const { data, error } = await (supabase.rpc as any)("remove_member", {
+      p_membership_id: member.id,
+    });
+    if (error) {
+      toast.error(error.message || "Remove failed");
+      setRemoveTarget(null);
+      return;
+    }
+    if (data === "deleted") {
       setMembers((prev) => prev.filter((m) => m.id !== member.id));
-      toast.success("Member removed");
+      toast.success("Invite cancelled");
+    } else {
+      setMembers((prev) => prev.map((m) =>
+        m.id === member.id ? { ...m, status: "removed", can_view_margins: false } : m
+      ));
+      toast.success("Staff member removed — access ended, records kept");
     }
     setRemoveTarget(null);
   };
+
+  const removedCount = members.filter((m) => m.status === "removed").length;
+  const currentCount = members.length - removedCount;
 
   return (
     <div className="space-y-6">
@@ -993,7 +1025,14 @@ function TeamTab({ organizationName }: { organizationName: string }) {
 
       <Card>
         <CardContent className="pt-6">
-          <h3 className="font-semibold text-base mb-4">Team Members ({members.length})</h3>
+          <h3 className="font-semibold text-base mb-4">
+            Team Members ({currentCount})
+            {removedCount > 0 && (
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                + {removedCount} removed (records kept)
+              </span>
+            )}
+          </h3>
           {loading ? (
             <p className="text-sm text-muted-foreground py-6 text-center">Loading team…</p>
           ) : members.length === 0 ? (
@@ -1013,7 +1052,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                 </thead>
                 <tbody>
                   {members.map((m) => (
-                    <tr key={m.id} className="border-b last:border-0 hover:bg-muted/20">
+                    <tr key={m.id} className={`border-b last:border-0 hover:bg-muted/20 ${m.status === "removed" ? "opacity-50" : ""}`}>
                       <td className="px-4 py-3 text-xs text-muted-foreground max-w-[200px] truncate">
                         {m.invited_email || m.user_id || "—"}
                       </td>
@@ -1031,7 +1070,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                             <Badge className={`text-xs border ${paymentStatusColor(m.payment_status ?? "active")}`}>
                               {m.payment_status === "pending_payment" ? "pending" : m.payment_status ?? "active"}
                             </Badge>
-                            {(m.payment_status === "pending_payment" || m.payment_status === "failed") && (
+                            {m.status !== "removed" && (m.payment_status === "pending_payment" || m.payment_status === "failed") && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1045,7 +1084,7 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        {m.role === "Pharmacist" ? (
+                        {m.role === "Pharmacist" && m.status !== "removed" ? (
                           <button
                             onClick={() => toggleMargins(m)}
                             className="text-muted-foreground hover:text-foreground transition-colors"
@@ -1061,12 +1100,20 @@ function TeamTab({ organizationName }: { organizationName: string }) {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          {m.role !== "Owner" && (
+                          {m.role !== "Owner" && m.status !== "removed" && (
                             <>
-                              <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground" onClick={() => toggleSuspend(m)}>
-                                {m.status === "suspended" ? "Reactivate" : "Suspend"}
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-300 hover:bg-red-500/10" onClick={() => setRemoveTarget(m)}>
+                              {(m.status === "active" || m.status === "suspended") && (
+                                <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground" onClick={() => toggleSuspend(m)}>
+                                  {m.status === "suspended" ? "Reactivate" : "Suspend"}
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                                title={m.user_id ? "Remove staff member" : "Cancel invite"}
+                                onClick={() => setRemoveTarget(m)}
+                              >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             </>
@@ -1085,9 +1132,15 @@ function TeamTab({ organizationName }: { organizationName: string }) {
       <AlertDialog open={!!removeTarget} onOpenChange={() => setRemoveTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {removeTarget?.invited_email}?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {removeTarget && !removeTarget.user_id && !removeTarget.seat_fee_paid
+                ? `Cancel the invite for ${removeTarget.invited_email ?? "this person"}?`
+                : `Remove ${removeTarget?.invited_email ?? "this staff member"}?`}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              They will lose access to this pharmacy immediately. You can re-add them later.
+              {removeTarget && !removeTarget.user_id && !removeTarget.seat_fee_paid
+                ? "This invite has not been accepted or paid for, so it will simply be cancelled."
+                : "They will lose access to this pharmacy immediately. Their record and everything they did stay in your audit trail and reports, as required for compliance. To bring them back later, add a new seat for them."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
