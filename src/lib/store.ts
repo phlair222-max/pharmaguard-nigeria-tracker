@@ -775,13 +775,27 @@ export const store = {
       const uid = auth.user.id;
       const email = auth.user.email || "";
 
-      const { data: membership, error: membershipError } = await (supabase.from as any)("memberships")
-        .select("organization_id, role, can_view_margins, status")
-        .eq("user_id", uid)
-        .eq("status", "active")
-        .maybeSingle();
+      // STEP 5 FIX (signup loop + unpaid seats):
+      // BEFORE: when no active membership existed, this code updated the
+      // invite row directly (skipping the seat-payment check), or inserted
+      // an organization + Owner membership directly, then called itself
+      // again with no limit. When the membership insert was rejected, it
+      // looped forever, creating a new empty pharmacy on every pass
+      // (428 pharmacies from one signup in testing).
+      // NOW: account setup is done by two secure database functions:
+      //   claim_my_invite()     — accepts a staff invite ONLY if the seat is paid
+      //   create_my_pharmacy()  — creates pharmacy + Owner membership together,
+      //                           in one transaction, at most once per user
+      // and the membership lookup is retried AT MOST ONCE. If setup still
+      // fails, the user sees a clear message instead of a silent loop.
+      let membership: any = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const { data: found, error: membershipError } = await (supabase.from as any)("memberships")
+          .select("organization_id, role, can_view_margins, status")
+          .eq("user_id", uid)
+          .eq("status", "active")
+          .maybeSingle();
 
-      if (!membership) {
         if (membershipError) {
           console.error("[hydrate] membership query failed:", membershipError.message);
           if (!db.authReady) {
@@ -790,47 +804,44 @@ export const store = {
           return;
         }
 
-        const { data: invited, error: invitedError } = await (supabase.from as any)("memberships")
-          .select("id, organization_id, role, can_view_margins")
-          .eq("invited_email", email.toLowerCase())
-          .eq("status", "invited")
-          .maybeSingle();
+        if (found) {
+          membership = found;
+          break;
+        }
 
-        if (invitedError) {
-          console.error("[hydrate] invited lookup failed:", invitedError.message);
-          if (!db.authReady) {
-            toast.error("Could not verify your invite — check your connection and reload.");
-          }
+        if (attempt > 0) {
+          // Setup ran but there is still no active membership — stop here.
+          // Never retry in a loop.
+          console.error("[hydrate] account setup completed but no active membership was found");
+          toast.error("Your pharmacy account could not be set up. Please reload the page, or contact PharmaGuard support if this continues.", { duration: 10000 });
           return;
         }
 
-        if (invited) {
-          await (supabase.from as any)("memberships")
-            .update({ user_id: uid, status: "active" })
-            .eq("id", invited.id);
+        // 1. Accept a PAID staff invite for this email, if there is one.
+        const { data: claimedOrgId, error: claimError } = await (supabase.rpc as any)("claim_my_invite");
+        if (claimError) {
+          console.error("[hydrate] claim_my_invite failed:", claimError.message);
+          toast.error(claimError.message || "Could not verify your invite — check your connection and reload.", { duration: 10000 });
+          return;
+        }
+        if (claimedOrgId) {
           toast.success("Welcome! You've been connected to your pharmacy.");
-          this._hydrating = false;
-          return this.hydrateFromSupabase();
+          continue; // look the membership up again (once)
         }
 
-        const { data: newOrg } = await (supabase.from as any)("organizations")
-          .insert({ owner_id: uid, name: "My Pharmacy" })
-          .select("id")
-          .single();
-
-        if (newOrg) {
-          await (supabase.from as any)("memberships").insert({
-            organization_id: newOrg.id,
-            user_id: uid,
-            role: "Owner",
-            can_view_margins: true,
-            status: "active",
-          });
-          this._hydrating = false;
-          return this.hydrateFromSupabase();
+        // 2. No invite: create this user's own pharmacy. The database
+        //    refuses (with a clear message) if the user has an unpaid
+        //    invite waiting or a suspended/removed membership.
+        const { error: createError } = await (supabase.rpc as any)("create_my_pharmacy", { p_name: "My Pharmacy" });
+        if (createError) {
+          console.error("[hydrate] create_my_pharmacy failed:", createError.message);
+          toast.error(createError.message || "Could not set up your pharmacy account — please reload.", { duration: 10000 });
+          return;
         }
-        return;
+        // loop continues: look the membership up again (once)
       }
+
+      if (!membership) return;
 
       const orgId: string = membership.organization_id;
       const memberRole: "Owner" | "Pharmacist" | "Cashier" = membership.role;
