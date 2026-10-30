@@ -26,6 +26,44 @@ interface ExpiryScannerProps {
   }) => void;
 }
 
+// STEP 10: shrink the photo before sending it. Groq rejects base64 images
+// over 4 MB, and modern phone photos are often 3–8 MB. 1600px on the long
+// side is plenty to read a printed expiry date, and much faster on mobile data.
+const MAX_SIDE_PX = 1600;
+const JPEG_QUALITY = 0.85;
+
+async function shrinkPhoto(file: File): Promise<{ base64: string; mime: string }> {
+  const dataUrl = await new Promise<string>((res, rej) => {
+    const reader = new FileReader();
+    reader.onload = () => res(String(reader.result));
+    reader.onerror = rej;
+    reader.readAsDataURL(file);
+  });
+
+  return await new Promise((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, MAX_SIDE_PX / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        res({ base64: dataUrl.split(",")[1], mime: file.type || "image/jpeg" });
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      res({ base64: canvas.toDataURL("image/jpeg", JPEG_QUALITY).split(",")[1], mime: "image/jpeg" });
+    };
+    // If the browser can't decode the image, send it unchanged and let the
+    // server give a clear message if it is too large or the wrong type.
+    img.onerror = () => res({ base64: dataUrl.split(",")[1], mime: file.type || "image/jpeg" });
+    img.src = dataUrl;
+  });
+}
+
 export function ExpiryScanner({ open, onOpenChange, onConfirm }: ExpiryScannerProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -60,24 +98,20 @@ export function ExpiryScanner({ open, onOpenChange, onConfirm }: ExpiryScannerPr
     setError(null);
     setResult(null);
 
-    const mime = file.type || "image/jpeg";
-    setMimeType(mime);
-
     // Create preview URL
     const url = URL.createObjectURL(file);
     setPreview(url);
 
-    // Convert to base64
-    const base64 = await new Promise<string>((res, rej) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = String(reader.result);
-        // Strip the "data:image/jpeg;base64," prefix — Gemini wants raw base64
-        res(dataUrl.split(",")[1]);
-      };
-      reader.onerror = rej;
-      reader.readAsDataURL(file);
-    });
+    // STEP 10: send a shrunk copy (raw base64, no "data:...;base64," prefix)
+    let base64: string;
+    let mime: string;
+    try {
+      ({ base64, mime } = await shrinkPhoto(file));
+    } catch {
+      setError("Could not read that photo. Please take it again.");
+      return;
+    }
+    setMimeType(mime);
 
     setImageBase64(base64);
     // Auto-scan immediately after capture
@@ -94,7 +128,18 @@ export function ExpiryScanner({ open, onOpenChange, onConfirm }: ExpiryScannerPr
         body: { imageBase64: b64, mimeType: mime },
       });
 
-      if (fnError) throw new Error(fnError.message);
+      if (fnError) {
+        // STEP 10: Supabase only says "Edge Function returned a non-2xx
+        // status code". The real reason is in the response body — show that.
+        let message = fnError.message;
+        try {
+          const body = await (fnError as any).context?.json?.();
+          if (body?.error) message = body.error;
+        } catch {
+          // keep the generic message
+        }
+        throw new Error(message);
+      }
       if (data?.error) throw new Error(data.error);
 
       setResult(data as ScanResult);
@@ -150,7 +195,7 @@ export function ExpiryScanner({ open, onOpenChange, onConfirm }: ExpiryScannerPr
               {loading && (
                 <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2">
                   <Loader2 className="h-8 w-8 text-primary animate-spin" />
-                  <span className="text-sm text-white">Reading with Gemini AI…</span>
+                  <span className="text-sm text-white">Reading the label…</span>
                 </div>
               )}
             </div>
@@ -162,7 +207,7 @@ export function ExpiryScanner({ open, onOpenChange, onConfirm }: ExpiryScannerPr
               <Camera className="h-10 w-10 text-muted-foreground" />
               <div className="text-center">
                 <p className="text-sm font-medium">Take a photo of the label</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Gemini AI will read the expiry date</p>
+                <p className="text-xs text-muted-foreground mt-0.5">The expiry date will be read automatically</p>
               </div>
             </button>
           )}
@@ -193,6 +238,7 @@ export function ExpiryScanner({ open, onOpenChange, onConfirm }: ExpiryScannerPr
                     {result.rawExpiryText && (
                       <p className="text-xs text-muted-foreground">Found: "{result.rawExpiryText}"</p>
                     )}
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Check this against the label before saving.</p>
                   </div>
                 </div>
               ) : (
