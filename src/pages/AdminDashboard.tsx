@@ -277,18 +277,16 @@ export default function AdminDashboard() {
     setUpdatingId(null);
   };
 
-  // FIX: org deletion now goes through admin_delete_organization() instead
-  // of a raw `supabase.from("organizations").delete()`. Reasons:
-  //   1. sales -> sale_items is ON DELETE RESTRICT (deliberately, so Owners
-  //      can't hard-delete a single sale). That RESTRICT also blocked the
-  //      cascade path for a full org deletion — a raw delete would fail
-  //      with a FK violation for any org that has ever recorded a sale
-  //      with line items. The RPC explicitly clears sale_items first.
-  //   2. The RPC logs the deletion to audit_logs (with organization_id
-  //      set to NULL, since that column also cascades from organizations
-  //      — logging it null keeps the record after the org itself is gone)
-  //      BEFORE deleting anything, so there's a durable record of who
-  //      deleted what and when.
+  // STEP 12: org deletion goes through admin_delete_organization().
+  // Since Step 12 (three-tier record keeping) it ONLY deletes a pharmacy
+  // that has no records of any kind (no staff or owner accounts, products,
+  // suppliers, sales, poisons register, audit trail, payments, saved card,
+  // API keys, etc.). For any pharmacy that has been used, the database
+  // refuses with a message saying to suspend it instead, and that message
+  // is shown to the admin as-is. The database also blocks deleting sales
+  // and sale items outright, so a pharmacy's records can never be wiped
+  // from here. (The older comment that stood here described clearing
+  // sale_items first — that behaviour no longer exists.)
   const deleteOrg = async (org: OrgRow) => {
     setDeleting(true);
     const { error } = await supabase.rpc("admin_delete_organization", {
@@ -602,9 +600,11 @@ export default function AdminDashboard() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete "{deleteTarget?.name}"?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently deletes the organization and cascades to all their products,
-              sales, suppliers, and audit logs. This cannot be undone.
-              Consider suspending instead.
+              Only a pharmacy with no records at all can be deleted — no staff, products,
+              suppliers, sales, poisons register entries, payments or audit trail.
+              If this pharmacy has any records, nothing will be deleted and you will be
+              told to suspend it instead (pharmacy records must be kept by law).
+              Deleting an empty pharmacy cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -614,7 +614,7 @@ export default function AdminDashboard() {
               disabled={deleting}
               onClick={() => deleteTarget && deleteOrg(deleteTarget)}
             >
-              {deleting ? "Deleting…" : "Delete permanently"}
+              {deleting ? "Checking…" : "Delete if empty"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
