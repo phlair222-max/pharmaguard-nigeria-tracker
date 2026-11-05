@@ -120,6 +120,9 @@ export type Supplier = {
   email?: string;
   address?: string;
   notes?: string;
+  // STEP 12b: false = archived (hidden from the Suppliers list, record kept
+  // because products refer to it). Missing/undefined is treated as active.
+  active?: boolean;
 };
 
 export type PharmacySettings = {
@@ -489,12 +492,35 @@ export const store = {
     persist();
     void supabasePush.updateSupplier(id, patch);
   },
-  deleteSupplier(id: string) {
-    const s = db.suppliers.find((x) => x.id === id);
-    db.suppliers = db.suppliers.filter((x) => x.id !== id);
-    if (s) this.audit("Deleted supplier", s.name);
+  // STEP 12b: suppliers are no longer deleted directly from the browser
+  // (Step 12a removed that permission). The database function
+  // delete_or_archive_supplier() decides: ARCHIVE if any product refers to
+  // the supplier (by id or by name), otherwise DELETE. It is Owner-only and
+  // writes the audit-trail entry itself, so there is no client-side audit
+  // here (that would record the action twice). The local list is changed
+  // only AFTER the server confirms what it actually did.
+  async deleteSupplier(id: string): Promise<
+    | { ok: true; outcome: "deleted" | "archived" }
+    | { ok: false; error: string }
+  > {
+    const result = await supabasePush.deleteOrArchiveSupplier(id);
+    if (!result.ok) {
+      return { ok: false, error: result.error || "Could not reach server" };
+    }
+    if (result.outcome === "archived") {
+      db.suppliers = db.suppliers.map((x) => (x.id === id ? { ...x, active: false } : x));
+    } else {
+      db.suppliers = db.suppliers.filter((x) => x.id !== id);
+    }
     persist();
-    void supabasePush.deleteSupplier(id);
+    return { ok: true, outcome: result.outcome };
+  },
+  restoreSupplier(id: string) {
+    const s = db.suppliers.find((x) => x.id === id);
+    db.suppliers = db.suppliers.map((x) => (x.id === id ? { ...x, active: true } : x));
+    if (s) this.audit("Restored supplier", s.name);
+    persist();
+    void supabasePush.updateSupplier(id, { active: true });
   },
   updateSettings(p: Partial<PharmacySettings>) {
     db.settings = { ...db.settings, ...p };
@@ -1044,6 +1070,7 @@ function rowToSupplier(r: any): Supplier {
   return {
     id: r.id, name: r.name, contactPerson: r.contact_person || "", phone: r.phone || "",
     email: r.email || "", address: r.address || "", notes: r.notes || "",
+    active: r.active !== false,
   };
 }
 function supplierToRow(s: Supplier, userId: string, orgId: string) {
@@ -1056,7 +1083,12 @@ function supplierToRow(s: Supplier, userId: string, orgId: string) {
 function supplierPatchToRow(patch: Partial<Supplier>) {
   const out: any = {};
   const map: Record<string, string> = { name: "name", contactPerson: "contact_person", phone: "phone", email: "email", address: "address", notes: "notes" };
-  for (const [k, v] of Object.entries(patch)) if (k in map) out[map[k]] = v || null;
+  for (const [k, v] of Object.entries(patch)) {
+    // STEP 12b: `active` is a true/false flag. The `v || null` rule below
+    // is for text fields only — it would turn `false` into null.
+    if (k === "active") { if (typeof v === "boolean") out.active = v; continue; }
+    if (k in map) out[map[k]] = v || null;
+  }
   return out;
 }
 function rowToControlled(r: any): ControlledDispense {
@@ -1194,10 +1226,28 @@ const supabasePush = {
     const { error } = await supabase.from("suppliers").update(row).eq("id", id).eq("organization_id", ctx.orgId);
     if (error) { console.error(error); toast.error("Could not sync supplier update"); }
   },
-  async deleteSupplier(id: string) {
-    const ctx = await this._context(); if (!ctx) return;
-    const { error } = await supabase.from("suppliers").delete().eq("id", id).eq("organization_id", ctx.orgId);
-    if (error) { console.error(error); toast.error("Could not delete supplier"); }
+  async deleteOrArchiveSupplier(id: string): Promise<
+    { ok: true; outcome: "deleted" | "archived" } | { ok: false; error?: string }
+  > {
+    const ctx = await this._context();
+    if (!ctx) return { ok: false, error: "offline" };
+    try {
+      // `as any`: this database function is newer than the generated types file
+      const { data, error } = await withTimeout(
+        (supabase.rpc as any)("delete_or_archive_supplier", { p_supplier_id: id }),
+        SALE_WRITE_TIMEOUT_MS,
+      ) as { data: unknown; error: { message: string } | null };
+      if (error) {
+        console.error(error);
+        return { ok: false, error: error.message };
+      }
+      if (data !== "archived" && data !== "deleted") {
+        return { ok: false, error: "Unexpected reply from server" };
+      }
+      return { ok: true, outcome: data };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || "Network error" };
+    }
   },
   async insertControlled(d: ControlledDispense): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
     const ctx = await this._context();
