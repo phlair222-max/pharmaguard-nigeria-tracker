@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Search, Truck } from "lucide-react";
+import { Plus, Pencil, Trash2, Search, Truck, RotateCcw } from "lucide-react";
 import { store, useStore, Supplier } from "@/lib/store";
 import { toast } from "sonner";
 import { usePlan } from "@/lib/store";
@@ -22,8 +22,23 @@ export default function Suppliers() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [draft, setDraft] = useState<Omit<Supplier, "id">>(empty);
+  // STEP 12b: archived suppliers are hidden unless the Owner asks to see them.
+  const [showArchived, setShowArchived] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  // Only the Owner can delete, archive or restore (the database enforces this too).
+  const isOwner = useStore((s) => s.user?.memberRole === "Owner");
+
+  const isArchived = (s: Supplier) => s.active === false;
+  const archivedCount = suppliers.filter(isArchived).length;
+
+  // Same matching rule the database uses: by supplier id, or by name
+  // ignoring capital letters and extra spaces.
+  const norm = (v?: string) => (v || "").trim().toLowerCase();
+  const linkedCount = (s: Supplier) =>
+    products.filter((p) => p.supplierId === s.id || (norm(p.supplier) !== "" && norm(p.supplier) === norm(s.name))).length;
 
   const list = suppliers.filter((s) => {
+    if (!showArchived && isArchived(s)) return false;
     const t = q.trim().toLowerCase();
     if (!t) return true;
     return s.name.toLowerCase().includes(t) || (s.contactPerson || "").toLowerCase().includes(t) || (s.phone || "").includes(t);
@@ -37,7 +52,23 @@ export default function Suppliers() {
     else { store.addSupplier(draft); toast.success("Supplier added"); }
     setOpen(false);
   };
-  const remove = (s: Supplier) => { if (confirm(`Delete supplier ${s.name}?`)) { store.deleteSupplier(s.id); toast.success("Deleted"); } };
+  // STEP 12b: the database decides between delete and archive, and the
+  // message shown afterwards reports what it ACTUALLY did.
+  const remove = async (s: Supplier) => {
+    const count = linkedCount(s);
+    const message = count > 0
+      ? `Archive supplier "${s.name}"?\n\n${count} product(s) are linked to this supplier, so it cannot be deleted. It will be hidden from this list but kept on record. You can restore it later.`
+      : `Delete supplier "${s.name}" permanently?\n\nNo products are linked to it. If the system finds a linked product (for example an archived one), the supplier will be archived instead of deleted.`;
+    if (!confirm(message)) return;
+    setBusyId(s.id);
+    const result = await store.deleteSupplier(s.id);
+    setBusyId(null);
+    if (!result.ok) { toast.error(`Could not remove supplier: ${result.error}`); return; }
+    toast.success(result.outcome === "archived"
+      ? `"${s.name}" archived — hidden from the list, record kept`
+      : `"${s.name}" deleted`);
+  };
+  const restore = (s: Supplier) => { store.restoreSupplier(s.id); toast.success(`"${s.name}" restored`); };
 
 
   const plan = usePlan();
@@ -49,7 +80,14 @@ export default function Suppliers() {
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Suppliers</h1>
           <p className="text-sm text-muted-foreground">Manage suppliers and link them to products</p>
         </div>
-        <Button size="sm" onClick={openNew}><Plus className="mr-2 h-4 w-4" />Add Supplier</Button>
+        <div className="flex items-center gap-2">
+          {(archivedCount > 0 || showArchived) && (
+            <Button size="sm" variant="outline" onClick={() => setShowArchived((v) => !v)}>
+              {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
+            </Button>
+          )}
+          <Button size="sm" onClick={openNew}><Plus className="mr-2 h-4 w-4" />Add Supplier</Button>
+        </div>
       </div>
 
       <Card className="shadow-card">
@@ -69,13 +107,15 @@ export default function Suppliers() {
               <TableBody>
                 {list.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No suppliers</TableCell></TableRow>}
                 {list.map((s) => {
-                  const count = products.filter((p) => p.supplierId === s.id || p.supplier === s.name).length;
+                  const count = linkedCount(s);
+                  const archived = isArchived(s);
                   return (
-                    <TableRow key={s.id}>
+                    <TableRow key={s.id} className={archived ? "opacity-60" : undefined}>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary"><Truck className="h-4 w-4" /></div>
                           <div className="font-medium">{s.name}</div>
+                          {archived && <Badge variant="secondary">Archived</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="text-xs">{s.contactPerson}</TableCell>
@@ -85,7 +125,12 @@ export default function Suppliers() {
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           <Button size="icon" variant="ghost" onClick={() => openEdit(s)}><Pencil className="h-4 w-4" /></Button>
-                          <Button size="icon" variant="ghost" onClick={() => remove(s)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                          {isOwner && !archived && (
+                            <Button size="icon" variant="ghost" title="Delete or archive" disabled={busyId === s.id} onClick={() => remove(s)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                          )}
+                          {isOwner && archived && (
+                            <Button size="icon" variant="ghost" title="Restore" onClick={() => restore(s)}><RotateCcw className="h-4 w-4" /></Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
