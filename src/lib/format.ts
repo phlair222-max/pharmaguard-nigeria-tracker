@@ -43,3 +43,14 @@ export function movementBadgeClass(m: "Fast" | "Medium" | "Slow") {
     ? "border-info bg-info/10 text-info"
     : "border-muted-foreground/40 bg-muted text-muted-foreground";
 }
+
+// EXPIRY ALERTS (Nov 2026): moved here from Inventory.tsx so the Dashboard,
+// the Inventory table and the disposal report all show shelf location in
+// exactly the same "A3 / S2 / B1" form. Builds the text from whichever of
+// the three fields are set; returns null when none are set, so products
+// without a location don't show an empty "Loc:" label.
+export function formatShelfLocation(p: { shelfAisle?: string; shelfShelf?: string; shelfBin?: string }): string | null {
+  const parts = [p.shelfAisle, p.shelfShelf, p.shelfBin].filter((v) => v && v.trim());
+  if (parts.length === 0) return null;
+  return parts.join(" / ");
+}
