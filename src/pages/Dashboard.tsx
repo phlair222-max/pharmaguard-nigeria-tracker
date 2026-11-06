@@ -117,22 +117,25 @@ function DisposalReportCard({ items, settings }: { items: Product[]; settings: a
              lines up in a monospace font; in a proportional font every
              character takes different width, so columns drift out of
              alignment. Now print matches what's already shown on screen. */
+          /* FIX (Nov 2026, printed report review): the report now comes from
+             the server already laid out, every line at most 88 characters.
+             At 9pt Courier, 88 characters fit the A4 width inside 15mm
+             margins (about 168mm of 180mm), so table rows no longer wrap
+             (Qty used to drop onto its own line). Lines are printed exactly
+             as sent (white-space: pre), never re-wrapped by the browser. */
+          @page { size: A4; margin: 15mm; }
           body {
             font-family: "Courier New", Courier, monospace;
-            font-size: 10.5pt;
-            line-height: 1.5;
-            margin: 2cm;
+            font-size: 9pt;
+            line-height: 1.45;
+            margin: 0;
             color: #000;
           }
           pre {
             font-family: "Courier New", Courier, monospace;
-            font-size: 10.5pt;
-            white-space: pre-wrap;
-            word-wrap: break-word;
+            font-size: 9pt;
+            white-space: pre;
             margin: 0;
-          }
-          @media print {
-            body { margin: 1.5cm; }
           }
         </style>
       </head>
@@ -178,8 +181,11 @@ function DisposalReportCard({ items, settings }: { items: Product[]; settings: a
         ) : report ? (
           <div className="space-y-3">
             {/* Clean document preview */}
-            <div className="rounded-lg border bg-white dark:bg-zinc-950 p-4 max-h-96 overflow-y-auto">
-              <pre className="whitespace-pre-wrap text-xs leading-relaxed font-mono text-foreground">
+            {/* FIX (Nov 2026): lines are shown exactly as laid out (88 wide);
+                scroll sideways on small screens instead of re-wrapping,
+                which used to break the table rows apart. */}
+            <div className="rounded-lg border bg-white dark:bg-zinc-950 p-4 max-h-96 overflow-auto">
+              <pre className="whitespace-pre text-[11px] leading-relaxed font-mono text-foreground">
                 {report}
               </pre>
             </div>
