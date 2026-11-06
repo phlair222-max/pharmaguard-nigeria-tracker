@@ -48,3 +48,16 @@ export function resolveEffectiveRole(user: { memberRole?: string | null; role?: 
   if (user.role === "Admin") return "Owner";
   return null;
 }
+
+// STEP 14b-2: who may see cost prices, profit and margins. This must match
+// the database rule (get_sale_margins() and products_safe_view): the Owner,
+// or a Pharmacist with margin access. Cashiers never. The database enforces
+// it; this only decides what the screens show.
+export function canSeeMargins(
+  user: { memberRole?: string | null; canViewMargins?: boolean | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (user.memberRole === "Owner") return true;
+  if (user.memberRole === "Pharmacist") return !!user.canViewMargins;
+  return false;
+}
