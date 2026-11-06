@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { canSeeMargins } from "@/lib/permissions";
 
 export type Product = {
   id: string;
@@ -35,12 +36,16 @@ export type Product = {
   shelfBin?: string;
 };
 
-export type SaleItem = { productId: string; name: string; qty: number; price: number; cost?: number };
+// STEP 14b-2: `id` is the sale line's database id (used to attach its cost);
+// `cost` is only present for users allowed to see margins.
+export type SaleItem = { id?: string; productId: string; name: string; qty: number; price: number; cost?: number };
 export type Sale = {
   id: string;
   items: SaleItem[];
   total: number;
-  profit: number;
+  // STEP 14b-2: null = not visible to this user (no margin access). The
+  // database works out profit itself (Step 14a); the app only displays it.
+  profit: number | null;
   payment: "Cash" | "POS" | "Bank Transfer" | "Mobile Money";
   cashier: string;
   customer?: string;
@@ -155,11 +160,49 @@ type DB = {
 };
 
 const KEY = "pharmaguard_db_v3";
-const ADMIN_EMAIL = "phlair222@gmail.com";
 
 const SALES_HYDRATE_DAYS = 90;
 function salesCutoffISO(): string {
   return new Date(Date.now() - SALES_HYDRATE_DAYS * 86400000).toISOString();
+}
+
+// STEP 14b-2: sales are read WITHOUT profit and line cost. Those columns are
+// locked in the database (Step 14b-3); the Owner and staff with margin
+// access get them from get_sale_margins(), which checks permission first.
+const SALES_SELECT =
+  "id, user_id, total, payment, cashier, customer, created_at, organization_id, " +
+  "sale_items(id, sale_id, product_id, name, qty, price)";
+
+type MarginRow = { sale_id: string; profit: number | null; item_costs: Record<string, number | null> | null };
+
+// Returns null when this user may not see margins (nothing to merge), or
+// when the request fails (figures simply stay hidden; logged for support).
+async function fetchMargins(since: string | null): Promise<Map<string, MarginRow> | null> {
+  if (!canSeeMargins(db.user)) return null;
+  const { data, error } = await (supabase.rpc as any)("get_sale_margins", { p_since: since });
+  if (error) {
+    console.error("[margins] get_sale_margins failed:", error.message);
+    return null;
+  }
+  const m = new Map<string, MarginRow>();
+  for (const r of (data || []) as MarginRow[]) m.set(r.sale_id, r);
+  return m;
+}
+
+function applyMargins(sales: Sale[], margins: Map<string, MarginRow> | null): Sale[] {
+  if (!margins) return sales;
+  return sales.map((s) => {
+    const m = margins.get(s.id);
+    if (!m) return s;
+    return {
+      ...s,
+      profit: m.profit != null ? Number(m.profit) : null,
+      items: s.items.map((it) => {
+        const c = it.id && m.item_costs ? m.item_costs[it.id] : undefined;
+        return c != null ? { ...it, cost: Number(c) } : it;
+      }),
+    };
+  });
 }
 
 const SALE_WRITE_TIMEOUT_MS = 15000;
@@ -178,21 +221,6 @@ function isNetworkErrorMessage(msg: string | undefined | null): boolean {
   return /fetch|network|timed out|timeout|offline|ENOTFOUND|Failed to fetch/i.test(msg);
 }
 
-const seedProducts: Array<[string, string, string, string, number, number, number, number, string, string, string]> = [
-  ["Paracetamol 500mg", "Paracetamol", "A4-1234", "PCM-2024-001", 240, 60, 8, 15, "Emzor", "Analgesics", "Tablet"],
-  ["Amoxicillin 500mg", "Amoxicillin", "A4-2210", "AMX-2024-014", 35, 30, 35, 60, "Fidson", "Antibiotics", "Capsule"],
-  ["Coartem 80/480", "Artemether/Lumefantrine", "A4-9911", "CRT-2024-007", 18, 20, 950, 1500, "Novartis", "Antimalarials", "Pack of 6"],
-  ["Lonart DS", "Artemether/Lumefantrine", "A4-7765", "LNT-2023-118", 12, 15, 850, 1300, "Greenlife", "Antimalarials", "Pack of 6"],
-  ["Flagyl 200mg", "Metronidazole", "A4-3321", "MTZ-2024-022", 80, 40, 12, 25, "May & Baker", "Antibiotics", "Tablet"],
-  ["Vitamin C 1000mg", "Ascorbic Acid", "A4-1188", "VTC-2024-090", 150, 50, 80, 150, "Emzor", "Vitamins", "Tablet"],
-  ["Lopinavir/Ritonavir", "Lopinavir/Ritonavir", "A4-5544", "ARV-2024-005", 6, 10, 4500, 7000, "Mylan", "Antiretrovirals", "Bottle 60s"],
-  ["Postinor 2", "Levonorgestrel", "A4-2299", "PST-2023-034", 22, 12, 800, 1500, "Gedeon Richter", "Contraceptives", "Pack of 2"],
-  ["Glucophage 500mg", "Metformin", "A4-7012", "MTF-2024-019", 90, 30, 20, 40, "Merck", "Antidiabetics", "Tablet"],
-  ["Amlodipine 10mg", "Amlodipine", "A4-3387", "AML-2024-031", 65, 25, 25, 55, "Fidson", "Cardiovascular", "Tablet"],
-  ["Codeine Linctus", "Codeine", "A4-9001", "CDN-2024-002", 8, 10, 1200, 2000, "GSK", "Controlled Substances", "100ml"],
-  ["Tramadol 50mg", "Tramadol", "A4-9002", "TRM-2024-003", 14, 10, 30, 70, "Fidson", "Controlled Substances", "Capsule"],
-];
-
 const defaultSettings: PharmacySettings = {
   name: "PharmaGuard NG Pharmacy",
   address: "12 Allen Avenue, Ikeja, Lagos",
@@ -202,69 +230,6 @@ const defaultSettings: PharmacySettings = {
   vatEnabled: false,
   vatRate: 7.5,
 };
-
-function makeSeed(): DB {
-  const today = Date.now();
-  const dayOff = (d: number) => new Date(today + d * 86400000).toISOString().slice(0, 10);
-  const exps = [400, 20, 75, -10, 300, 500, 45, 25, 600, 200, 80, 15];
-  const products: Product[] = seedProducts.map((p, i) => ({
-    id: crypto.randomUUID(),
-    name: p[0], generic: p[1], nafdac: p[2], batch: p[3],
-    quantity: p[4] as number, reorderLevel: p[5] as number,
-    reorderQuantity: (p[5] as number) * 3,
-    costPrice: p[6] as number, sellingPrice: p[7] as number,
-    supplier: p[8], category: p[9], packSize: p[10],
-    expiry: dayOff(exps[i]),
-    lastRestocked: dayOff(-Math.floor(Math.random() * 30)),
-    controlled: p[9] === "Controlled Substances",
-    description: "",
-  }));
-
-  const suppliers: Supplier[] = Array.from(new Set(products.map((p) => p.supplier))).map((name) => ({
-    id: crypto.randomUUID(),
-    name,
-    contactPerson: "Sales Rep",
-    phone: "+234 80" + Math.floor(10000000 + Math.random() * 89999999),
-    email: name.toLowerCase().replace(/[^a-z]/g, "") + "@supplier.ng",
-    address: "Lagos, Nigeria",
-  }));
-  products.forEach((p) => { p.supplierId = suppliers.find((s) => s.name === p.supplier)?.id; });
-
-  const sales: Sale[] = [];
-  for (let d = 6; d >= 0; d--) {
-    const count = 3 + Math.floor(Math.random() * 5);
-    for (let s = 0; s < count; s++) {
-      const itemCount = 1 + Math.floor(Math.random() * 3);
-      const items: SaleItem[] = [];
-      let total = 0, profit = 0;
-      for (let k = 0; k < itemCount; k++) {
-        const p = products[Math.floor(Math.random() * products.length)];
-        const qty = 1 + Math.floor(Math.random() * 3);
-        items.push({ productId: p.id, name: p.name, qty, price: p.sellingPrice, cost: p.costPrice });
-        total += qty * p.sellingPrice;
-        profit += qty * (p.sellingPrice - p.costPrice);
-      }
-      sales.push({
-        id: crypto.randomUUID(),
-        items, total, profit,
-        payment: (["Cash", "POS", "Bank Transfer", "Mobile Money"] as const)[Math.floor(Math.random() * 4)],
-        cashier: "admin",
-        createdAt: new Date(today - d * 86400000 - Math.random() * 80000000).toISOString(),
-        syncStatus: "synced",
-      });
-    }
-  }
-  return {
-    products, sales, audit: [], user: null, suppliers, settings: defaultSettings,
-    controlledDispense: [], loginActivity: [], extendedSalesLoaded: false, plan: null,
-    authReady: false,
-    isOffline: typeof navigator !== "undefined" ? !navigator.onLine : false,
-    credentials: [
-      { username: "admin", passwordHash: hashPwd("admin") },
-      { username: "pharma", passwordHash: hashPwd("pharma") },
-    ],
-  };
-}
 
 function emptyDb(): DB {
   return {
@@ -412,6 +377,10 @@ export const store = {
     | { ok: false; error?: string }
   > {
     const ns: Sale = { ...sale, id: crypto.randomUUID(), createdAt: new Date().toISOString(), syncStatus: "pending" };
+    // STEP 14b-2: the database works out the real profit (Step 14a). Users
+    // without margin access can't see cost, so their screen's figure would
+    // be wrong — keep it empty instead.
+    if (!canSeeMargins(db.user)) ns.profit = null;
 
     const prevSales = db.sales;
     const prevProducts = db.products;
@@ -708,16 +677,17 @@ export const store = {
 
     try {
       const cutoff = salesCutoffISO();
-      const [salesR, prodsR, orgR] = await Promise.all([
-        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
+      const [salesR, prodsR, orgR, marginsR] = await Promise.all([
+        supabase.from("sales").select(SALES_SELECT).eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
         (supabase.from as any)("organizations")
           .select("subscription_tier, subscription_expires_at, billing_status, grace_period_started_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo")
           .eq("id", orgId).maybeSingle(),
+        fetchMargins(cutoff),
       ]);
       let changed = false;
       if (salesR.data) {
-        const serverSales = salesR.data.map(rowToSale);
+        const serverSales = applyMargins(salesR.data.map(rowToSale), marginsR);
         const serverIds = new Set(serverSales.map((s) => s.id));
         const pendingLocal = db.sales.filter((s) => s.syncStatus === "pending" && !serverIds.has(s.id));
         const merged = [...pendingLocal, ...serverSales].sort(
@@ -889,15 +859,16 @@ export const store = {
       void this.syncPendingControlledDispenses();
 
       const cutoff = salesCutoffISO();
-      const [prodsR, salesR, supR, contR, audR, profR, orgR, planR] = await Promise.all([
+      const [prodsR, salesR, supR, contR, audR, profR, orgR, planR, marginsR] = await Promise.all([
         supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
-        supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
+        supabase.from("sales").select(SALES_SELECT).eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
         supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
         (supabase.from as any)("controlled_dispense").select("*").eq("organization_id", orgId).order("at", { ascending: false }),
         (supabase.from as any)("audit_logs").select("*").eq("organization_id", orgId).order("at", { ascending: false }).limit(500),
         supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
         (supabase.from as any)("organizations").select("subscription_tier, subscription_expires_at, billing_status, grace_period_started_at, name, address, phone, email, logo, premise_license, owner_name, owner_photo").eq("id", orgId).maybeSingle(),
         (supabase.from as any)("plan_config").select("*"),
+        fetchMargins(cutoff),
       ]);
 
       if (prodsR.error) { console.error(prodsR.error); toast.error("Failed to load products"); }
@@ -905,7 +876,7 @@ export const store = {
 
       db.products = (prodsR.data || []).map(rowToProduct);
 
-      const serverSales = (salesR.data || []).map(rowToSale);
+      const serverSales = applyMargins((salesR.data || []).map(rowToSale), marginsR);
       const serverIds = new Set(serverSales.map((s: Sale) => s.id));
       const pendingLocal = db.sales.filter((s) => s.syncStatus === "pending" && !serverIds.has(s.id));
       db.sales = [...pendingLocal, ...serverSales].sort(
@@ -951,24 +922,6 @@ export const store = {
       db.extendedSalesLoaded = false;
       persist();
 
-      if (
-        email.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
-        db.products.length === 0 &&
-        db.sales.length === 0
-      ) {
-        await seedAdminDemoData(uid, orgId);
-        const [p2, s2, sup2] = await Promise.all([
-          supabase.from("products_safe_view").select("*").eq("organization_id", orgId).range(0, 4999),
-          supabase.from("sales").select("*, sale_items(*)").eq("organization_id", orgId).gte("created_at", cutoff).order("created_at", { ascending: false }),
-          supabase.from("suppliers").select("*").eq("organization_id", orgId).order("name"),
-        ]);
-        db.products = (p2.data || []).map(rowToProduct);
-        db.sales = (s2.data || []).map(rowToSale);
-        db.suppliers = (sup2.data || []).map(rowToSupplier);
-        persist();
-        toast.success("Demo data loaded into your admin pharmacy");
-      }
-
       this.startRealtime(orgId);
     } finally {
       this._hydrating = false;
@@ -983,20 +936,21 @@ export const store = {
     try {
       let query = supabase
         .from("sales")
-        .select("*, sale_items(*)")
+        .select(SALES_SELECT)
         .eq("organization_id", orgId)
         .order("created_at", { ascending: false });
 
+      let sinceISO: string | null = null;
       if (maxDays !== -1 && maxDays > 0) {
-        const cutoff = new Date(Date.now() - maxDays * 86400000).toISOString();
-        query = query.gte("created_at", cutoff);
+        sinceISO = new Date(Date.now() - maxDays * 86400000).toISOString();
+        query = query.gte("created_at", sinceISO);
       }
 
-      const { data, error } = await query;
+      const [{ data, error }, margins] = await Promise.all([query, fetchMargins(sinceISO)]);
       if (error) return { ok: false, error: error.message };
 
       const existingIds = new Set(db.sales.map((s) => s.id));
-      const newSales = (data || []).map(rowToSale).filter((s) => !existingIds.has(s.id));
+      const newSales = applyMargins((data || []).map(rowToSale), margins).filter((s) => !existingIds.has(s.id));
       db.sales = [...db.sales, ...newSales].sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
@@ -1050,19 +1004,23 @@ function productPatchToRow(patch: Partial<Product>) {
     shelfAisle: "shelf_aisle", shelfShelf: "shelf_shelf", shelfBin: "shelf_bin",
   };
   for (const [k, v] of Object.entries(patch)) {
+    // STEP 14b-2: for staff without margin access the cost price is hidden
+    // (null). Sending it back would ERASE the real cost price, and every
+    // later sale of that product would be saved with cost 0. Skip it.
+    if (k === "costPrice" && v == null) continue;
     if (k in map) out[map[k]] = (k === "expiry" || k === "lastRestocked") ? (v || null) : v;
   }
   return out;
 }
 function rowToSale(r: any): Sale {
   return {
-    id: r.id, total: Number(r.total) || 0, profit: Number(r.profit) || 0,
+    id: r.id, total: Number(r.total) || 0, profit: r.profit != null ? Number(r.profit) : null,
     payment: r.payment, cashier: r.cashier || "", customer: r.customer || undefined,
     createdAt: r.created_at,
     syncStatus: "synced",
     items: (r.sale_items || []).map((it: any) => ({
-      productId: it.product_id, name: it.name, qty: it.qty,
-      price: Number(it.price), cost: Number(it.cost),
+      id: it.id, productId: it.product_id, name: it.name, qty: it.qty,
+      price: Number(it.price), cost: it.cost != null ? Number(it.cost) : undefined,
     })),
   };
 }
@@ -1301,37 +1259,6 @@ const supabasePush = {
     if (error) { console.error(error); toast.error("Could not save pharmacy settings"); }
   },
 };
-
-async function seedAdminDemoData(uid: string, orgId: string) {
-  const seed = makeSeed();
-  const supRows = seed.suppliers.map((s) => supplierToRow(s, uid, orgId));
-  if (supRows.length) {
-    const { error } = await supabase.from("suppliers").insert(supRows);
-    if (error) { console.error(error); }
-  }
-  const prodRows = seed.products.map((p) => productToRow(p, uid, orgId));
-  if (prodRows.length) {
-    const { error } = await supabase.from("products").insert(prodRows);
-    if (error) { toast.error("Failed to seed demo products"); return; }
-  }
-  for (const s of seed.sales) {
-    const { error: e1 } = await supabase.from("sales").insert({
-      id: s.id, user_id: uid, organization_id: orgId,
-      total: s.total, profit: s.profit, payment: s.payment,
-      cashier: s.cashier, customer: s.customer || null, created_at: s.createdAt,
-    });
-    if (e1) { console.error(e1); continue; }
-    if (s.items.length) {
-      const { error: e2 } = await supabase.from("sale_items").insert(
-        s.items.map((it) => ({
-          sale_id: s.id, product_id: it.productId || null, name: it.name,
-          qty: it.qty, price: it.price, cost: it.cost ?? 0,
-        })),
-      );
-      if (e2) console.error(e2);
-    }
-  }
-}
 
 if (typeof window !== "undefined") {
   window.addEventListener("online", () => {
