@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useStore, store, usePlan } from "@/lib/store";
+import { canSeeMargins } from "@/lib/permissions";
 import { NGN } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
 import { Search, Download, Eye, History, Loader2 } from "lucide-react";
@@ -22,6 +23,9 @@ export default function SalesHistory() {
   const [view, setView] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const { tier, plan } = usePlan();
+  // STEP 14b-2: profit only for the Owner and staff with margin access.
+  const user = useStore((s) => s.user);
+  const showMargins = canSeeMargins(user);
 
   const isPro = tier === "pro";
   const maxDays = plan?.maxSalesHistoryDays ?? 0;
@@ -52,17 +56,18 @@ export default function SalesHistory() {
     });
   }, [sales, q, from, to, pay]);
 
-  const totals = list.reduce((a, s) => ({ rev: a.rev + s.total, profit: a.profit + s.profit }), { rev: 0, profit: 0 });
+  const totals = list.reduce((a, s) => ({ rev: a.rev + s.total, profit: a.profit + (s.profit ?? 0) }), { rev: 0, profit: 0 });
 
   const exportCSV = () => {
-    const headers = ["receipt","date","customer","cashier","payment","items","total","profit"];
+    const headers = ["receipt","date","customer","cashier","payment","items","total", ...(showMargins ? ["profit"] : [])];
     const rows = list.map((s) => [
       s.id.slice(0, 8).toUpperCase(),
       format(new Date(s.createdAt), "yyyy-MM-dd HH:mm"),
       s.customer || "Walk-in",
       s.cashier, s.payment,
       s.items.map((it) => `${it.name} x${it.qty}`).join(" | "),
-      s.total.toFixed(2), s.profit.toFixed(2),
+      s.total.toFixed(2),
+      ...(showMargins ? [s.profit != null ? s.profit.toFixed(2) : ""] : []),
     ].map((v) => JSON.stringify(v)).join(","));
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -134,7 +139,7 @@ export default function SalesHistory() {
 
           <div className="mt-3 flex gap-3 text-sm">
             <Badge variant="outline" className="border-success text-success">Revenue: {NGN(totals.rev)}</Badge>
-            <Badge variant="outline" className="border-info text-info">Profit: {NGN(totals.profit)}</Badge>
+            {showMargins && <Badge variant="outline" className="border-info text-info">Profit: {NGN(totals.profit)}</Badge>}
             <Badge variant="outline">{list.length} sales</Badge>
           </div>
         </CardHeader>
@@ -150,14 +155,14 @@ export default function SalesHistory() {
                   <TableHead>Cashier</TableHead>
                   <TableHead>Items</TableHead>
                   <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Profit</TableHead>
+                  {showMargins && <TableHead className="text-right">Profit</TableHead>}
                   <TableHead>Payment</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {list.length === 0 && (
-                  <TableRow><TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No sales</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={showMargins ? 9 : 8} className="py-8 text-center text-sm text-muted-foreground">No sales</TableCell></TableRow>
                 )}
                 {list.map((s) => (
                   <TableRow key={s.id}>
@@ -167,7 +172,7 @@ export default function SalesHistory() {
                     <TableCell className="text-xs">{s.cashier}</TableCell>
                     <TableCell>{s.items.length}</TableCell>
                     <TableCell className="text-right font-medium">{NGN(s.total)}</TableCell>
-                    <TableCell className="text-right text-success">{NGN(s.profit)}</TableCell>
+                    {showMargins && <TableCell className="text-right text-success">{s.profit != null ? NGN(s.profit) : "—"}</TableCell>}
                     <TableCell><Badge variant="outline">{s.payment}</Badge></TableCell>
                     <TableCell>
                       <Button size="icon" variant="ghost" onClick={() => setView(s)}>
@@ -213,9 +218,11 @@ export default function SalesHistory() {
               <div className="flex justify-between border-t pt-2 font-semibold">
                 <span>Total</span><span>{NGN(view.total)}</span>
               </div>
-              <div className="flex justify-between text-sm text-success">
-                <span>Profit</span><span>{NGN(view.profit)}</span>
-              </div>
+              {showMargins && (
+                <div className="flex justify-between text-sm text-success">
+                  <span>Profit</span><span>{view.profit != null ? NGN(view.profit) : "—"}</span>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>
