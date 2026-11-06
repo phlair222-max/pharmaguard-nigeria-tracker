@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useStore, store, usePlan } from "@/lib/store";
+import { canSeeMargins } from "@/lib/permissions";
 import { NGN, expiryStatus, daysUntil } from "@/lib/format";
 import { format, startOfDay } from "date-fns";
 import { FileDown, FileText, ShieldCheck, History, Loader2 } from "lucide-react";
@@ -23,6 +24,10 @@ export default function Reports() {
   const dispenses = useStore((s) => s.controlledDispense);
   const audit = useStore((s) => s.audit);
   const extendedLoaded = useStore((s) => s.extendedSalesLoaded);
+  // STEP 14b-2: profit, cost and margin figures only for the Owner and
+  // staff with margin access (the database enforces the same rule).
+  const user = useStore((s) => s.user);
+  const showMargins = canSeeMargins(user);
   const [from, setFrom] = useState(format(new Date(Date.now() - 6 * 86400000), "yyyy-MM-dd"));
   const [to, setTo] = useState(format(new Date(), "yyyy-MM-dd"));
   const [extLoading, setExtLoading] = useState(false);
@@ -50,7 +55,7 @@ export default function Reports() {
     return sales.filter((s) => { const x = new Date(s.createdAt).getTime(); return x >= f && x < t; });
   }, [sales, from, to]);
 
-  const totals = inRange.reduce((a, s) => ({ rev: a.rev + s.total, profit: a.profit + s.profit, count: a.count + 1 }), { rev: 0, profit: 0, count: 0 });
+  const totals = inRange.reduce((a, s) => ({ rev: a.rev + s.total, profit: a.profit + (s.profit ?? 0), count: a.count + 1 }), { rev: 0, profit: 0, count: 0 });
 
   const expiryRows = products.map((p) => ({ ...p, status: expiryStatus(p.expiry), days: daysUntil(p.expiry) }))
     .sort((a, b) => a.days - b.days);
@@ -108,7 +113,7 @@ export default function Reports() {
     autoTable(doc, {
       startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [22, 160, 110] },
       head: [["Metric", "Value"]],
-      body: [["Transactions", String(totals.count)], ["Revenue", NGN(totals.rev)], ["Profit", NGN(totals.profit)]],
+      body: [["Transactions", String(totals.count)], ["Revenue", NGN(totals.rev)], ...(showMargins ? [["Profit", NGN(totals.profit)]] : [])],
     });
     y = (doc as any).lastAutoTable.finalY + 6;
 
@@ -197,9 +202,9 @@ export default function Reports() {
         <CardContent className="flex flex-wrap items-end gap-3 p-4">
           <div><Label className="text-xs">From</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><Label className="text-xs">To</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-          <div className="ml-auto grid grid-cols-3 gap-3 text-sm">
+          <div className={`ml-auto grid ${showMargins ? "grid-cols-3" : "grid-cols-2"} gap-3 text-sm`}>
             <Stat label="Revenue" v={NGN(totals.rev)} />
-            <Stat label="Profit" v={NGN(totals.profit)} />
+            {showMargins && <Stat label="Profit" v={NGN(totals.profit)} />}
             <Stat label="Transactions" v={String(totals.count)} />
           </div>
 
@@ -228,7 +233,7 @@ export default function Reports() {
       <Tabs defaultValue="sales">
         <TabsList className="flex flex-wrap h-auto">
           <TabsTrigger value="sales">Sales</TabsTrigger>
-          <TabsTrigger value="profit">Profit</TabsTrigger>
+          {showMargins && <TabsTrigger value="profit">Profit</TabsTrigger>}
           <TabsTrigger value="stock">Stock</TabsTrigger>
           <TabsTrigger value="expiry">Expiry</TabsTrigger>
           <TabsTrigger value="movement">Stock Movement</TabsTrigger>
@@ -241,11 +246,11 @@ export default function Reports() {
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => exportXLSX("Sales", inRange.map((s) => ({
                   Date: format(new Date(s.createdAt), "yyyy-MM-dd HH:mm"), Receipt: s.id.slice(0,8).toUpperCase(),
-                  Items: s.items.length, Total: s.total, Profit: s.profit, Payment: s.payment, Cashier: s.cashier,
+                  Items: s.items.length, Total: s.total, ...(showMargins ? { Profit: s.profit } : {}), Payment: s.payment, Cashier: s.cashier,
                 })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
                 <Button size="sm" variant="outline" onClick={() => exportPDF("Sales Report",
-                  ["Date","Receipt","Items","Total","Profit","Payment"],
-                  inRange.map((s) => [format(new Date(s.createdAt), "dd MMM HH:mm"), s.id.slice(0,8).toUpperCase(), s.items.length, s.total.toFixed(2), s.profit.toFixed(2), s.payment])
+                  ["Date","Receipt","Items","Total", ...(showMargins ? ["Profit"] : []),"Payment"],
+                  inRange.map((s) => [format(new Date(s.createdAt), "dd MMM HH:mm"), s.id.slice(0,8).toUpperCase(), s.items.length, s.total.toFixed(2), ...(showMargins ? [s.profit != null ? s.profit.toFixed(2) : "—"] : []), s.payment])
                 )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
               </div>
             </CardHeader>
@@ -254,18 +259,18 @@ export default function Reports() {
                 <Table>
                   <TableHeader><TableRow>
                     <TableHead>Date</TableHead><TableHead>Receipt</TableHead><TableHead>Items</TableHead>
-                    <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Profit</TableHead>
+                    <TableHead className="text-right">Total</TableHead>{showMargins && <TableHead className="text-right">Profit</TableHead>}
                     <TableHead>Payment</TableHead><TableHead>Cashier</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
-                    {inRange.length === 0 && <TableRow><TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">No sales in range</TableCell></TableRow>}
+                    {inRange.length === 0 && <TableRow><TableCell colSpan={showMargins ? 7 : 6} className="py-8 text-center text-sm text-muted-foreground">No sales in range</TableCell></TableRow>}
                     {inRange.map((s) => (
                       <TableRow key={s.id}>
                         <TableCell className="text-xs">{format(new Date(s.createdAt), "dd MMM yyyy HH:mm")}</TableCell>
                         <TableCell className="text-xs font-mono">{s.id.slice(0,8).toUpperCase()}</TableCell>
                         <TableCell>{s.items.length}</TableCell>
                         <TableCell className="text-right font-medium">{NGN(s.total)}</TableCell>
-                        <TableCell className="text-right text-success">{NGN(s.profit)}</TableCell>
+                        {showMargins && <TableCell className="text-right text-success">{s.profit != null ? NGN(s.profit) : "—"}</TableCell>}
                         <TableCell><Badge variant="outline">{s.payment}</Badge></TableCell>
                         <TableCell className="text-xs">{s.cashier}</TableCell>
                       </TableRow>
@@ -277,7 +282,7 @@ export default function Reports() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="profit">
+        {showMargins && <TabsContent value="profit">
           <Card className="shadow-card">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <CardTitle className="text-base">Profit by product</CardTitle>
@@ -315,13 +320,13 @@ export default function Reports() {
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
+        </TabsContent>}
 
         <TabsContent value="stock">
           <div className="mb-3 flex flex-wrap gap-2 text-sm">
-            <Badge variant="outline" className="border-info text-info">Stock value (cost): {NGN(stockCostValue)}</Badge>
+            {showMargins && <Badge variant="outline" className="border-info text-info">Stock value (cost): {NGN(stockCostValue)}</Badge>}
             <Badge variant="outline" className="border-success text-success">Stock value (retail): {NGN(stockSellValue)}</Badge>
-            <Badge variant="outline">Potential margin: {NGN(stockSellValue - stockCostValue)}</Badge>
+            {showMargins && <Badge variant="outline">Potential margin: {NGN(stockSellValue - stockCostValue)}</Badge>}
           </div>
           <Card className="shadow-card">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
@@ -329,11 +334,11 @@ export default function Reports() {
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => exportXLSX("Stock", products.map((p) => ({
                   Name: p.name, Generic: p.generic, NAFDAC: p.nafdac, Batch: p.batch, Expiry: p.expiry,
-                  Quantity: p.quantity, Cost: p.costPrice, Price: p.sellingPrice, Value: p.quantity * p.costPrice, Supplier: p.supplier,
+                  Quantity: p.quantity, ...(showMargins ? { Cost: p.costPrice, Value: p.quantity * (p.costPrice ?? 0) } : {}), Price: p.sellingPrice, Supplier: p.supplier,
                 })))}><FileDown className="mr-1 h-4 w-4" />Excel</Button>
                 <Button size="sm" variant="outline" onClick={() => exportPDF("Stock Report",
-                  ["Name","NAFDAC","Batch","Expiry","Qty","Cost","Price"],
-                  products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, p.costPrice, p.sellingPrice])
+                  ["Name","NAFDAC","Batch","Expiry","Qty", ...(showMargins ? ["Cost"] : []),"Price"],
+                  products.map((p) => [p.name, p.nafdac, p.batch, p.expiry, p.quantity, ...(showMargins ? [p.costPrice] : []), p.sellingPrice])
                 )}><FileText className="mr-1 h-4 w-4" />PDF</Button>
               </div>
             </CardHeader>
@@ -342,7 +347,7 @@ export default function Reports() {
                 <Table>
                   <TableHeader><TableRow>
                     <TableHead>Name</TableHead><TableHead>NAFDAC</TableHead><TableHead className="text-right">Qty</TableHead>
-                    <TableHead className="text-right">Value</TableHead><TableHead>Supplier</TableHead>
+                    {showMargins && <TableHead className="text-right">Value</TableHead>}<TableHead>Supplier</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
                     {products.map((p) => (
@@ -350,7 +355,7 @@ export default function Reports() {
                         <TableCell><div className="font-medium">{p.name}</div><div className="text-xs text-muted-foreground">{p.generic}</div></TableCell>
                         <TableCell className="text-xs">{p.nafdac}</TableCell>
                         <TableCell className="text-right">{p.quantity}</TableCell>
-                        <TableCell className="text-right">{NGN(p.quantity * p.costPrice)}</TableCell>
+                        {showMargins && <TableCell className="text-right">{NGN(p.quantity * (p.costPrice ?? 0))}</TableCell>}
                         <TableCell className="text-xs">{p.supplier}</TableCell>
                       </TableRow>
                     ))}
