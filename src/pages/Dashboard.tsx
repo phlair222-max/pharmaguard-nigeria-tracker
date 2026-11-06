@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useStore, salesVelocityMap, movementSpeed, usePlan } from "@/lib/store";
-import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
+import { useStore, salesVelocityMap, movementSpeed, usePlan, type Product } from "@/lib/store";
+import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass, formatShelfLocation } from "@/lib/format";
 import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, X, FileText, Loader2, Printer } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 import { format, startOfDay } from "date-fns";
@@ -63,7 +63,11 @@ function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
 }
 
 // ── AI Disposal Report Card ───────────────────────────────────────────────────
-function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any }) {
+// EXPIRY ALERTS (Nov 2026): `items` = stock on hand (quantity > 0) that is
+// already expired OR expires within 30 days, active and archived alike,
+// soonest first. Previously expired stock was left out of the report
+// entirely, although it is exactly what a disposal report is for.
+function DisposalReportCard({ items, settings }: { items: Product[]; settings: any }) {
   const plan = usePlan();
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<string | null>(null);
@@ -74,9 +78,11 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
     try {
       const { data, error } = await supabase.functions.invoke("generate-disposal-report", {
         body: {
-          products: near30.map((p) => ({
+          products: items.map((p) => ({
             name: p.name, batch: p.batch, expiry: p.expiry,
             quantity: p.quantity, nafdac: p.nafdac,
+            // EXPIRY ALERTS (Nov 2026): shelf location so staff can find the stock.
+            location: formatShelfLocation(p),
           })),
           // Pass pharmacy details so they get filled in the report
           pharmacyName: settings.name || "Pharmacy Name",
@@ -147,7 +153,7 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
           <FileText className="h-4 w-4 text-destructive" />
           AI Disposal Report
         </CardTitle>
-        {plan.canDisposalReport && near30.length > 0 && !report && (
+        {plan.canDisposalReport && items.length > 0 && !report && (
           <button
             onClick={generate}
             disabled={loading}
@@ -163,11 +169,11 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
           <UpgradePrompt
             feature="AI Disposal Report"
             requiredPlan="pro"
-            description="One click generates a NAFDAC-formatted disposal report for products expiring within 30 days. Ready to print and sign."
+            description="One click generates a NAFDAC-formatted disposal report for expired products and products expiring within 30 days. Ready to print and sign."
           />
-        ) : near30.length === 0 ? (
+        ) : items.length === 0 ? (
           <div className="py-6 text-center text-sm text-muted-foreground">
-            No products expiring within 30 days 🎉
+            No expired stock and nothing expiring within 30 days 🎉
           </div>
         ) : report ? (
           <div className="space-y-3">
@@ -198,7 +204,7 @@ function DisposalReportCard({ near30, settings }: { near30: any[]; settings: any
         ) : (
           <div className="py-4 text-center space-y-1">
             <p className="text-sm text-muted-foreground">
-              {near30.length} product{near30.length !== 1 ? "s" : ""} expiring within 30 days
+              {items.length} product{items.length !== 1 ? "s" : ""} expired or expiring within 30 days
             </p>
             <p className="text-xs text-muted-foreground">
               Click "Generate Report" above to create a NAFDAC-formatted disposal document
@@ -225,7 +231,9 @@ export default function Dashboard() {
   const todayStart = startOfDay(new Date()).getTime();
   const todaySales = sales.filter((s) => new Date(s.createdAt).getTime() >= todayStart);
   const todayRevenue = todaySales.reduce((a, s) => a + s.total, 0);
-  const todayProfit = todaySales.reduce((a, s) => a + s.profit, 0);
+  // STEP 14b-2 follow-up: profit is null for users without margin access
+  // (the card is hidden for them anyway); treat null as 0 so the sum is a number.
+  const todayProfit = todaySales.reduce((a, s) => a + (s.profit ?? 0), 0);
 
   const last30Start = todayStart - 29 * 86400000;
   const last30 = sales.filter((s) => new Date(s.createdAt).getTime() >= last30Start);
@@ -236,11 +244,29 @@ export default function Dashboard() {
   const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
 
   const lowStock = products.filter((p) => p.quantity <= p.reorderLevel);
-  const expiredCount = products.filter((p) => daysUntil(p.expiry) < 0).length;
+  // EXPIRY ALERTS (Nov 2026) — one rule for every expiry alert on this page
+  // and for the disposal report:
+  //   • only stock physically on hand counts (quantity > 0) — with nothing
+  //     on the shelf there is nothing to remove or dispose of;
+  //   • active AND archived products count — archiving stops a product being
+  //     sold, but boxes still on the shelf still expire (archived ones are
+  //     labelled "Archived" in the list);
+  //   • all product types count (pharmaceutical and non-pharmaceutical);
+  //   • products with no valid expiry date are skipped.
+  const onHand = products.filter((p) => p.quantity > 0 && Number.isFinite(daysUntil(p.expiry)));
 
-  const near30 = products.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; });
-  const near60 = products.filter((p) => { const d = daysUntil(p.expiry); return d > 30 && d <= 60; });
-  const near90 = products.filter((p) => { const d = daysUntil(p.expiry); return d > 60 && d <= 90; });
+  const expiredItems = onHand.filter((p) => daysUntil(p.expiry) < 0);
+  const expiredCount = expiredItems.length;
+
+  const near30 = onHand.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; });
+  const near60 = onHand.filter((p) => { const d = daysUntil(p.expiry); return d > 30 && d <= 60; });
+  const near90 = onHand.filter((p) => { const d = daysUntil(p.expiry); return d > 60 && d <= 90; });
+
+  // Expired + expiring within 30 days, soonest (most overdue) first.
+  // Feeds the "Expired & Near Expiry" list and the disposal report.
+  const disposalItems = [...expiredItems, ...near30].sort(
+    (a, b) => daysUntil(a.expiry) - daysUntil(b.expiry),
+  );
 
   const expiryBannerTiers: BannerTier[] = [
     { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed" },
@@ -383,31 +409,45 @@ export default function Dashboard() {
         {/* Near Expiry + AI Disposal Report */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card className="shadow-card">
-            <CardHeader><CardTitle className="text-base">Near Expiry — Next 30 Days</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-base">Expired &amp; Near Expiry (≤30 days)</CardTitle></CardHeader>
             <CardContent>
-              {near30.length === 0 ? (
-                <div className="py-6 text-center text-sm text-muted-foreground">Nothing expiring soon 🎉</div>
+              {disposalItems.length === 0 ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">Nothing expired or expiring soon 🎉</div>
               ) : (
                 <div className="space-y-2">
-                  {near30.slice(0, 8).map((p) => {
+                  {disposalItems.slice(0, 8).map((p) => {
                     const tier = expiryTier(p.expiry);
                     const d = daysUntil(p.expiry);
+                    const archived = p.active === false;
+                    const loc = formatShelfLocation(p);
                     return (
-                      <Link key={p.id} to="/inventory?filter=near" className="flex items-center justify-between rounded-md border p-2 hover:bg-muted/50">
-                        <div>
-                          <div className="text-sm font-medium">{p.name}</div>
-                          <div className="text-[11px] text-muted-foreground">Batch {p.batch} · qty {p.quantity}</div>
+                      <Link key={p.id} to={d < 0 ? "/inventory?filter=expired" : "/inventory?filter=near"} className="flex items-center justify-between gap-2 rounded-md border p-2 hover:bg-muted/50">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-sm font-medium">
+                            <span className="truncate">{p.name}</span>
+                            {archived && (
+                              <Badge variant="outline" className="shrink-0 border-muted-foreground/40 bg-muted px-1.5 py-0 text-[10px] text-muted-foreground">Archived</Badge>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Batch {p.batch} · qty {p.quantity} · {loc ? `Loc ${loc}` : "No shelf location"}
+                          </div>
                         </div>
-                        <Badge variant="outline" className={expiryBadgeClass(tier)}>{d < 0 ? `${-d}d ago` : `${d}d left`}</Badge>
+                        <Badge variant="outline" className={`shrink-0 ${expiryBadgeClass(tier)}`}>{d < 0 ? `Expired ${-d}d ago` : `${d}d left`}</Badge>
                       </Link>
                     );
                   })}
+                  {disposalItems.length > 8 && (
+                    <div className="pt-1 text-center text-xs text-muted-foreground">
+                      + {disposalItems.length - 8} more — all are included in the disposal report
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          <DisposalReportCard near30={near30} settings={settings} />
+          <DisposalReportCard items={disposalItems} settings={settings} />
         </div>
 
         {/* Low Stock */}
