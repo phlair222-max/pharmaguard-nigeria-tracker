@@ -16,7 +16,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Plus, Pencil, Trash2, PackagePlus, Search, Upload, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, ShieldAlert, ScanLine, Camera, Pill, ShoppingBasket, GraduationCap, MapPin, Archive, ChevronLeft, ChevronRight } from "lucide-react";
 import { store, useStore, Product, salesVelocityMap, movementSpeed } from "@/lib/store";
-import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass } from "@/lib/format";
+import { NGN, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass, formatShelfLocation } from "@/lib/format";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -31,16 +31,8 @@ const PACK_KEY = "pg_custom_pack_sizes";
 const loadCustom = (k: string): string[] => { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } };
 const saveCustom = (k: string, v: string[]) => localStorage.setItem(k, JSON.stringify(v));
 
-// FIX (shelf location): builds a compact "A3 / S2 / B1"-style display
-// string from whichever of the three fields are actually set — a product
-// might only have an aisle recorded, or all three. Returns null (render
-// nothing) when none are set, so products without a location don't show
-// an empty "Loc:" label cluttering the row.
-function formatShelfLocation(p: Pick<Product, "shelfAisle" | "shelfShelf" | "shelfBin">): string | null {
-  const parts = [p.shelfAisle, p.shelfShelf, p.shelfBin].filter((v) => v && v.trim());
-  if (parts.length === 0) return null;
-  return parts.join(" / ");
-}
+// EXPIRY ALERTS (Nov 2026): formatShelfLocation() now lives in
+// src/lib/format.ts so the Dashboard and disposal report use the same one.
 
 type NemlDrug = {
   id: string;
