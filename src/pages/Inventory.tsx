@@ -50,6 +50,7 @@ const empty: Omit<Product, "id"> = {
   costPrice: 0, sellingPrice: 0, supplier: "", category: "Analgesics", description: "",
   controlled: false, itemType: "pharmaceutical", nemlDrugId: undefined,
   shelfAisle: "", shelfShelf: "", shelfBin: "",
+  manufacturer: "", countryOfSource: "",
 };
 
 export default function Inventory() {
@@ -166,7 +167,8 @@ export default function Inventory() {
         || p.batch.toLowerCase().includes(term)
         || (p.shelfAisle || "").toLowerCase().includes(term)
         || (p.shelfShelf || "").toLowerCase().includes(term)
-        || (p.shelfBin || "").toLowerCase().includes(term);
+        || (p.shelfBin || "").toLowerCase().includes(term)
+        || (p.manufacturer || "").toLowerCase().includes(term);
     });
     const dir = sortDir === "asc" ? 1 : -1;
     const numericKeys = new Set(["quantity","reorderLevel","reorderQuantity","costPrice","sellingPrice"]);
@@ -256,7 +258,7 @@ export default function Inventory() {
   };
 
   const exportCSV = () => {
-    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled","shelfAisle","shelfShelf","shelfBin"];
+    const headers = ["name","generic","nafdac","batch","expiry","quantity","reorderLevel","reorderQuantity","packSize","lastRestocked","costPrice","sellingPrice","supplier","category","barcode","controlled","shelfAisle","shelfShelf","shelfBin","manufacturer","countryOfSource"];
     const rows = products.map((p) => headers.map((h) => JSON.stringify((p as any)[h] ?? "")).join(","));
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -873,6 +875,29 @@ export default function Inventory() {
                   onChange={(e) => setDraft({ ...draft, shelfBin: e.target.value })}
                 />
               </div>
+            </div>
+
+            {/* STEP 16b (Nov 2026): NAFDAC's disposal inventory (ENF-GDL-001-00)
+                asks for the manufacturer's name and address and the country of
+                source (if imported). Optional — fill in when known. */}
+            <div className="col-span-2">
+              <Label>Manufacturer &amp; origin (optional)</Label>
+              <div className="mt-1 grid grid-cols-3 gap-2">
+                <Input
+                  className="col-span-2"
+                  placeholder="Manufacturer name and address (e.g. Emzor Pharmaceutical Industries Ltd, Lagos)"
+                  value={draft.manufacturer || ""}
+                  onChange={(e) => setDraft({ ...draft, manufacturer: e.target.value })}
+                />
+                <Input
+                  placeholder="Country of source (if imported)"
+                  value={draft.countryOfSource || ""}
+                  onChange={(e) => setDraft({ ...draft, countryOfSource: e.target.value })}
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Needed for the NAFDAC disposal inventory if this product ever expires.
+              </p>
             </div>
 
             <div className="col-span-2">
