@@ -54,7 +54,15 @@ function useTickerItems(): TickerItem[] {
     const salesToday = sales.filter((s) => new Date(s.createdAt).toDateString() === today);
     const stockValue = products.reduce((sum, p) => sum + p.quantity * p.sellingPrice, 0);
     const lowStock = products.filter((p) => p.quantity <= p.reorderLevel).length;
-    const expiringSoon = products.filter((p) => { const d = daysUntil(p.expiry); return d >= 0 && d <= 30; }).length;
+    // EXPIRY ALERTS (Nov 2026): same rule as the Dashboard — only stock
+    // physically on hand (quantity > 0) counts; active and archived alike.
+    // Before, zero-quantity items were counted, so the ticker could say
+    // "3 products expiring" while the Dashboard correctly said 2.
+    const expiringSoon = products.filter((p) => {
+      if (!(p.quantity > 0)) return false;
+      const d = daysUntil(p.expiry);
+      return d >= 0 && d <= 30;
+    }).length;
     const controlledCount = products.filter((p) => p.controlled).length;
 
     const live: TickerItem[] = [
