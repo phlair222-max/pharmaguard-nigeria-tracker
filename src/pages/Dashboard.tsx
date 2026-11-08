@@ -102,6 +102,8 @@ type DisposalInventory = {
 const esc = (v: unknown) =>
   String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+// Whole numbers with thousands separators, e.g. 13,893.
+const count = (n: number) => new Intl.NumberFormat("en-NG").format(n || 0);
 const money = (n: number) =>
   new Intl.NumberFormat("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
 const blankLine = (v: string, width = "60mm") =>
@@ -118,6 +120,9 @@ function letterheadHtml(inv: DisposalInventory) {
     </div>`;
 }
 
+// STEP 17c (print review): the subtotal is the LAST body row, not a table
+// footer — browsers repeat a table footer at the bottom of every printed
+// page, which made the section subtotal appear on each page.
 function sectionTable(title: string, note: string, rows: InventoryRow[], startAt: number) {
   if (rows.length === 0) {
     return `<h2>${esc(title)}</h2><p class="note">${esc(note)}</p><p><em>None.</em></p>`;
@@ -130,12 +135,12 @@ function sectionTable(title: string, note: string, rows: InventoryRow[], startAt
       <td><strong>${esc(r.name)}</strong>${r.generic && r.generic.toLowerCase() !== r.name.toLowerCase() ? `<br><span class="sub">${esc(r.generic)}</span>` : ""}${r.archived ? `<br><span class="sub">(archived product)</span>` : ""}</td>
       <td>${esc(r.nafdacNo)}</td>
       <td>${esc(r.manufacturer)}</td>
-      <td>${esc(r.batch)}</td>
+      <td class="nw">${esc(r.batch)}</td>
       <td>${esc(r.manufacturingDate)}</td>
       <td class="nw">${esc(r.expiry)}</td>
       <td>${esc(r.productCategory)}${r.pharmacologicalClass ? `<br><span class="sub">${esc(r.pharmacologicalClass)}</span>` : ""}</td>
       <td>${esc(r.countryOfSource)}</td>
-      <td class="r">${esc(r.quantity)}</td>
+      <td class="r">${count(r.quantity)}</td>
       <td class="r">${money(r.unitPrice)}</td>
       <td class="r">${money(r.marketValue)}</td>
       <td>${esc(r.reason)}</td>
@@ -149,12 +154,12 @@ function sectionTable(title: string, note: string, rows: InventoryRow[], startAt
         <th>Batch No.</th><th>Mfg. date</th><th>Expiry date</th><th>Category / Pharmacological class</th>
         <th>Country of source</th><th>Qty</th><th>Unit price (₦)</th><th>Market value (₦)</th><th>Reason</th>
       </tr></thead>
-      <tbody>${body}</tbody>
-      <tfoot><tr>
+      <tbody>${body}
+      <tr class="subtotal">
         <td colspan="9" class="r"><strong>Subtotal</strong></td>
-        <td class="r"><strong>${esc(qty)}</strong></td><td></td>
+        <td class="r"><strong>${count(qty)}</strong></td><td></td>
         <td class="r"><strong>${money(value)}</strong></td><td></td>
-      </tr></tfoot>
+      </tr></tbody>
     </table>`;
 }
 
@@ -178,6 +183,7 @@ function inventoryHtml(inv: DisposalInventory) {
     tr { page-break-inside: avoid; }
     .r { text-align: right; } .c { text-align: center; } .nw { white-space: nowrap; }
     .sub { color: #333; font-size: 7pt; }
+    .subtotal td { background: #f4f4f4; }
     .totals td { border: none; padding: 1px 4px; }
     .sign { margin-top: 10px; page-break-inside: avoid; }
     .sign td { border: none; padding: 5px 4px; }
@@ -199,8 +205,8 @@ function inventoryHtml(inv: DisposalInventory) {
     inv.controlled, inv.general.length + 1)}
 
   <table class="totals" style="width:auto;margin-top:8px">
-    <tr><td>Total items:</td><td><strong>${esc(t.items)}</strong> (general ${esc(t.generalItems)}, controlled ${esc(t.controlledItems)})</td></tr>
-    <tr><td>Total quantity:</td><td><strong>${esc(t.quantity)}</strong></td></tr>
+    <tr><td>Total items:</td><td><strong>${count(t.items)}</strong> (general ${count(t.generalItems)}, controlled ${count(t.controlledItems)})</td></tr>
+    <tr><td>Total quantity:</td><td><strong>${count(t.quantity)}</strong></td></tr>
     <tr><td>Total market value:</td><td><strong>₦${money(t.marketValue)}</strong> (at current selling prices)</td></tr>
   </table>
 
@@ -246,10 +252,10 @@ function coverLetterHtml(inv: DisposalInventory) {
   <p>We write to apply for the verification and supervised destruction of expired products held at our premises,
   ${esc(p.name)}${p.address ? ", " + esc(p.address) : ""}${p.premiseLicense ? " (Premises Licence No. " + esc(p.premiseLicense) + ")" : ""},
   in line with the NAFDAC Guidelines for Handling and Disposal of Unwholesome Medicines and NAFDAC Regulated Products (${esc(inv.guideline)}).</p>
-  <p>The attached inventory (Ref: ${esc(inv.refNo)}) lists <strong>${esc(t.items)}</strong> item(s), a total quantity of
-  <strong>${esc(t.quantity)}</strong>, with a total market value of <strong>₦${money(t.marketValue)}</strong>.
+  <p>The attached inventory (Ref: ${esc(inv.refNo)}) lists <strong>${count(t.items)}</strong> item(s), a total quantity of
+  <strong>${count(t.quantity)}</strong>, with a total market value of <strong>₦${money(t.marketValue)}</strong>.
   ${t.controlledItems > 0
-    ? `Of these, <strong>${esc(t.controlledItems)}</strong> item(s) are controlled medicines, listed separately in Section B and stored apart from general stock, for handling as the Agency directs.`
+    ? `Of these, <strong>${count(t.controlledItems)}</strong> item(s) are controlled medicines, listed separately in Section B and stored apart from general stock, for handling as the Agency directs.`
     : ""}</p>
   <p>The products have been removed from sale and are quarantined in a separate area labelled
   “Expired Products, Not for Sale”. We will make the premises and records available for inspection and will
