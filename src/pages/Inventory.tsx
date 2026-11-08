@@ -906,11 +906,16 @@ export default function Inventory() {
               {/* STEP 18b: two separate labels, so "(optional)" clearly
                   belongs only to Country of source. */}
               <div className="grid grid-cols-3 gap-2">
+                {/* STEP 18c: the asterisk shows when adding AND editing, so it is
+                    always clear the field matters. Only NEW products are blocked
+                    without it; an old product with none shows "missing". */}
                 <Label className="col-span-2">
-                  Manufacturer{" "}
-                  {editing
-                    ? <span className="font-normal text-muted-foreground">(name and address)</span>
-                    : <span className="text-destructive">* required</span>}
+                  Manufacturer <span className="text-destructive">*</span>{" "}
+                  {!editing ? (
+                    <span className="text-destructive">required</span>
+                  ) : !(draft.manufacturer || "").trim() ? (
+                    <span className="text-warning">missing — please add</span>
+                  ) : null}
                 </Label>
                 <Label>
                   Country of source <span className="font-normal text-muted-foreground">(optional)</span>
