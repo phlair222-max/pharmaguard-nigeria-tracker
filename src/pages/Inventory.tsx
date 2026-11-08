@@ -582,9 +582,15 @@ export default function Inventory() {
                           {tierLabel}
                         </span>
                       </TableCell>
+                      {/* STEP 18b: the table uses fixed column widths, so the old
+                          "LOW STOCK" label was wider than the Stock column and
+                          spilled into the Reorder column. Now a short "Low" tag,
+                          stacked under the number and right-aligned with it. */}
                       <TableCell className="py-3.5 text-right">
-                        <span className={cn("font-semibold tabular-nums", low && "text-destructive")}>{p.quantity}</span>
-                        {low && <div className="text-[10px] font-medium text-destructive whitespace-nowrap">LOW STOCK</div>}
+                        <div className="flex flex-col items-end leading-tight">
+                          <span className={cn("font-semibold tabular-nums", low && "text-destructive")}>{p.quantity}</span>
+                          {low && <span className="mt-0.5 text-[10px] font-medium uppercase text-destructive">Low</span>}
+                        </div>
                       </TableCell>
                       <TableCell className="py-3.5 text-right text-xs tabular-nums text-muted-foreground">{p.reorderLevel}</TableCell>
                       <TableCell className="py-3.5">
@@ -897,13 +903,22 @@ export default function Inventory() {
                 optional (only needed if imported). Placeholders shortened so
                 they are not cut off. */}
             <div className="col-span-2">
-              <Label>
-                {editing ? "Manufacturer" : "Manufacturer *"}{" "}
-                <span className="font-normal text-muted-foreground">&amp; country of source (optional)</span>
-              </Label>
+              {/* STEP 18b: two separate labels, so "(optional)" clearly
+                  belongs only to Country of source. */}
+              <div className="grid grid-cols-3 gap-2">
+                <Label className="col-span-2">
+                  Manufacturer{" "}
+                  {editing
+                    ? <span className="font-normal text-muted-foreground">(name and address)</span>
+                    : <span className="text-destructive">* required</span>}
+                </Label>
+                <Label>
+                  Country of source <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+              </div>
               <div className="mt-1 grid grid-cols-3 gap-2">
                 <Input
-                  className="col-span-2"
+                  className={cn("col-span-2", !editing && !(draft.manufacturer || "").trim() && "border-destructive/60")}
                   placeholder="Name and address, e.g. Emzor, Lagos"
                   value={draft.manufacturer || ""}
                   onChange={(e) => setDraft({ ...draft, manufacturer: e.target.value })}
@@ -932,7 +947,15 @@ export default function Inventory() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={save}>{editing ? "Save changes" : "Add product"}</Button>
+            {/* STEP 18b: a new product cannot be added without a manufacturer —
+                the button stays disabled (save() also refuses, as a backstop). */}
+            <Button
+              onClick={save}
+              disabled={!editing && !(draft.manufacturer || "").trim()}
+              title={!editing && !(draft.manufacturer || "").trim() ? "Enter the manufacturer first" : undefined}
+            >
+              {editing ? "Save changes" : "Add product"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
