@@ -34,6 +34,11 @@ export type Product = {
   shelfAisle?: string;
   shelfShelf?: string;
   shelfBin?: string;
+  // STEP 16b (Nov 2026): needed for the NAFDAC disposal inventory
+  // (ENF-GDL-001-00 asks for manufacturer name and address, and country of
+  // source if imported). Both optional. Database columns added in Step 16a.
+  manufacturer?: string;
+  countryOfSource?: string;
 };
 
 // STEP 14b-2: `id` is the sale line's database id (used to attach its cost);
@@ -975,6 +980,7 @@ function productToRow(p: Product, userId: string, orgId: string) {
     controlled: !!p.controlled, barcode: p.barcode || null,
     neml_drug_id: p.nemlDrugId || null, item_type: p.itemType || "pharmaceutical",
     shelf_aisle: p.shelfAisle || null, shelf_shelf: p.shelfShelf || null, shelf_bin: p.shelfBin || null,
+    manufacturer: p.manufacturer?.trim() || null, country_of_source: p.countryOfSource?.trim() || null,
   };
 }
 function rowToProduct(r: any): Product {
@@ -989,6 +995,7 @@ function rowToProduct(r: any): Product {
     nemlDrugId: r.neml_drug_id || undefined, itemType: r.item_type || "pharmaceutical",
     active: r.active !== false,
     shelfAisle: r.shelf_aisle || undefined, shelfShelf: r.shelf_shelf || undefined, shelfBin: r.shelf_bin || undefined,
+    manufacturer: r.manufacturer || undefined, countryOfSource: r.country_of_source || undefined,
   };
 }
 function productPatchToRow(patch: Partial<Product>) {
@@ -1002,6 +1009,7 @@ function productPatchToRow(patch: Partial<Product>) {
     barcode: "barcode", nemlDrugId: "neml_drug_id", itemType: "item_type",
     active: "active",
     shelfAisle: "shelf_aisle", shelfShelf: "shelf_shelf", shelfBin: "shelf_bin",
+    manufacturer: "manufacturer", countryOfSource: "country_of_source",
   };
   for (const [k, v] of Object.entries(patch)) {
     // STEP 14b-2: for staff without margin access the cost price is hidden
