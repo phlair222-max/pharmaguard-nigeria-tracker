@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useStore, salesVelocityMap, movementSpeed, usePlan, type Product } from "@/lib/store";
+import { useStore, salesVelocityMap, movementSpeed, usePlan } from "@/lib/store";
 import { NGN, num, expiryTier, expiryBadgeClass, daysUntil, movementBadgeClass, formatShelfLocation } from "@/lib/format";
 import { TrendingUp, Receipt, Wallet, AlertTriangle, PackageX, CalendarClock, Boxes, Banknote, Activity, Info, Flame, User, X, FileText, Loader2, Printer } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
@@ -62,158 +62,336 @@ function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
   );
 }
 
-// ── AI Disposal Report Card ───────────────────────────────────────────────────
-// EXPIRY ALERTS (Nov 2026): `items` = stock on hand (quantity > 0) that is
-// already expired OR expires within 30 days, active and archived alike,
-// soonest first. Previously expired stock was left out of the report
-// entirely, although it is exactly what a disposal report is for.
-function DisposalReportCard({ items, settings }: { items: Product[]; settings: any }) {
+// ── NAFDAC Disposal Inventory Card ────────────────────────────────────────────
+// STEP 17 (Nov 2026): replaces the "AI Disposal Report". NAFDAC's guideline
+// ENF-GDL-001-00 says a pharmacy APPLIES to NAFDAC for destruction with an
+// inventory of the unwholesome products; NAFDAC verifies and supervises.
+// The server (generate-disposal-report) now builds that inventory from the
+// database — only EXPIRED stock with quantity above 0, controlled medicines
+// listed separately, no AI — and this card lays it out for printing, plus an
+// optional cover letter. Near-expiry stock is still sellable and is NOT part
+// of the inventory (it stays in the "Expired & Near Expiry" list above).
+// Only the Owner or a Pharmacist may generate it (also enforced on the server).
+
+type InventoryRow = {
+  name: string; generic: string; nafdacNo: string; manufacturer: string;
+  batch: string; manufacturingDate: string; expiry: string;
+  productCategory: string; pharmacologicalClass: string; countryOfSource: string;
+  quantity: number; unitPrice: number; marketValue: number; reason: string;
+  archived: boolean;
+};
+type DisposalInventory = {
+  refNo: string; date: string; asOf: string; guideline: string;
+  generatedBy: { email: string; role: string };
+  pharmacy: {
+    name: string; address: string; phone: string; email: string;
+    premiseLicense: string; pcnLicense: string; ownerName: string;
+  };
+  general: InventoryRow[];
+  controlled: InventoryRow[];
+  totals: {
+    items: number; quantity: number; marketValue: number;
+    generalItems: number; generalValue: number;
+    controlledItems: number; controlledValue: number;
+    missingManufacturer: number; missingBatch: number;
+  };
+};
+
+// Every value printed comes from data people typed (product names etc.), so
+// it is escaped before going into the print window.
+const esc = (v: unknown) =>
+  String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const money = (n: number) =>
+  new Intl.NumberFormat("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
+const blankLine = (v: string, width = "60mm") =>
+  v ? esc(v) : `<span style="display:inline-block;width:${width};border-bottom:1px solid #000">&nbsp;</span>`;
+
+function letterheadHtml(inv: DisposalInventory) {
+  const p = inv.pharmacy;
+  return `
+    <div class="lh">
+      <div class="lh-name">${esc(p.name)}</div>
+      <div>${esc(p.address)}</div>
+      <div>${p.phone ? "Tel: " + esc(p.phone) : ""}${p.phone && p.email ? " &nbsp;·&nbsp; " : ""}${p.email ? "Email: " + esc(p.email) : ""}</div>
+      <div>Premises Licence No: ${blankLine(p.premiseLicense, "45mm")}</div>
+    </div>`;
+}
+
+function sectionTable(title: string, note: string, rows: InventoryRow[], startAt: number) {
+  if (rows.length === 0) {
+    return `<h2>${esc(title)}</h2><p class="note">${esc(note)}</p><p><em>None.</em></p>`;
+  }
+  const qty = rows.reduce((a, r) => a + r.quantity, 0);
+  const value = rows.reduce((a, r) => a + r.marketValue, 0);
+  const body = rows.map((r, i) => `
+    <tr>
+      <td class="c">${startAt + i}</td>
+      <td><strong>${esc(r.name)}</strong>${r.generic && r.generic.toLowerCase() !== r.name.toLowerCase() ? `<br><span class="sub">${esc(r.generic)}</span>` : ""}${r.archived ? `<br><span class="sub">(archived product)</span>` : ""}</td>
+      <td>${esc(r.nafdacNo)}</td>
+      <td>${esc(r.manufacturer)}</td>
+      <td>${esc(r.batch)}</td>
+      <td>${esc(r.manufacturingDate)}</td>
+      <td class="nw">${esc(r.expiry)}</td>
+      <td>${esc(r.productCategory)}${r.pharmacologicalClass ? `<br><span class="sub">${esc(r.pharmacologicalClass)}</span>` : ""}</td>
+      <td>${esc(r.countryOfSource)}</td>
+      <td class="r">${esc(r.quantity)}</td>
+      <td class="r">${money(r.unitPrice)}</td>
+      <td class="r">${money(r.marketValue)}</td>
+      <td>${esc(r.reason)}</td>
+    </tr>`).join("");
+  return `
+    <h2>${esc(title)}</h2>
+    <p class="note">${esc(note)}</p>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Product name</th><th>NAFDAC Reg. No.</th><th>Manufacturer (name &amp; address)</th>
+        <th>Batch No.</th><th>Mfg. date</th><th>Expiry date</th><th>Category / Pharmacological class</th>
+        <th>Country of source</th><th>Qty</th><th>Unit price (₦)</th><th>Market value (₦)</th><th>Reason</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr>
+        <td colspan="9" class="r"><strong>Subtotal</strong></td>
+        <td class="r"><strong>${esc(qty)}</strong></td><td></td>
+        <td class="r"><strong>${money(value)}</strong></td><td></td>
+      </tr></tfoot>
+    </table>`;
+}
+
+function inventoryHtml(inv: DisposalInventory) {
+  const t = inv.totals;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Inventory of Expired Products for Destruction ${esc(inv.refNo)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 8pt; color: #000; margin: 0; }
+    .lh { text-align: center; border-bottom: 2px solid #000; padding-bottom: 4px; margin-bottom: 6px; }
+    .lh-name { font-size: 13pt; font-weight: bold; }
+    h1 { font-size: 11pt; text-align: center; margin: 6px 0 2px; }
+    h2 { font-size: 9.5pt; margin: 10px 0 2px; }
+    .meta { text-align: center; margin-bottom: 4px; }
+    .note { margin: 0 0 4px; font-style: italic; }
+    table { width: 100%; border-collapse: collapse; page-break-inside: auto; }
+    th, td { border: 1px solid #000; padding: 2px 3px; vertical-align: top; }
+    th { background: #eee; font-size: 7.5pt; }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+    .r { text-align: right; } .c { text-align: center; } .nw { white-space: nowrap; }
+    .sub { color: #333; font-size: 7pt; }
+    .totals td { border: none; padding: 1px 4px; }
+    .sign { margin-top: 10px; page-break-inside: avoid; }
+    .sign td { border: none; padding: 5px 4px; }
+    .foot { margin-top: 8px; font-size: 7pt; color: #333; }
+  </style></head><body>
+  ${letterheadHtml(inv)}
+  <h1>INVENTORY OF EXPIRED PRODUCTS FOR DESTRUCTION</h1>
+  <div class="meta">Ref: <strong>${esc(inv.refNo)}</strong> &nbsp;·&nbsp; Date: ${esc(inv.date)} &nbsp;·&nbsp;
+    Stock position as at ${esc(inv.asOf)} &nbsp;·&nbsp; Prepared in line with NAFDAC Guidelines ${esc(inv.guideline)}</div>
+
+  ${sectionTable(
+    "SECTION A — GENERAL PRODUCTS",
+    "Expired products held at the premises, removed from sale and quarantined, for verification and supervised destruction by NAFDAC.",
+    inv.general, 1)}
+
+  ${sectionTable(
+    "SECTION B — CONTROLLED MEDICINES (kept separately)",
+    "Controlled medicines are stored separately and are NOT destroyed with general stock. To be handed over or returned as directed by NAFDAC.",
+    inv.controlled, inv.general.length + 1)}
+
+  <table class="totals" style="width:auto;margin-top:8px">
+    <tr><td>Total items:</td><td><strong>${esc(t.items)}</strong> (general ${esc(t.generalItems)}, controlled ${esc(t.controlledItems)})</td></tr>
+    <tr><td>Total quantity:</td><td><strong>${esc(t.quantity)}</strong></td></tr>
+    <tr><td>Total market value:</td><td><strong>₦${money(t.marketValue)}</strong> (at current selling prices)</td></tr>
+  </table>
+
+  <div class="sign">
+    <p>I certify that the products listed above are expired products held by this pharmacy, that they have been
+    removed from sale and quarantined, and that the information given is correct to the best of my knowledge.</p>
+    <table>
+      <tr><td>Superintendent Pharmacist (name):</td><td>${blankLine("", "70mm")}</td>
+          <td>PCN Reg. No.:</td><td>${blankLine("", "45mm")}</td></tr>
+      <tr><td>Signature:</td><td>${blankLine("", "70mm")}</td>
+          <td>Date:</td><td>${blankLine("", "45mm")}</td></tr>
+      <tr><td>Pharmacy stamp:</td><td colspan="3">&nbsp;</td></tr>
+    </table>
+  </div>
+
+  <div class="foot">Manufacturing dates are not recorded in the system and should be completed from the product packs.
+  Market value = quantity × current selling price. Generated with PharmaGuard NG by ${esc(inv.generatedBy.email)}
+  (${esc(inv.generatedBy.role)}).</div>
+  </body></html>`;
+}
+
+function coverLetterHtml(inv: DisposalInventory) {
+  const p = inv.pharmacy;
+  const t = inv.totals;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Application for Destruction ${esc(inv.refNo)}</title>
+  <style>
+    @page { size: A4; margin: 20mm; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 11pt; line-height: 1.5; color: #000; margin: 0; }
+    .lh { text-align: center; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 14px; font-size: 10pt; }
+    .lh-name { font-size: 15pt; font-weight: bold; }
+    p { margin: 0 0 10px; }
+    .subj { font-weight: bold; text-decoration: underline; }
+  </style></head><body>
+  ${letterheadHtml(inv)}
+  <p>Our Ref: ${esc(inv.refNo)}<br>Date: ${esc(inv.date)}</p>
+  <p>The Director-General<br>
+  National Agency for Food and Drug Administration and Control (NAFDAC)<br>
+  Attention: The Director, Investigation and Enforcement Directorate<br>
+  ${blankLine("", "90mm")} <span style="font-size:9pt">(address of NAFDAC office)</span></p>
+  <p>Dear Sir/Madam,</p>
+  <p class="subj">APPLICATION FOR THE VERIFICATION AND DESTRUCTION OF EXPIRED PRODUCTS</p>
+  <p>We write to apply for the verification and supervised destruction of expired products held at our premises,
+  ${esc(p.name)}${p.address ? ", " + esc(p.address) : ""}${p.premiseLicense ? " (Premises Licence No. " + esc(p.premiseLicense) + ")" : ""},
+  in line with the NAFDAC Guidelines for Handling and Disposal of Unwholesome Medicines and NAFDAC Regulated Products (${esc(inv.guideline)}).</p>
+  <p>The attached inventory (Ref: ${esc(inv.refNo)}) lists <strong>${esc(t.items)}</strong> item(s), a total quantity of
+  <strong>${esc(t.quantity)}</strong>, with a total market value of <strong>₦${money(t.marketValue)}</strong>.
+  ${t.controlledItems > 0
+    ? `Of these, <strong>${esc(t.controlledItems)}</strong> item(s) are controlled medicines, listed separately in Section B and stored apart from general stock, for handling as the Agency directs.`
+    : ""}</p>
+  <p>The products have been removed from sale and are quarantined in a separate area labelled
+  “Expired Products, Not for Sale”. We will make the premises and records available for inspection and will
+  comply with the Agency's directions, including payment of any prescribed fees.</p>
+  <p>We look forward to your response.</p>
+  <p>Yours faithfully,</p>
+  <p style="margin-top:28px">${blankLine("", "70mm")}<br>
+  Name: ${blankLine(p.ownerName, "70mm")}<br>
+  Designation: Superintendent Pharmacist / Owner<br>
+  PCN Reg. No.: ${blankLine("", "50mm")}<br>
+  Phone: ${blankLine(p.phone, "50mm")}</p>
+  <p style="font-size:9pt">Enclosure: Inventory of Expired Products for Destruction (Ref: ${esc(inv.refNo)})</p>
+  </body></html>`;
+}
+
+function openAndPrint(html: string) {
+  const w = window.open("", "_blank");
+  if (!w) { toast.error("Please allow pop-ups for this site to print."); return; }
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 300);
+}
+
+function DisposalReportCard({ expiredCount, canGenerate }: { expiredCount: number; canGenerate: boolean }) {
   const plan = usePlan();
   const [loading, setLoading] = useState(false);
-  const [report, setReport] = useState<string | null>(null);
-  const [refNo, setRefNo] = useState<string>("");
+  const [inv, setInv] = useState<DisposalInventory | null>(null);
 
   const generate = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("generate-disposal-report", {
-        body: {
-          products: items.map((p) => ({
-            name: p.name, batch: p.batch, expiry: p.expiry,
-            quantity: p.quantity, nafdac: p.nafdac,
-            // EXPIRY ALERTS (Nov 2026): shelf location so staff can find the stock.
-            location: formatShelfLocation(p),
-          })),
-          // Pass pharmacy details so they get filled in the report
-          pharmacyName: settings.name || "Pharmacy Name",
-          pharmacyAddress: settings.address || "Pharmacy Address",
-          pharmacyPhone: settings.phone || "N/A",
-          pharmacyEmail: settings.email || "",
-          premiseLicense: settings.premiseLicense || "",
-        },
-      });
-      if (error) throw error;
-      setReport(data.report);
-      if (data.refNo) setRefNo(data.refNo);
+      // The server builds the list from the database; nothing is sent from here.
+      const { data, error } = await supabase.functions.invoke("generate-disposal-report", { body: {} });
+      if (error) {
+        // Show the server's own message (e.g. "Only the Owner or a Pharmacist…").
+        let msg = error.message;
+        try { const b = await (error as any).context?.json?.(); if (b?.error) msg = b.error; } catch { /* keep default */ }
+        throw new Error(msg);
+      }
+      if (!data || !Array.isArray(data.general)) throw new Error("Unexpected response from the server.");
+      setInv(data as DisposalInventory);
     } catch (e: any) {
-      toast.error("Failed to generate report: " + e.message);
+      toast.error("Could not build the inventory: " + e.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const print = () => {
-    const w = window.open("", "_blank");
-    if (!w) return;
-    w.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>NAFDAC Disposal Report ${refNo}</title>
-        <style>
-          /* FIX (misaligned printed table): this was "Times New Roman" — a
-             proportional serif font — while the on-screen preview just
-             above uses font-mono. A fixed-width, space-padded table only
-             lines up in a monospace font; in a proportional font every
-             character takes different width, so columns drift out of
-             alignment. Now print matches what's already shown on screen. */
-          /* FIX (Nov 2026, printed report review): the report now comes from
-             the server already laid out, every line at most 88 characters.
-             At 9pt Courier, 88 characters fit the A4 width inside 15mm
-             margins (about 168mm of 180mm), so table rows no longer wrap
-             (Qty used to drop onto its own line). Lines are printed exactly
-             as sent (white-space: pre), never re-wrapped by the browser. */
-          @page { size: A4; margin: 15mm; }
-          body {
-            font-family: "Courier New", Courier, monospace;
-            font-size: 9pt;
-            line-height: 1.45;
-            margin: 0;
-            color: #000;
-          }
-          pre {
-            font-family: "Courier New", Courier, monospace;
-            font-size: 9pt;
-            white-space: pre;
-            margin: 0;
-          }
-        </style>
-      </head>
-      <body>
-        <pre>${report?.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
-      </body>
-      </html>
-    `);
-    w.document.close();
-    w.focus();
-    setTimeout(() => w.print(), 300);
-  };
+  const t = inv?.totals;
 
   return (
     <Card className="shadow-card border-destructive/20">
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <FileText className="h-4 w-4 text-destructive" />
-          AI Disposal Report
+          NAFDAC Disposal Inventory
         </CardTitle>
-        {plan.canDisposalReport && items.length > 0 && !report && (
+        {plan.canDisposalReport && canGenerate && expiredCount > 0 && !inv && (
           <button
             onClick={generate}
             disabled={loading}
             className="flex items-center gap-1.5 rounded-md bg-destructive/10 border border-destructive/30 px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
           >
             {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
-            {loading ? "Generating…" : "Generate Report"}
+            {loading ? "Building…" : "Generate Inventory"}
           </button>
         )}
       </CardHeader>
       <CardContent>
         {!plan.canDisposalReport ? (
           <UpgradePrompt
-            feature="AI Disposal Report"
+            feature="NAFDAC Disposal Inventory"
             requiredPlan="pro"
-            description="One click generates a NAFDAC-formatted disposal report for expired products and products expiring within 30 days. Ready to print and sign."
+            description="Builds the inventory of expired stock that NAFDAC asks for when you apply for destruction, with controlled medicines listed separately and a cover letter. Ready to print and sign."
           />
-        ) : items.length === 0 ? (
+        ) : expiredCount === 0 && !inv ? (
           <div className="py-6 text-center text-sm text-muted-foreground">
-            No expired stock and nothing expiring within 30 days 🎉
+            No expired stock on hand — nothing to apply for 🎉
           </div>
-        ) : report ? (
+        ) : inv && t ? (
           <div className="space-y-3">
-            {/* Clean document preview */}
-            {/* FIX (Nov 2026): lines are shown exactly as laid out (88 wide);
-                scroll sideways on small screens instead of re-wrapping,
-                which used to break the table rows apart. */}
-            <div className="rounded-lg border bg-white dark:bg-zinc-950 p-4 max-h-96 overflow-auto">
-              <pre className="whitespace-pre text-[11px] leading-relaxed font-mono text-foreground">
-                {report}
-              </pre>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={print}
-                className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
-              >
-                <Printer className="h-3.5 w-3.5" /> Print Report
-              </button>
-              <button
-                onClick={() => { setReport(null); setRefNo(""); }}
-                className="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-muted transition-colors"
-              >
-                Clear
-              </button>
-            </div>
-            {refNo && (
-              <p className="text-[11px] text-muted-foreground text-center">Ref: {refNo}</p>
+            {t.items === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">No expired stock on hand — nothing to apply for.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-md border p-2">
+                    <div className="text-lg font-bold">{num(t.items)}</div>
+                    <div className="text-[11px] text-muted-foreground">expired items</div>
+                  </div>
+                  <div className="rounded-md border p-2">
+                    <div className="text-lg font-bold">{num(t.controlledItems)}</div>
+                    <div className="text-[11px] text-muted-foreground">controlled (Section B)</div>
+                  </div>
+                  <div className="rounded-md border p-2">
+                    <div className="text-lg font-bold">{NGN(t.marketValue)}</div>
+                    <div className="text-[11px] text-muted-foreground">market value</div>
+                  </div>
+                </div>
+                {(t.missingManufacturer > 0 || t.missingBatch > 0) && (
+                  <div className="rounded-md border border-warning/40 bg-warning/10 p-2 text-[11px] text-warning">
+                    Missing details NAFDAC asks for:
+                    {t.missingManufacturer > 0 && ` ${t.missingManufacturer} item(s) without a manufacturer.`}
+                    {t.missingBatch > 0 && ` ${t.missingBatch} item(s) without a batch number.`}
+                    {" "}Add them in Inventory and generate again, or complete them by hand.
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => openAndPrint(inventoryHtml(inv))}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print Inventory
+                  </button>
+                  <button
+                    onClick={() => openAndPrint(coverLetterHtml(inv))}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold hover:bg-muted transition-colors"
+                  >
+                    <Printer className="h-3.5 w-3.5" /> Print Cover Letter
+                  </button>
+                </div>
+              </>
             )}
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>Ref: {inv.refNo}</span>
+              <button onClick={() => setInv(null)} className="underline hover:text-foreground">Clear</button>
+            </div>
+          </div>
+        ) : !canGenerate ? (
+          <div className="py-4 text-center text-sm text-muted-foreground">
+            {expiredCount} expired product{expiredCount !== 1 ? "s" : ""} in stock. Only the Owner or a
+            Pharmacist can generate the NAFDAC disposal inventory.
           </div>
         ) : (
           <div className="py-4 text-center space-y-1">
             <p className="text-sm text-muted-foreground">
-              {items.length} product{items.length !== 1 ? "s" : ""} expired or expiring within 30 days
+              {expiredCount} expired product{expiredCount !== 1 ? "s" : ""} in stock
             </p>
             <p className="text-xs text-muted-foreground">
-              Click "Generate Report" above to create a NAFDAC-formatted disposal document
+              Click "Generate Inventory" to build the list NAFDAC asks for when you apply for destruction.
+              Near-expiry stock is not included — it can still be sold.
             </p>
           </div>
         )}
@@ -445,7 +623,7 @@ export default function Dashboard() {
                   })}
                   {disposalItems.length > 8 && (
                     <div className="pt-1 text-center text-xs text-muted-foreground">
-                      + {disposalItems.length - 8} more — all are included in the disposal report
+                      + {disposalItems.length - 8} more — see Inventory
                     </div>
                   )}
                 </div>
@@ -453,7 +631,11 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <DisposalReportCard items={disposalItems} settings={settings} />
+          {/* STEP 17: the inventory lists EXPIRED stock only (built on the server). */}
+          <DisposalReportCard
+            expiredCount={expiredItems.length}
+            canGenerate={user?.memberRole === "Owner" || user?.memberRole === "Pharmacist"}
+          />
         </div>
 
         {/* Low Stock */}
