@@ -108,6 +108,10 @@ type PlanRow = {
   can_reports: boolean;
   can_suppliers: boolean;
   can_audit_trail: boolean;
+  // STEP 15d (Nov 2026): was missing from this editor entirely, so the
+  // Disposal Report setting could not be seen or changed here (Basic had
+  // it switched on unnoticed — fixed in Step 15a).
+  can_disposal_report: boolean;
 };
 
 // ── View As snapshot shape ─────────────────────────────────────────────────
@@ -804,6 +808,7 @@ function PlanConfigTab() {
         can_reports: plan.can_reports,
         can_suppliers: plan.can_suppliers,
         can_audit_trail: plan.can_audit_trail,
+        can_disposal_report: plan.can_disposal_report,
         updated_at: new Date().toISOString(),
       })
       .eq("tier", plan.tier);
@@ -899,6 +904,8 @@ function PlanConfigTab() {
                   ["can_poisons_register", "Poisons Register"],
                   ["can_audit_trail", "Audit Trail"],
                   ["can_ai_forecast", "AI Forecast"],
+                  // STEP 15d: the Dashboard's AI Disposal Report (Pro only today).
+                  ["can_disposal_report", "AI Disposal Report"],
                 ] as [keyof PlanRow, string][]).map(([field, label]) => (
                   <div key={field} className="flex items-center justify-between">
                     <Label className="text-xs font-normal">{label}</Label>
