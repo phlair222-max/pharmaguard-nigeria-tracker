@@ -155,6 +155,8 @@ export default function Inventory() {
       if (filter === "near" && t !== "red" && t !== "yellow") return false;
       if (filter === "expired" && daysUntil(p.expiry) >= 0) return false;
       if (filter === "controlled" && !p.controlled) return false;
+      // STEP 18: helps pharmacies fill in manufacturers on older products.
+      if (filter === "nomanufacturer" && (p.manufacturer || "").trim()) return false;
       if (cat !== "all" && p.category !== cat) return false;
       if (supFilter !== "all" && p.supplierId !== supFilter && p.supplier !== supFilter) return false;
       if (expFilter !== "all" && t !== expFilter) return false;
@@ -217,6 +219,15 @@ export default function Inventory() {
   };
   const save = () => {
     if (!draft.name || !draft.expiry) { toast.error("Name and expiry are required"); return; }
+    // STEP 18 (Nov 2026): manufacturer is REQUIRED for new products (it is on
+    // every pack, and NAFDAC's disposal inventory asks for it). Older products
+    // without one can still be saved — the form shows a warning instead, so a
+    // quick stock edit is never blocked. CSV import stays lenient; the
+    // "Missing manufacturer" filter finds those products afterwards.
+    if (!editing && !(draft.manufacturer || "").trim()) {
+      toast.error("Manufacturer is required for new products — it is printed on the pack.");
+      return;
+    }
     if (!editing) {
       const name = draft.name.trim().toLowerCase();
       const dups = products.filter((p) => p.name.trim().toLowerCase() === name);
@@ -410,13 +421,14 @@ export default function Inventory() {
                 </SelectContent>
               </Select>
               <Select value={filter} onValueChange={(v) => setParams(v === "all" ? {} : { filter: v })}>
-                <SelectTrigger className="w-[135px] shrink-0"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-[170px] shrink-0"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All items</SelectItem>
                   <SelectItem value="low">Low stock</SelectItem>
                   <SelectItem value="near">Near expiry</SelectItem>
                   <SelectItem value="expired">Expired</SelectItem>
                   <SelectItem value="controlled">Controlled drugs</SelectItem>
+                  <SelectItem value="nomanufacturer">Missing manufacturer</SelectItem>
                 </SelectContent>
               </Select>
               <div className="h-6 w-px shrink-0 bg-border" />
@@ -879,25 +891,38 @@ export default function Inventory() {
 
             {/* STEP 16b (Nov 2026): NAFDAC's disposal inventory (ENF-GDL-001-00)
                 asks for the manufacturer's name and address and the country of
-                source (if imported). Optional — fill in when known. */}
+                source (if imported).
+                STEP 18: manufacturer required for NEW products; older products
+                without one show a warning but can still be saved. Country stays
+                optional (only needed if imported). Placeholders shortened so
+                they are not cut off. */}
             <div className="col-span-2">
-              <Label>Manufacturer &amp; origin (optional)</Label>
+              <Label>
+                {editing ? "Manufacturer" : "Manufacturer *"}{" "}
+                <span className="font-normal text-muted-foreground">&amp; country of source (optional)</span>
+              </Label>
               <div className="mt-1 grid grid-cols-3 gap-2">
                 <Input
                   className="col-span-2"
-                  placeholder="Manufacturer name and address (e.g. Emzor Pharmaceutical Industries Ltd, Lagos)"
+                  placeholder="Name and address, e.g. Emzor, Lagos"
                   value={draft.manufacturer || ""}
                   onChange={(e) => setDraft({ ...draft, manufacturer: e.target.value })}
                 />
                 <Input
-                  placeholder="Country of source (if imported)"
+                  placeholder="Country (if imported)"
                   value={draft.countryOfSource || ""}
                   onChange={(e) => setDraft({ ...draft, countryOfSource: e.target.value })}
                 />
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Needed for the NAFDAC disposal inventory if this product ever expires.
-              </p>
+              {editing && !(draft.manufacturer || "").trim() ? (
+                <p className="mt-1 text-[11px] text-warning">
+                  No manufacturer recorded. You can still save, but NAFDAC's disposal inventory asks for it — please add it from the pack.
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Printed on the pack. Needed for the NAFDAC disposal inventory if this product ever expires.
+                </p>
+              )}
             </div>
 
             <div className="col-span-2">
