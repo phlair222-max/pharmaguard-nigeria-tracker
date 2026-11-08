@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Lock, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
+import { NGN } from "@/lib/format";
 
 type Props = {
   feature: string;           // e.g. "AI Disposal Report"
@@ -9,12 +12,57 @@ type Props = {
   compact?: boolean;         // inline button variant vs full card
 };
 
-const PLAN_DAILY = { basic: "₦500", pro: "₦700" };
-const PLAN_MONTHLY = { basic: "₦15,000", pro: "₦21,000" };
+// FIX (Nov 2026, wrong prices shown to customers): prices used to be typed
+// into this file (Basic "₦15,000/month · ₦500/day", Pro "₦21,000/month ·
+// ₦700/day") and had drifted from the real plans (Basic ₦25,000, Pro
+// ₦45,000). The price now comes from plan_config.price_monthly — the same
+// value Platform Admin edits — so it can never drift again.
+// While the price is loading, or if it cannot be read, NO price is shown
+// (never a wrong one). The "/day" figure was removed: billing is monthly.
 const PLAN_LABEL = { basic: "Basic", pro: "Pro" };
+
+// Read each plan's price once per page load and share it between every
+// UpgradePrompt on screen (no repeated database calls).
+const priceCache: Partial<Record<"basic" | "pro", Promise<number | null>>> = {};
+
+function loadPlanPrice(tier: "basic" | "pro"): Promise<number | null> {
+  if (!priceCache[tier]) {
+    priceCache[tier] = (async () => {
+      const { data, error } = await (supabase.from as any)("plan_config")
+        .select("price_monthly")
+        .eq("tier", tier)
+        .maybeSingle();
+      if (error || !data) {
+        if (error) console.error("[UpgradePrompt] could not read plan price", error);
+        delete priceCache[tier]; // allow a retry next time the prompt appears
+        return null;
+      }
+      const n = Number(data.price_monthly);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })();
+  }
+  return priceCache[tier]!;
+}
+
+function usePlanPrice(tier: "basic" | "pro"): number | null {
+  const [price, setPrice] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    loadPlanPrice(tier).then((p) => { if (alive) setPrice(p); });
+    return () => { alive = false; };
+  }, [tier]);
+  return price;
+}
+
+// Whole naira, e.g. "₦45,000" (plan prices have no kobo).
+const wholeNaira = (n: number) => NGN(n).replace(/\.00$/, "");
 
 export function UpgradePrompt({ feature, requiredPlan, description, compact = false }: Props) {
   const navigate = useNavigate();
+  const price = usePlanPrice(requiredPlan);
+  // FIX (Nov 2026): go straight to the Plan & Billing tab, the same place
+  // the sidebar's "Upgrade to Pro" button opens (was the generic Settings tab).
+  const goToBilling = () => navigate("/settings?tab=billing");
 
   if (compact) {
     return (
@@ -26,9 +74,9 @@ export function UpgradePrompt({ feature, requiredPlan, description, compact = fa
         <Button
           size="sm"
           className="h-7 text-xs bg-amber-500 hover:bg-amber-400 text-black font-bold px-3"
-          onClick={() => navigate("/settings")}
+          onClick={goToBilling}
         >
-          Upgrade · {PLAN_DAILY[requiredPlan]}/day
+          Upgrade{price !== null ? ` · ${wholeNaira(price)}/month` : ""}
         </Button>
       </div>
     );
@@ -48,12 +96,16 @@ export function UpgradePrompt({ feature, requiredPlan, description, compact = fa
       <div className="flex items-center gap-3 flex-wrap justify-center">
         <Button
           className="gap-2 bg-amber-500 hover:bg-amber-400 text-black font-bold"
-          onClick={() => navigate("/settings")}
+          onClick={goToBilling}
         >
           <Zap className="h-4 w-4" />
-          Upgrade to {PLAN_LABEL[requiredPlan]} · {PLAN_DAILY[requiredPlan]}/day
+          Upgrade to {PLAN_LABEL[requiredPlan]}
         </Button>
-        <span className="text-xs text-muted-foreground">{PLAN_MONTHLY[requiredPlan]}/month · Cancel anytime</span>
+        {price !== null && (
+          <span className="text-xs text-muted-foreground">
+            {PLAN_LABEL[requiredPlan]} plan: {wholeNaira(price)}/month
+          </span>
+        )}
       </div>
     </div>
   );
