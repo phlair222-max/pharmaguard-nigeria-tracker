@@ -110,6 +110,12 @@ export type ControlledDispense = {
   cashier: string;
   at: string;
   syncStatus?: "synced" | "pending";
+  // STEP 19b: the sale this register entry belongs to (Option B). Entries
+  // made before Step 19 have none ("Not linked").
+  saleId?: string | null;
+  // STEP 19b: set when the database refused this entry while syncing (not a
+  // network problem). The entry stays queued and is shown as needing attention.
+  syncError?: string;
 };
 
 export type LoginActivity = {
@@ -159,6 +165,9 @@ type DB = {
   loginActivity: LoginActivity[];
   credentials: Credential[];
   plan: PlanConfig | null;
+  // STEP 19b: the Free plan's own settings, used when a paid subscription
+  // has expired (instead of "no plan at all", which switched every feature off).
+  freePlan: PlanConfig | null;
   extendedSalesLoaded: boolean;
   authReady: boolean;
   isOffline: boolean;
@@ -238,7 +247,7 @@ const defaultSettings: PharmacySettings = {
 
 function emptyDb(): DB {
   return {
-    products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings, plan: null,
+    products: [], sales: [], audit: [], user: null, suppliers: [], settings: defaultSettings, plan: null, freePlan: null,
     extendedSalesLoaded: false,
     authReady: false,
     isOffline: typeof navigator !== "undefined" ? !navigator.onLine : false,
@@ -276,6 +285,7 @@ function load(): DB {
     parsed.loginActivity = parsed.loginActivity || [];
     parsed.credentials = parsed.credentials || [];
     parsed.extendedSalesLoaded = parsed.extendedSalesLoaded || false;
+    parsed.freePlan = parsed.freePlan ?? null;
     parsed.sales = (parsed.sales || []).map((s) => ({ ...s, syncStatus: s.syncStatus ?? "synced" }));
     parsed.authReady = false;
     parsed.isOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
@@ -451,6 +461,8 @@ export const store = {
     } finally {
       this._syncingSales = false;
     }
+    // STEP 19b: register entries linked to these sales can go now.
+    void this.syncPendingControlledDispenses();
   },
 
   addSupplier(s: Omit<Supplier, "id">) {
@@ -551,7 +563,7 @@ export const store = {
     this.audit("Cleared other sessions", currentUser ?? "system");
     persist();
   },
-  async recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier" | "syncStatus">): Promise<
+  async recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier" | "syncStatus" | "syncError">): Promise<
     | { ok: true; entry: ControlledDispense; offline: boolean }
     | { ok: false; error?: string }
   > {
@@ -560,14 +572,27 @@ export const store = {
       cashier: db.user?.username ?? "system", syncStatus: "pending",
     };
 
+    // STEP 19b: a register entry is a RECORD of a sale. It no longer reduces
+    // stock here (the sale already did — doing it again was the double
+    // deduction fixed in Step 19a on the database side).
     const prevControlled = db.controlledDispense;
-    const prevProducts = db.products;
 
     db.controlledDispense = [entry, ...db.controlledDispense];
-    db.products = db.products.map((p) =>
-      p.id === d.productId ? { ...p, quantity: Math.max(0, p.quantity - d.quantity) } : p
-    );
     persist();
+
+    // STEP 19b: if the linked sale is itself still waiting to sync (offline),
+    // the database can't see it yet — queue the entry; it is sent right after
+    // its sale syncs.
+    const linkedSale = d.saleId ? db.sales.find((s) => s.id === d.saleId) : undefined;
+    if (linkedSale && linkedSale.syncStatus === "pending") {
+      this.audit(
+        "Controlled dispense (offline — pending sync)",
+        d.productName,
+        `${d.quantity} to ${d.patientName} (Rx ${d.prescriptionRef})`
+      );
+      persist();
+      return { ok: true, entry, offline: true };
+    }
 
     const result = await supabasePush.insertControlled(entry);
 
@@ -590,10 +615,12 @@ export const store = {
     }
 
     db.controlledDispense = prevControlled;
-    db.products = prevProducts;
     persist();
     console.error("[recordControlledDispense] failed:", result.error);
-    toast.error("Controlled dispense could not be saved. Please try again or contact the Owner.", { duration: 8000 });
+    toast.error(
+      `Poisons Register entry could not be saved: ${result.error || "unknown error"}. Please try again or contact the Owner.`,
+      { duration: 10000 }
+    );
     return { ok: false, error: result.error };
   },
 
@@ -610,18 +637,36 @@ export const store = {
       );
 
       let syncedCount = 0;
+      let changed = false;
       for (const c of ordered) {
+        // STEP 19b: wait for the linked sale to reach the cloud first.
+        if (c.saleId && db.sales.find((s) => s.id === c.saleId)?.syncStatus === "pending") continue;
+
         const result = await supabasePush.insertControlled(c);
+        const idx = db.controlledDispense.findIndex((x) => x.id === c.id);
         if (result.ok) {
-          const idx = db.controlledDispense.findIndex((x) => x.id === c.id);
-          if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced" };
+          if (idx !== -1) db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncStatus: "synced", syncError: undefined };
           syncedCount++;
+          changed = true;
+        } else if (result.isNetworkError) {
+          break; // still offline — try again later
         } else {
-          break;
+          // STEP 19b: the database refused this entry (not a network problem).
+          // Previously this stopped ALL later entries from syncing, forever.
+          // Now: keep it queued, mark it, warn once, and carry on with the rest.
+          const msg = result.error || "refused by the database";
+          if (idx !== -1 && db.controlledDispense[idx].syncError !== msg) {
+            db.controlledDispense[idx] = { ...db.controlledDispense[idx], syncError: msg };
+            changed = true;
+            toast.error(
+              `Poisons Register entry for ${c.productName} (Rx ${c.prescriptionRef}) could not be synced: ${msg}. Please tell the Owner.`,
+              { duration: 12000 }
+            );
+          }
         }
       }
+      if (changed) persist();
       if (syncedCount > 0) {
-        persist();
         toast.success(`${syncedCount} offline controlled-dispense record${syncedCount > 1 ? "s" : ""} synced to the cloud`);
       }
     } finally {
@@ -889,7 +934,16 @@ export const store = {
       );
 
       db.suppliers = (supR.data || []).map(rowToSupplier);
-      db.controlledDispense = ((contR as any).data || []).map(rowToControlled);
+      // STEP 19b: keep register entries recorded offline that have not synced
+      // yet (previously they were replaced by the server list and lost).
+      const serverControlled: ControlledDispense[] = ((contR as any).data || []).map(rowToControlled);
+      const serverControlledIds = new Set(serverControlled.map((c) => c.id));
+      const pendingControlled = db.controlledDispense.filter(
+        (c) => c.syncStatus === "pending" && !serverControlledIds.has(c.id)
+      );
+      db.controlledDispense = [...pendingControlled, ...serverControlled].sort(
+        (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()
+      );
       db.audit = ((audR as any).data || []).map(rowToAudit);
       if ((orgR as any)?.data) db.settings = { ...db.settings, ...rowToSettings((orgR as any).data) };
 
@@ -908,21 +962,10 @@ export const store = {
       const plans: any[] = (planR as any)?.data || [];
       const thisPlan = plans.find((p: any) => p.tier === orgTier) || plans.find((p: any) => p.tier === "free");
 
-      db.plan = thisPlan ? {
-        tier: thisPlan.tier,
-        displayName: thisPlan.display_name,
-        priceMonthly: Number(thisPlan.price_monthly),
-        maxProducts: thisPlan.max_products,
-        maxStaff: thisPlan.max_staff,
-        maxSalesHistoryDays: thisPlan.max_sales_history_days,
-        canAiForecast: thisPlan.can_ai_forecast,
-        canPoisonsRegister: thisPlan.can_poisons_register,
-        canReports: thisPlan.can_reports,
-        canSuppliers: thisPlan.can_suppliers,
-        canAuditTrail: thisPlan.can_audit_trail,
-        canApiAccess: thisPlan.can_api_access ?? false,
-        canDisposalReport: thisPlan.can_disposal_report ?? false,
-      } : null;
+      db.plan = thisPlan ? rowToPlan(thisPlan) : null;
+      // STEP 19b: keep the Free plan too, for expired subscriptions.
+      const freeRow = plans.find((p: any) => p.tier === "free");
+      db.freePlan = freeRow ? rowToPlan(freeRow) : null;
 
       db.extendedSalesLoaded = false;
       persist();
@@ -1057,6 +1100,23 @@ function supplierPatchToRow(patch: Partial<Supplier>) {
   }
   return out;
 }
+function rowToPlan(p: any): PlanConfig {
+  return {
+    tier: p.tier,
+    displayName: p.display_name,
+    priceMonthly: Number(p.price_monthly),
+    maxProducts: p.max_products,
+    maxStaff: p.max_staff,
+    maxSalesHistoryDays: p.max_sales_history_days,
+    canAiForecast: p.can_ai_forecast,
+    canPoisonsRegister: p.can_poisons_register,
+    canReports: p.can_reports,
+    canSuppliers: p.can_suppliers,
+    canAuditTrail: p.can_audit_trail,
+    canApiAccess: p.can_api_access ?? false,
+    canDisposalReport: p.can_disposal_report ?? false,
+  };
+}
 function rowToControlled(r: any): ControlledDispense {
   return {
     id: r.id, productId: r.product_id || "", productName: r.product_name, batch: r.batch || "",
@@ -1064,6 +1124,7 @@ function rowToControlled(r: any): ControlledDispense {
     patientPhone: r.patient_phone || "", prescriber: r.prescriber, prescriberRegNo: r.prescriber_reg_no || "",
     prescriptionRef: r.prescription_ref, cashier: r.cashier || "", at: r.at,
     syncStatus: "synced",
+    saleId: r.sale_id ?? null,
   };
 }
 function rowToAudit(r: any): AuditEntry {
@@ -1238,6 +1299,8 @@ const supabasePush = {
           p_prescriber_reg_no: d.prescriberRegNo || null,
           p_prescription_ref: d.prescriptionRef,
           p_cashier: d.cashier,
+          // STEP 19b: link to the sale (null = not linked; the database flags it)
+          p_sale_id: d.saleId ?? null,
         }),
         SALE_WRITE_TIMEOUT_MS,
       );
@@ -1307,6 +1370,7 @@ export function movementSpeed(unitsLast30: number): "Fast" | "Medium" | "Slow" {
 
 export function usePlan() {
   const plan = useStore((s) => s.plan);
+  const freePlan = useStore((s) => s.freePlan);
   const user = useStore((s) => s.user);
   const products = useStore((s) => s.products);
 
@@ -1314,7 +1378,10 @@ export function usePlan() {
     ? new Date(user.subscriptionExpiresAt) < new Date()
     : false;
 
-  const effectivePlan = isExpired ? null : plan;
+  // STEP 19b: an expired subscription falls back to the real Free plan
+  // (previously null, which also locked Free features such as the Poisons
+  // Register and used a hard-coded 50-product limit).
+  const effectivePlan = isExpired ? freePlan : plan;
 
   return {
     plan: effectivePlan,
