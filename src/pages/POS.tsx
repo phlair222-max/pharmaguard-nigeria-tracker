@@ -286,6 +286,8 @@ export default function POS() {
           if (!f) continue;
           const p = products.find((x) => x.id === l.productId);
           const dResult = await store.recordControlledDispense({
+            // STEP 19c: link the register entry to the sale just saved.
+            saleId: sale.id,
             productId: l.productId, productName: l.name, batch: p?.batch || "",
             quantity: l.qty, amount: l.qty * l.price,
             patientName: f.patientName, patientPhone: f.patientPhone,
@@ -296,7 +298,7 @@ export default function POS() {
         }
         if (dispenseFailures.length > 0) {
           toast.error(
-            `Sale saved, but the Poisons Register entry for ${dispenseFailures.join(", ")} did NOT save. Please record it manually and notify the Owner.`,
+            `Sale saved, but the Poisons Register entry for ${dispenseFailures.join(", ")} did NOT save. Go to Poisons Register → "Add missing register entry", pick this sale, and notify the Owner.`,
             { duration: 12000 }
           );
         }
@@ -339,6 +341,19 @@ export default function POS() {
 
   const checkout = () => {
     if (cart.length === 0 || submitting) return;
+    // STEP 19c: the Poisons Register needs a batch number for every controlled
+    // item. Check BEFORE the sale is saved — otherwise the sale would go
+    // through and its register entry would then be refused.
+    const missingBatch = controlledInCart.filter(
+      (l) => !(products.find((p) => p.id === l.productId)?.batch || "").trim()
+    );
+    if (missingBatch.length > 0) {
+      toast.error(
+        `Add a batch number in Inventory first for: ${missingBatch.map((l) => l.name).join(", ")}. The Poisons Register requires it.`,
+        { duration: 10000 }
+      );
+      return;
+    }
     if (controlledInCart.length > 0) {
       if (user?.memberRole === "Cashier") { setPinOpen(true); return; }
       setControlledOpen(true); return;
@@ -576,7 +591,8 @@ function ControlledDispenseDialog({ open, onOpenChange, items, onConfirm }: {
   const submit = () => {
     for (const it of items) {
       const f = forms[it.productId] || {};
-      if (!f.patientName?.trim() || !f.prescriber?.trim() || !f.prescriptionRef?.trim()) {
+      // STEP 19c: MDCN / Reg No is required by the database (Poisons Register).
+      if (!f.patientName?.trim() || !f.prescriber?.trim() || !f.prescriberRegNo?.trim() || !f.prescriptionRef?.trim()) {
         toast.error(`Fill required fields for ${it.name}`); return;
       }
     }
@@ -617,7 +633,7 @@ function ControlledDispenseDialog({ open, onOpenChange, items, onConfirm }: {
                 <div><Label className="text-xs">Patient name *</Label><Input value={forms[it.productId]?.patientName || ""} onChange={(e) => update(it.productId, "patientName", e.target.value)} /></div>
                 <div><Label className="text-xs">Patient phone</Label><Input value={forms[it.productId]?.patientPhone || ""} onChange={(e) => update(it.productId, "patientPhone", e.target.value)} /></div>
                 <div><Label className="text-xs">Prescriber (Doctor) *</Label><Input value={forms[it.productId]?.prescriber || ""} onChange={(e) => update(it.productId, "prescriber", e.target.value)} /></div>
-                <div><Label className="text-xs">MDCN / Reg No</Label><Input value={forms[it.productId]?.prescriberRegNo || ""} onChange={(e) => update(it.productId, "prescriberRegNo", e.target.value)} /></div>
+                <div><Label className="text-xs">MDCN / Reg No *</Label><Input value={forms[it.productId]?.prescriberRegNo || ""} onChange={(e) => update(it.productId, "prescriberRegNo", e.target.value)} /></div>
                 <div className="md:col-span-2"><Label className="text-xs">Prescription Ref *</Label><Input value={forms[it.productId]?.prescriptionRef || ""} onChange={(e) => update(it.productId, "prescriptionRef", e.target.value)} placeholder="e.g. RX-2026-00123" /></div>
               </div>
             </div>
