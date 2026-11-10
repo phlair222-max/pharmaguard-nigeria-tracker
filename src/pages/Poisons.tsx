@@ -21,6 +21,23 @@ import { UpgradePrompt } from "@/components/UpgradePrompt";
 // STEP 19d: same receipt number the POS prints (first 8 characters, upper case).
 const receiptNo = (saleId?: string | null) => (saleId ? saleId.slice(0, 8).toUpperCase() : "");
 
+// STEP 19e: the register is a statutory record, so its times are always shown
+// in Lagos time (WAT), whatever time zone the computer is set to. Previously a
+// PC set to a UK time zone printed winter entries one hour early.
+function lagosDate(iso: string | Date): Date {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Lagos", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(iso));
+  const get = (t: string) => Number(parts.find((x) => x.type === t)?.value);
+  return new Date(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+}
+
+// STEP 19e: the PDF's built-in font has no Naira sign (it printed "¦"), which
+// also broke the column widths. The PDF prints "NGN 1,401.00" instead.
+const pdfNGN = (n: number) =>
+  "NGN " + (Number(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 export default function Poisons() {
   const navigate = useNavigate();
   const products = useStore((s) => s.products);
@@ -40,7 +57,7 @@ export default function Poisons() {
     const rows = [
       ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt"].join(","),
       ...dispenses.map((d) => [
-        format(new Date(d.at), "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount,
+        format(lagosDate(d.at), "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount,
         d.patientName, d.patientPhone || "", d.prescriber, d.prescriberRegNo || "", d.prescriptionRef, d.cashier,
         d.saleId ? receiptNo(d.saleId) : "Not linked",
       ].map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")),
@@ -48,7 +65,7 @@ export default function Poisons() {
     const blob = new Blob([rows], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `controlled-register-${format(new Date(), "yyyy-MM-dd")}.csv`;
+    a.download = `controlled-register-${format(lagosDate(new Date()), "yyyy-MM-dd")}.csv`;
     a.click();
   };
 
@@ -67,7 +84,7 @@ export default function Poisons() {
     doc.text("POISONS REGISTER / CONTROLLED DRUGS LOG", pageW / 2, 36, { align: "center" });
     doc.setFontSize(8); doc.setFont("helvetica", "normal");
     doc.text("Statutory record per Pharmacists Council of Nigeria (PCN) & NDLEA requirements", pageW / 2, 41, { align: "center" });
-    doc.text(`Generated: ${format(new Date(), "dd MMM yyyy HH:mm")}  ·  Total entries: ${dispenses.length}  ·  Controlled SKUs: ${controlled.length}`, pageW / 2, 46, { align: "center" });
+    doc.text(`Generated: ${format(lagosDate(new Date()), "dd MMM yyyy HH:mm")} (Lagos time, WAT)  ·  Total entries: ${dispenses.length}  ·  Controlled SKUs: ${controlled.length}`, pageW / 2, 46, { align: "center" });
 
     let y = 54;
     doc.setFontSize(11); doc.setFont("helvetica", "bold");
@@ -88,8 +105,8 @@ export default function Poisons() {
       head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient", "Phone", "Prescriber", "Reg No", "Rx Ref", "Sale"]],
       body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] :
         dispenses.map((d) => [
-          format(new Date(d.at), "dd-MM-yy HH:mm"), d.productName, d.batch, String(d.quantity),
-          NGN(d.amount), d.patientName, d.patientPhone || "—",
+          format(lagosDate(d.at), "dd-MM-yy HH:mm"), d.productName, d.batch, String(d.quantity),
+          pdfNGN(d.amount), d.patientName, d.patientPhone || "—",
           d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
           d.saleId ? receiptNo(d.saleId) : "Not linked",
         ]),
@@ -108,7 +125,7 @@ export default function Poisons() {
       doc.setFontSize(7); doc.setTextColor(120);
       doc.text(`${settings.name} — Poisons Register — Page ${i} of ${pages}`, pageW / 2, pageH - 8, { align: "center" });
     }
-    doc.save(`poisons-register-${format(new Date(), "yyyy-MM-dd")}.pdf`);
+    doc.save(`poisons-register-${format(lagosDate(new Date()), "yyyy-MM-dd")}.pdf`);
     toast.success("Inspection-ready PDF generated");
   };
 
@@ -174,7 +191,7 @@ export default function Poisons() {
       </Card>
 
       <Card className="shadow-card">
-        <CardHeader className="pb-2"><CardTitle className="text-base">Statutory dispensing log ({dispenses.length})</CardTitle></CardHeader>
+        <CardHeader className="pb-2"><CardTitle className="text-base">Statutory dispensing log ({dispenses.length}) <span className="text-xs font-normal text-muted-foreground">· times in Lagos time (WAT)</span></CardTitle></CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
@@ -190,7 +207,7 @@ export default function Poisons() {
                 {dispenses.length === 0 && <TableRow><TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
                 {dispenses.map((d) => (
                   <TableRow key={d.id}>
-                    <TableCell className="text-xs">{format(new Date(d.at), "dd MMM yyyy HH:mm")}</TableCell>
+                    <TableCell className="text-xs">{format(lagosDate(d.at), "dd MMM yyyy HH:mm")}</TableCell>
                     <TableCell><Badge variant="outline" className="border-destructive text-destructive">{d.productName}</Badge></TableCell>
                     <TableCell className="text-xs font-mono">{d.batch}</TableCell>
                     <TableCell className="text-right font-medium">{d.quantity}</TableCell>
@@ -398,7 +415,7 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
                 <SelectContent>
                   {openLines.map((l) => (
                     <SelectItem key={l.key} value={l.key}>
-                      {format(new Date(l.createdAt), "dd MMM yyyy HH:mm")} · #{receiptNo(l.saleId)} · {l.name} — {l.remaining} of {l.sold} without entry{l.salePending ? " (sale not synced yet)" : ""}
+                      {format(lagosDate(l.createdAt), "dd MMM yyyy HH:mm")} · #{receiptNo(l.saleId)} · {l.name} — {l.remaining} of {l.sold} without entry{l.salePending ? " (sale not synced yet)" : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
