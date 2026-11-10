@@ -18,6 +18,9 @@ import autoTable from "jspdf-autotable";
 import { usePlan } from "@/lib/store";
 import { UpgradePrompt } from "@/components/UpgradePrompt";
 
+// STEP 19d: same receipt number the POS prints (first 8 characters, upper case).
+const receiptNo = (saleId?: string | null) => (saleId ? saleId.slice(0, 8).toUpperCase() : "");
+
 export default function Poisons() {
   const navigate = useNavigate();
   const products = useStore((s) => s.products);
@@ -25,7 +28,8 @@ export default function Poisons() {
   const settings = useStore((s) => s.settings);
   const controlled = products.filter((p) => p.controlled);
 
-  // Running balances per product (current quantity is already net of dispenses)
+  // Running balances per product (current quantity is already net of sales;
+  // since Step 19 a register entry no longer changes stock by itself)
   const balances = useMemo(() => {
     const m = new Map<string, number>();
     controlled.forEach((p) => m.set(p.id, p.quantity));
@@ -34,10 +38,11 @@ export default function Poisons() {
 
   const exportCsv = () => {
     const rows = [
-      ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier"].join(","),
+      ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt"].join(","),
       ...dispenses.map((d) => [
         format(new Date(d.at), "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount,
         d.patientName, d.patientPhone || "", d.prescriber, d.prescriberRegNo || "", d.prescriptionRef, d.cashier,
+        d.saleId ? receiptNo(d.saleId) : "Not linked",
       ].map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")),
     ].join("\n");
     const blob = new Blob([rows], { type: "text/csv" });
@@ -80,12 +85,13 @@ export default function Poisons() {
     doc.text("2. Statutory dispensing log", 14, y); y += 2;
     autoTable(doc, {
       startY: y, styles: { fontSize: 7, cellPadding: 1.5 }, headStyles: { fillColor: [180, 50, 50] },
-      head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient", "Phone", "Prescriber", "Reg No", "Rx Ref"]],
-      body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—"]] :
+      head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient", "Phone", "Prescriber", "Reg No", "Rx Ref", "Sale"]],
+      body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] :
         dispenses.map((d) => [
           format(new Date(d.at), "dd-MM-yy HH:mm"), d.productName, d.batch, String(d.quantity),
           NGN(d.amount), d.patientName, d.patientPhone || "—",
           d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
+          d.saleId ? receiptNo(d.saleId) : "Not linked",
         ]),
     });
     y = (doc as any).lastAutoTable.finalY + 14;
@@ -177,10 +183,11 @@ export default function Poisons() {
                 <TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Amount</TableHead>
                 <TableHead>Patient</TableHead><TableHead>Prescriber</TableHead>
                 <TableHead>Rx Ref</TableHead><TableHead>Cashier</TableHead>
+                <TableHead>Sale</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {dispenses.length === 0 && <TableRow><TableCell colSpan={10} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
+                {dispenses.length === 0 && <TableRow><TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
                 {dispenses.map((d) => (
                   <TableRow key={d.id}>
                     <TableCell className="text-xs">{format(new Date(d.at), "dd MMM yyyy HH:mm")}</TableCell>
@@ -193,11 +200,19 @@ export default function Poisons() {
                     <TableCell className="text-xs font-mono">{d.prescriptionRef}</TableCell>
                     <TableCell className="text-xs">{d.cashier}</TableCell>
                     <TableCell className="text-xs">
+                      {/* STEP 19d: the sale this entry belongs to (POS receipt number). */}
+                      {d.saleId
+                        ? <span className="font-mono">#{receiptNo(d.saleId)}</span>
+                        : <span className="text-muted-foreground" title="Recorded before register entries were linked to sales">Not linked</span>}
+                    </TableCell>
+                    <TableCell className="text-xs">
                       {/* COMPLIANCE FIX: surfaces sync status on the register itself so a
                           pharmacist can see at a glance whether an entry recorded while
                           offline has actually reached the cloud yet — same visibility
                           Sales History already has for pending sales. */}
-                      {d.syncStatus === "pending"
+                      {d.syncStatus === "pending" && d.syncError
+                        ? <Badge variant="outline" className="border-destructive text-destructive" title={d.syncError}>Needs attention</Badge>
+                        : d.syncStatus === "pending"
                         ? <Badge variant="outline" className="border-warning text-warning">Syncing…</Badge>
                         : <Badge variant="outline" className="border-success text-success">Synced</Badge>}
                     </TableCell>
@@ -212,10 +227,32 @@ export default function Poisons() {
   );
 }
 
+// STEP 19d: "Add missing register entry". A register entry is a RECORD of a
+// controlled sale. Dispensing itself happens at the Sales Counter (POS), which
+// records the entry at the same time. This form is only for a controlled sale
+// whose register entry is missing (e.g. it failed to save) — the pharmacist
+// picks that sale, and the entry is linked to it. It never changes stock.
+type OpenLine = {
+  key: string;
+  saleId: string;
+  createdAt: string;
+  productId: string;
+  name: string;
+  price: number;
+  sold: number;
+  recorded: number;
+  remaining: number;
+  salePending: boolean;
+};
+
+const UNLINKED_MATCH_MS = 10 * 60 * 1000;
+
 function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any>> }) {
   const list = products as Array<{ id: string; name: string; batch: string; sellingPrice: number; quantity: number }>;
+  const sales = useStore((s) => s.sales);
+  const dispenses = useStore((s) => s.controlledDispense);
   const [open, setOpen] = useState(false);
-  const [productId, setProductId] = useState("");
+  const [lineKey, setLineKey] = useState("");
   const [qty, setQty] = useState(1);
   const [patientName, setPatientName] = useState("");
   const [patientPhone, setPatientPhone] = useState("");
@@ -226,49 +263,107 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
   // impatient double-click while the write is in flight), same pattern
   // POS.tsx already uses for sales.
   const [submitting, setSubmitting] = useState(false);
-  const product = list.find((p) => p.id === productId);
-  const amount = (product?.sellingPrice || 0) * qty;
+
+  // Controlled sale lines (last 90 days loaded) that still have units without
+  // a register entry. Linked entries count against their own sale. Older
+  // entries (before Step 19, not linked) are matched to the nearest sale of
+  // the same product within 10 minutes — the same rule Step 19a used — so
+  // they are not shown as "missing" and recorded twice.
+  const openLines = useMemo<OpenLine[]>(() => {
+    const controlledIds = new Set(list.map((p) => p.id));
+    const lines = new Map<string, OpenLine>();
+    for (const s of sales) {
+      for (const it of s.items) {
+        if (!controlledIds.has(it.productId)) continue;
+        const key = `${s.id}|${it.productId}`;
+        const existing = lines.get(key);
+        if (existing) {
+          existing.sold += it.qty;
+        } else {
+          lines.set(key, {
+            key, saleId: s.id, createdAt: s.createdAt, productId: it.productId, name: it.name,
+            price: Number(it.price) || 0, sold: it.qty, recorded: 0, remaining: 0,
+            salePending: s.syncStatus === "pending",
+          });
+        }
+      }
+    }
+    // Pass 1: entries linked to their sale.
+    for (const d of dispenses) {
+      if (!d.saleId) continue;
+      const line = lines.get(`${d.saleId}|${d.productId}`);
+      if (line) line.recorded += d.quantity;
+    }
+    // Pass 2: older entries without a link — nearest matching sale.
+    for (const d of dispenses) {
+      if (d.saleId) continue;
+      const t = new Date(d.at).getTime();
+      let best: OpenLine | undefined;
+      let bestGap = Infinity;
+      for (const line of lines.values()) {
+        if (line.productId !== d.productId) continue;
+        const gap = Math.abs(new Date(line.createdAt).getTime() - t);
+        if (gap <= UNLINKED_MATCH_MS && gap < bestGap && line.recorded < line.sold) { best = line; bestGap = gap; }
+      }
+      if (best) best.recorded += d.quantity;
+    }
+    return [...lines.values()]
+      .map((l) => ({ ...l, remaining: l.sold - l.recorded }))
+      .filter((l) => l.remaining > 0)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [sales, dispenses, list]);
+
+  const line = openLines.find((l) => l.key === lineKey);
+  const product = line ? list.find((p) => p.id === line.productId) : undefined;
+  const amount = (line?.price || 0) * qty;
 
   const reset = () => {
-    setProductId(""); setQty(1); setPatientName(""); setPatientPhone("");
+    setLineKey(""); setQty(1); setPatientName(""); setPatientPhone("");
     setPrescriber(""); setPrescriberRegNo(""); setPrescriptionRef("");
   };
 
-  // COMPLIANCE FIX: previously called store.recordControlledDispense(...)
-  // synchronously, then immediately showed a success toast and closed the
-  // dialog regardless of whether the write actually reached Supabase —
-  // the exact bug already fixed for sales, just not yet applied here. Now
-  // awaits the call, distinguishes a fully-synced record from one that's
-  // offline-queued (told to the pharmacist honestly, not hidden), and
-  // leaves the form open with its data intact on a genuine failure so
-  // nothing has to be re-typed from memory.
+  const chooseLine = (key: string) => {
+    setLineKey(key);
+    const l = openLines.find((x) => x.key === key);
+    setQty(l ? l.remaining : 1);
+  };
+
+  // COMPLIANCE FIX (kept): awaits the save, tells the pharmacist honestly when
+  // it was queued offline, and leaves the form open with its data intact on a
+  // genuine failure so nothing has to be re-typed from memory.
   const submit = async () => {
     if (submitting) return;
-    if (!product) { toast.error("Select a drug"); return; }
+    if (!line) { toast.error("Select the sale this entry belongs to"); return; }
+    if (!product) { toast.error("This drug is no longer marked as controlled in Inventory"); return; }
+    if (!(product.batch || "").trim()) { toast.error(`Add a batch number for ${product.name} in Inventory first — the Poisons Register requires it`); return; }
     if (!patientName.trim()) { toast.error("Patient name required"); return; }
     if (!prescriber.trim()) { toast.error("Prescriber name required"); return; }
+    if (!prescriberRegNo.trim()) { toast.error("MDCN / Reg No required"); return; }
     if (!prescriptionRef.trim()) { toast.error("Prescription reference required"); return; }
-    if (qty <= 0 || qty > product.quantity) { toast.error("Invalid quantity"); return; }
+    if (!Number.isInteger(qty) || qty <= 0 || qty > line.remaining) {
+      toast.error(`Quantity must be between 1 and ${line.remaining} (units sold on this sale without a register entry)`);
+      return;
+    }
 
     setSubmitting(true);
     try {
       const result = await store.recordControlledDispense({
+        saleId: line.saleId,
         productId: product.id, productName: product.name, batch: product.batch,
         quantity: qty, amount, patientName: patientName.trim(), patientPhone: patientPhone.trim(),
         prescriber: prescriber.trim(), prescriberRegNo: prescriberRegNo.trim(), prescriptionRef: prescriptionRef.trim(),
       });
 
       if (!result.ok) {
-        // Real (non-network) rejection — store.ts already showed the error
-        // toast and rolled back local state. Leave the form open with the
-        // pharmacist's entries intact so nothing has to be re-typed.
+        // Real (non-network) rejection — store.ts already showed the reason.
+        // Leave the form open with the entries intact.
         return;
       }
 
       if (result.offline) {
-        toast.info("Dispense recorded — connection was slow/unavailable, it will sync automatically once reconnected.", { duration: 10000 });
+        toast.info("Register entry saved on this device — it will sync automatically once its sale and the connection are available.", { duration: 10000 });
       } else {
-        toast.success("Controlled dispense recorded");
+        toast.success("Missing register entry added and linked to its sale");
       }
       reset(); setOpen(false);
     } finally {
@@ -280,59 +375,80 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
       <DialogTrigger asChild>
         <Button size="sm" className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
-          <ClipboardPlus className="mr-1.5 h-4 w-4" />Record dispensing
+          <ClipboardPlus className="mr-1.5 h-4 w-4" />Add missing register entry
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-xl">
-        <DialogHeader><DialogTitle>Controlled Drug Dispensing Form</DialogTitle></DialogHeader>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-          <div className="md:col-span-2">
-            <Label>Drug</Label>
-            <Select value={productId} onValueChange={setProductId}>
-              <SelectTrigger><SelectValue placeholder="Select controlled drug" /></SelectTrigger>
-              <SelectContent>
-                {list.map((p) => (
-                  <SelectItem key={p.id} value={p.id} disabled={p.quantity <= 0}>
-                    {p.name} (Batch {p.batch}) — Bal: {p.quantity}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <DialogHeader><DialogTitle>Add missing register entry</DialogTitle></DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          Use this only for a controlled drug already sold at the Sales Counter whose register entry is missing.
+          To dispense a controlled drug, sell it at the Sales Counter — the register entry is recorded there.
+          Stock is not changed here (the sale already reduced it).
+        </p>
+        {openLines.length === 0 ? (
+          <div className="rounded-md border bg-muted/30 p-4 text-sm">
+            Every controlled sale from the last 90 days already has its register entry. Nothing is missing.
           </div>
-          <div>
-            <Label>Quantity</Label>
-            <Input type="number" min={1} value={qty} onChange={(e) => setQty(parseInt(e.target.value) || 1)} />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+            <div className="md:col-span-2">
+              <Label>Sale *</Label>
+              <Select value={lineKey} onValueChange={chooseLine}>
+                <SelectTrigger><SelectValue placeholder="Select the sale this entry belongs to" /></SelectTrigger>
+                <SelectContent>
+                  {openLines.map((l) => (
+                    <SelectItem key={l.key} value={l.key}>
+                      {format(new Date(l.createdAt), "dd MMM yyyy HH:mm")} · #{receiptNo(l.saleId)} · {l.name} — {l.remaining} of {l.sold} without entry{l.salePending ? " (sale not synced yet)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Older entries made before sale linking are matched to their sale by drug and time (within 10 minutes).
+              </p>
+            </div>
+            <div>
+              <Label>Batch</Label>
+              <Input value={product?.batch || ""} disabled placeholder="—" />
+            </div>
+            <div>
+              <Label>Quantity *</Label>
+              <Input type="number" min={1} max={line?.remaining ?? 1} value={qty}
+                onChange={(e) => setQty(parseInt(e.target.value) || 1)} disabled={!line} />
+            </div>
+            <div>
+              <Label>Amount (as sold)</Label>
+              <Input value={NGN(amount)} disabled />
+            </div>
+            <div>
+              <Label>Patient name *</Label>
+              <Input value={patientName} onChange={(e) => setPatientName(e.target.value)} />
+            </div>
+            <div>
+              <Label>Patient phone</Label>
+              <Input value={patientPhone} onChange={(e) => setPatientPhone(e.target.value)} />
+            </div>
+            <div>
+              <Label>Prescriber (Doctor) *</Label>
+              <Input value={prescriber} onChange={(e) => setPrescriber(e.target.value)} />
+            </div>
+            <div>
+              <Label>MDCN / Reg No *</Label>
+              <Input value={prescriberRegNo} onChange={(e) => setPrescriberRegNo(e.target.value)} />
+            </div>
+            <div className="md:col-span-2">
+              <Label>Prescription Ref *</Label>
+              <Input value={prescriptionRef} onChange={(e) => setPrescriptionRef(e.target.value)} placeholder="e.g. RX-2026-00123" />
+            </div>
           </div>
-          <div>
-            <Label>Amount</Label>
-            <Input value={NGN(amount)} disabled />
-          </div>
-          <div>
-            <Label>Patient name *</Label>
-            <Input value={patientName} onChange={(e) => setPatientName(e.target.value)} />
-          </div>
-          <div>
-            <Label>Patient phone</Label>
-            <Input value={patientPhone} onChange={(e) => setPatientPhone(e.target.value)} />
-          </div>
-          <div>
-            <Label>Prescriber (Doctor) *</Label>
-            <Input value={prescriber} onChange={(e) => setPrescriber(e.target.value)} />
-          </div>
-          <div>
-            <Label>MDCN / Reg No</Label>
-            <Input value={prescriberRegNo} onChange={(e) => setPrescriberRegNo(e.target.value)} />
-          </div>
-          <div className="md:col-span-2">
-            <Label>Prescription Ref *</Label>
-            <Input value={prescriptionRef} onChange={(e) => setPrescriptionRef(e.target.value)} placeholder="e.g. RX-2026-00123" />
-          </div>
-        </div>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)} disabled={submitting}>Cancel</Button>
-          <Button onClick={submit} disabled={submitting} className="bg-destructive hover:bg-destructive/90">
-            {submitting ? "Saving…" : "Record dispensing"}
-          </Button>
+          {openLines.length > 0 && (
+            <Button onClick={submit} disabled={submitting || !line} className="bg-destructive hover:bg-destructive/90">
+              {submitting ? "Saving…" : "Add register entry"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
