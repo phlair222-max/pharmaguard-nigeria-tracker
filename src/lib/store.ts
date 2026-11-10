@@ -113,6 +113,11 @@ export type ControlledDispense = {
   // STEP 19b: the sale this register entry belongs to (Option B). Entries
   // made before Step 19 have none ("Not linked").
   saleId?: string | null;
+  // STEP 20b: a Cashier's entry carries the pharmacist authorization returned
+  // by verify_pharmacist_pin (one sale only). Owner/Pharmacist entries have none.
+  authorizationId?: string | null;
+  // STEP 20b: who authorized the entry (filled in by the database).
+  authorizedByName?: string | null;
   // STEP 19b: set when the database refused this entry while syncing (not a
   // network problem). The entry stays queued and is shown as needing attention.
   syncError?: string;
@@ -563,7 +568,7 @@ export const store = {
     this.audit("Cleared other sessions", currentUser ?? "system");
     persist();
   },
-  async recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier" | "syncStatus" | "syncError">): Promise<
+  async recordControlledDispense(d: Omit<ControlledDispense, "id" | "at" | "cashier" | "syncStatus" | "syncError" | "authorizedByName">): Promise<
     | { ok: true; entry: ControlledDispense; offline: boolean }
     | { ok: false; error?: string }
   > {
@@ -1125,6 +1130,7 @@ function rowToControlled(r: any): ControlledDispense {
     prescriptionRef: r.prescription_ref, cashier: r.cashier || "", at: r.at,
     syncStatus: "synced",
     saleId: r.sale_id ?? null,
+    authorizedByName: r.authorized_by_name ?? null,
   };
 }
 function rowToAudit(r: any): AuditEntry {
@@ -1301,6 +1307,8 @@ const supabasePush = {
           p_cashier: d.cashier,
           // STEP 19b: link to the sale (null = not linked; the database flags it)
           p_sale_id: d.saleId ?? null,
+          // STEP 20b: pharmacist authorization (needed for Cashier entries)
+          p_authorization_id: d.authorizationId ?? null,
         }),
         SALE_WRITE_TIMEOUT_MS,
       );
