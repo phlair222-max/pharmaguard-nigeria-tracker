@@ -158,6 +158,10 @@ export default function POS() {
   const [quickMode, setQuickMode] = useState(false);
   const [controlledOpen, setControlledOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
+  // STEP 20c: the one-sale authorization returned by the database when a
+  // pharmacist's PIN is accepted (Cashier sales only). Sent with each
+  // Poisons Register entry of that sale; cleared after the sale.
+  const [authorizationId, setAuthorizationId] = useState<string | null>(null);
   const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
 
   const results = useMemo(() => {
@@ -293,6 +297,8 @@ export default function POS() {
             patientName: f.patientName, patientPhone: f.patientPhone,
             prescriber: f.prescriber, prescriberRegNo: f.prescriberRegNo,
             prescriptionRef: f.prescriptionRef,
+            // STEP 20c: pharmacist authorization (Cashier sales; null otherwise)
+            authorizationId,
           });
           if (!dResult.ok) dispenseFailures.push(l.name);
         }
@@ -336,6 +342,8 @@ export default function POS() {
       }, 150);
     } finally {
       setSubmitting(false);
+      // STEP 20c: an authorization covers one sale only — ask again next time.
+      setAuthorizationId(null);
     }
   };
 
@@ -361,7 +369,7 @@ export default function POS() {
     void finalizeSale();
   };
 
-  const onPinAuthorized = () => { setPinOpen(false); setControlledOpen(true); };
+  const onPinAuthorized = (authId: string) => { setAuthorizationId(authId); setPinOpen(false); setControlledOpen(true); };
 
   const printReceipt = () => {
     if (!lastReceiptRef.current) { toast.error("No receipt to print"); return; }
@@ -570,8 +578,7 @@ export default function POS() {
 
       <BarcodeScanner open={barcodeScanOpen} onOpenChange={setBarcodeScanOpen}
         onScanned={onBarcodeScanned} title="Scan Product Barcode" />
-      <PinAuthDialog open={pinOpen} onOpenChange={setPinOpen}
-        organizationId={user?.organizationId ?? ""} onAuthorized={onPinAuthorized} />
+      <PinAuthDialog open={pinOpen} onOpenChange={setPinOpen} onAuthorized={onPinAuthorized} />
       <ControlledDispenseDialog open={controlledOpen} onOpenChange={setControlledOpen}
         items={controlledInCart} onConfirm={finalizeSale} />
     </div>
@@ -648,32 +655,52 @@ function ControlledDispenseDialog({ open, onOpenChange, items, onConfirm }: {
   );
 }
 
-async function hashPin(pin: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+// STEP 20c: the PIN is checked by the DATABASE (verify_pharmacist_pin), not
+// in the browser. PINs are stored with bcrypt and cannot be read by staff;
+// 5 wrong attempts lock PIN entry for 15 minutes; a correct PIN returns a
+// one-sale authorization that the database requires for a Cashier's
+// Poisons Register entry, and the authorizing pharmacist is recorded.
+type PinResult = {
+  ok?: boolean; authorization_id?: string; pharmacist?: string;
+  reason?: "format" | "wrong_pin" | "locked"; attempts_left?: number; minutes?: number;
+};
 
-function PinAuthDialog({ open, onOpenChange, organizationId, onAuthorized }: {
+function PinAuthDialog({ open, onOpenChange, onAuthorized }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
-  organizationId: string;
-  onAuthorized: () => void;
+  onAuthorized: (authorizationId: string) => void;
 }) {
   const [pin, setPin] = useState("");
   const [loading, setLoading] = useState(false);
 
   const verify = async () => {
+    if (loading) return;
     if (pin.length !== 4 || !/^\d{4}$/.test(pin)) { toast.error("Enter a valid 4-digit PIN"); return; }
     setLoading(true);
     try {
-      const hashed = await hashPin(pin);
-      const { data, error } = await (supabase.from as any)("pharmacist_pins")
-        .select("id").eq("organization_id", organizationId).eq("pin_hash", hashed).maybeSingle();
-      if (error) { toast.error("Verification failed — try again"); return; }
-      if (!data) { toast.error("Incorrect PIN"); setPin(""); return; }
-      toast.success("Pharmacist authorized ✓");
+      const { data, error } = await (supabase.rpc as any)("verify_pharmacist_pin", { p_pin: pin });
+      if (error) {
+        toast.error(`The PIN could not be checked: ${error.message}. Check the connection and try again.`, { duration: 8000 });
+        return;
+      }
+      const r = (data || {}) as PinResult;
+      if (r.ok && r.authorization_id) {
+        toast.success(`Authorized by ${r.pharmacist || "pharmacist"} ✓`);
+        setPin("");
+        onAuthorized(r.authorization_id);
+        return;
+      }
       setPin("");
-      onAuthorized();
+      if (r.reason === "locked") {
+        toast.error(`Too many wrong PINs. PIN entry is locked for ${r.minutes ?? 15} minute(s). Every attempt is recorded in the Audit Trail.`, { duration: 10000 });
+      } else if (r.reason === "wrong_pin") {
+        const left = r.attempts_left ?? 0;
+        toast.error(left > 0
+          ? `Incorrect PIN — ${left} attempt${left === 1 ? "" : "s"} left before a 15-minute lock`
+          : "Incorrect PIN — PIN entry is now locked for 15 minutes", { duration: 8000 });
+      } else {
+        toast.error("Enter a valid 4-digit PIN");
+      }
     } finally { setLoading(false); }
   };
 
@@ -687,6 +714,7 @@ function PinAuthDialog({ open, onOpenChange, organizationId, onAuthorized }: {
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
           This sale contains controlled substances. A pharmacist must enter their PIN to authorize.
+          The pharmacist will be recorded in the Poisons Register as authorizing this sale.
         </p>
         <div className="space-y-3 py-2">
           <Label className="text-xs">Pharmacist PIN (4 digits)</Label>
