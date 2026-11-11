@@ -82,7 +82,13 @@ function UrgencyPill({ urgency, expiryFlag }: { urgency: string; expiryFlag: "ex
 }
 
 export default function Forecast() {
-  const products = useStore((s) => s.products);
+  const allProducts = useStore((s) => s.products);
+  // STEP 22b: forecasts and reorder suggestions cover ACTIVE products only.
+  // An archived product is no longer sold, so it must never be suggested for
+  // restocking. (Archived stock still shows in expiry alerts and the disposal
+  // inventory on the Dashboard.)
+  const products = useMemo(() => allProducts.filter((p) => p.active !== false), [allProducts]);
+  const archivedCount = allProducts.length - products.length;
   const sales = useStore((s) => s.sales);
   const [loading, setLoading] = useState(false);
   const [forecasts, setForecasts] = useState<Forecast[]>([]);
@@ -253,7 +259,7 @@ export default function Forecast() {
   };
 
   const runForecast = async () => {
-    if (payload.length === 0) { toast.error("No products found in inventory"); return; }
+    if (payload.length === 0) { toast.error("No active products found in inventory"); return; } // STEP 22b
     setLoading(true);
     try {
       await new Promise((r) => setTimeout(r, 350));
@@ -302,7 +308,8 @@ export default function Forecast() {
             <Sparkles className="h-6 w-6 text-primary" /> Demand Forecast
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            14-day demand prediction across all {products.length} products — based on last 30 days of sales.
+            14-day demand prediction across all {products.length} active products — based on last 30 days of sales.
+            {archivedCount > 0 && <> ({archivedCount} archived product{archivedCount !== 1 ? "s are" : " is"} not included.)</>} {/* STEP 22b */}
           </p>
         </div>
         <Button onClick={runForecast} disabled={loading} size="lg" className="w-full gap-2 sm:w-auto">
