@@ -20,7 +20,16 @@ const GRID_COLS_MD: Record<number, string> = {
 };
 
 // ── Expiry Banner ─────────────────────────────────────────────────────────────
-type BannerTier = { label: string; count: number; tone: "red" | "amber" | "yellow"; key: string };
+// STEP 21: new "expired" tier (solid red) for expired stock still on hand.
+// It links to the Expired filter and CANNOT be dismissed — expired stock must
+// be quarantined, so the warning stays until the stock is dealt with.
+// Each tier now carries its own link (before, every banner went to "near").
+type BannerTier = {
+  label: string; count: number; tone: "expired" | "red" | "amber" | "yellow"; key: string;
+  link: string;          // STEP 21
+  dismissible: boolean;  // STEP 21
+  extra?: string;        // STEP 21: e.g. "(3 archived)"
+};
 
 function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
@@ -28,11 +37,13 @@ function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
   if (visible.length === 0) return null;
 
   const styles: Record<string, string> = {
+    expired: "border-destructive bg-destructive text-destructive-foreground shadow-sm", // STEP 21
     red:    "border-destructive/60 bg-destructive/10 text-destructive",
     amber:  "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400",
     yellow: "border-yellow-500/60 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
   };
   const iconStyles: Record<string, string> = {
+    expired: "text-destructive-foreground", // STEP 21
     red:    "text-destructive",
     amber:  "text-amber-500",
     yellow: "text-yellow-500",
@@ -41,21 +52,28 @@ function ExpiryBanner({ tiers }: { tiers: BannerTier[] }) {
   return (
     <div className="space-y-2">
       {visible.map((t) => (
-        <div key={t.key} className={`flex items-center justify-between rounded-lg border px-4 py-3 ${styles[t.tone]}`}>
-          <Link to="/inventory?filter=near" className="flex items-center gap-3 flex-1 min-w-0">
+        <div
+          key={t.key}
+          role={t.tone === "expired" ? "alert" : undefined}
+          className={`flex items-center justify-between rounded-lg border px-4 py-3 ${styles[t.tone]}`}
+        >
+          <Link to={t.link} className="flex items-center gap-3 flex-1 min-w-0">
             <AlertTriangle className={`h-4 w-4 shrink-0 ${iconStyles[t.tone]}`} />
             <span className="text-sm font-medium">
-              <span className="font-bold">{t.count} product{t.count !== 1 ? "s" : ""}</span>{" "}{t.label}
+              <span className="font-bold">{t.count} {t.tone === "expired" ? "expired " : ""}product{t.count !== 1 ? "s" : ""}</span>{" "}{t.label}
+              {t.extra && <span className="opacity-80"> {t.extra}</span>}
             </span>
             <span className="text-xs opacity-70 hidden sm:inline">— tap to review</span>
           </Link>
-          <button
-            onClick={() => setDismissed((prev) => new Set(prev).add(t.key))}
-            className="ml-3 shrink-0 opacity-60 hover:opacity-100 transition-opacity"
-            aria-label={`Dismiss ${t.label} alert`}
-          >
-            <X className="h-4 w-4" />
-          </button>
+          {t.dismissible && (
+            <button
+              onClick={() => setDismissed((prev) => new Set(prev).add(t.key))}
+              className="ml-3 shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+              aria-label={`Dismiss ${t.label} alert`}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -186,6 +204,8 @@ function inventoryHtml(inv: DisposalInventory) {
     .subtotal td { background: #f4f4f4; }
     .totals td { border: none; padding: 1px 4px; }
     .sign { margin-top: 10px; page-break-inside: avoid; }
+    /* STEP 21: Section B (controlled medicines) starts on its own page */
+    .new-page { page-break-before: always; break-before: page; }
     .sign td { border: none; padding: 5px 4px; }
     .foot { margin-top: 8px; font-size: 7pt; color: #333; }
   </style></head><body>
@@ -199,10 +219,15 @@ function inventoryHtml(inv: DisposalInventory) {
     "Expired products held at the premises, removed from sale and quarantined, for verification and supervised destruction by NAFDAC.",
     inv.general, 1)}
 
+  <!-- STEP 21: Section B starts on a new page when both sections have items
+       (if either section is empty, its "None." line stays on the same page
+       instead of wasting a sheet). -->
+  <div class="${inv.general.length > 0 && inv.controlled.length > 0 ? "new-page" : ""}">
   ${sectionTable(
     "SECTION B — CONTROLLED MEDICINES (kept separately)",
     "Controlled medicines are stored separately and are NOT destroyed with general stock. To be handed over or returned as directed by NAFDAC.",
     inv.controlled, inv.general.length + 1)}
+  </div>
 
   <table class="totals" style="width:auto;margin-top:8px">
     <tr><td>Total items:</td><td><strong>${count(t.items)}</strong> (general ${count(t.generalItems)}, controlled ${count(t.controlledItems)})</td></tr>
@@ -458,10 +483,17 @@ export default function Dashboard() {
     (a, b) => daysUntil(a.expiry) - daysUntil(b.expiry),
   );
 
+  // STEP 21: expired stock still on hand gets its own top banner. Same rule as
+  // every other expiry alert (quantity > 0, active AND archived, all types);
+  // archived ones are counted in the number and mentioned in brackets.
+  const expiredArchivedCount = expiredItems.filter((p) => p.active === false).length;
+
   const expiryBannerTiers: BannerTier[] = [
-    { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed" },
-    { key: "amber",  count: near60.length, tone: "amber",  label: "expiring within 31–60 days — plan disposal soon" },
-    { key: "yellow", count: near90.length, tone: "yellow", label: "expiring within 61–90 days — monitor closely" },
+    { key: "expired", count: expiredCount,  tone: "expired", label: "still in stock — quarantine immediately", link: "/inventory?filter=expired", dismissible: false,
+      extra: expiredArchivedCount > 0 ? `(${expiredArchivedCount} archived)` : undefined },
+    { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed", link: "/inventory?filter=near", dismissible: true },
+    { key: "amber",  count: near60.length, tone: "amber",  label: "expiring within 31–60 days — plan disposal soon", link: "/inventory?filter=near", dismissible: true },
+    { key: "yellow", count: near90.length, tone: "yellow", label: "expiring within 61–90 days — monitor closely", link: "/inventory?filter=near", dismissible: true },
   ];
 
   const trend = Array.from({ length: 7 }).map((_, i) => {
