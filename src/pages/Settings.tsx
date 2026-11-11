@@ -302,10 +302,10 @@ export default function Settings() {
   );
 }
 
-async function hashPin(pin: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+// STEP 20d: the PIN is no longer hashed in the browser or written directly.
+// The database function set_my_pharmacist_pin stores it with bcrypt (Owner or
+// Pharmacist only; refuses easy PINs and PINs a colleague already uses), and
+// has_my_pharmacist_pin tells this screen whether a PIN exists.
 
 function SecurityTab({ username, loginActivity }: { username: string; loginActivity: ReturnType<typeof useStore<any>> }) {
   const [oldPwd, setOldPwd] = useState("");
@@ -322,14 +322,9 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
     if (!user?.organizationId || !user?.memberRole) return;
     if (!["Owner", "Pharmacist"].includes(user.memberRole)) return;
     (async () => {
-      const { data: authData } = await supabase.auth.getUser();
-      if (!authData.user) return;
-      const { data } = await (supabase.from as any)("pharmacist_pins")
-        .select("id")
-        .eq("organization_id", user.organizationId)
-        .eq("user_id", authData.user.id)
-        .maybeSingle();
-      setHasPin(!!data);
+      const { data, error } = await (supabase.rpc as any)("has_my_pharmacist_pin");
+      if (error) { setHasPin(null); return; }
+      setHasPin(data === true);
     })();
   }, [user?.organizationId, user?.memberRole]);
 
@@ -338,12 +333,8 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
     if (newPin !== confirmPin) { toast.error("PINs do not match"); return; }
     setPinLoading(true);
     try {
-      const { data: authData } = await supabase.auth.getUser();
-      if (!authData.user) { toast.error("Not authenticated"); return; }
-      const hashed = await hashPin(newPin);
-      const { error } = await (supabase.from as any)("pharmacist_pins")
-        .upsert({ user_id: authData.user.id, organization_id: user!.organizationId, pin_hash: hashed }, { onConflict: "user_id,organization_id" });
-      if (error) { toast.error("Failed to save PIN: " + error.message); return; }
+      const { error } = await (supabase.rpc as any)("set_my_pharmacist_pin", { p_pin: newPin });
+      if (error) { toast.error("PIN not saved: " + error.message, { duration: 8000 }); return; }
       toast.success(hasPin ? "PIN updated successfully" : "PIN set successfully");
       setNewPin(""); setConfirmPin(""); setHasPin(true);
     } finally {
@@ -425,6 +416,7 @@ function SecurityTab({ username, loginActivity }: { username: string; loginActiv
             </div>
             <p className="text-xs text-muted-foreground">
               {hasPin === true ? "You have a PIN set. Update it below." : "Set a 4-digit PIN to authorize controlled drug sales by Cashiers."}
+              {" "}Avoid easy PINs like 1111 or 1234, and never share it — every sale you authorize is recorded under your name in the Poisons Register.
             </p>
             <div className="space-y-2">
               <div>
