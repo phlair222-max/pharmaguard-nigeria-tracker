@@ -455,10 +455,17 @@ export default function Dashboard() {
   const distinctDays = Math.max(1, new Set(last30.map((s) => format(new Date(s.createdAt), "yyyy-MM-dd"))).size);
   const dailyAvg = last30.reduce((a, s) => a + s.total, 0) / distinctDays;
 
-  const stockCostValue = products.reduce((a, p) => a + p.quantity * (p.costPrice ?? 0), 0);
-  const stockSellValue = products.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
+  // STEP 22a: stock cards, Total Products, Low Stock and the reorder
+  // suggestions count ACTIVE products only. An archived product is no longer
+  // sold or reordered. (Expiry alerts below still include archived stock —
+  // boxes on the shelf still expire.)
+  const activeProducts = products.filter((p) => p.active !== false);
+  const archivedProductCount = products.length - activeProducts.length;
 
-  const lowStock = products.filter((p) => p.quantity <= p.reorderLevel);
+  const stockCostValue = activeProducts.reduce((a, p) => a + p.quantity * (p.costPrice ?? 0), 0);
+  const stockSellValue = activeProducts.reduce((a, p) => a + p.quantity * p.sellingPrice, 0);
+
+  const lowStock = activeProducts.filter((p) => p.quantity <= p.reorderLevel);
   // EXPIRY ALERTS (Nov 2026) — one rule for every expiry alert on this page
   // and for the disposal report:
   //   • only stock physically on hand counts (quantity > 0) — with nothing
@@ -519,10 +526,12 @@ export default function Dashboard() {
   ];
 
   const stockStats = [
-    { key: "totalProducts", icon: Boxes,     label: "Total Products",      value: num(products.length),               accent: "primary",   tip: "Distinct SKUs currently in inventory." },
-    ...(canSeeMargins ? [{ key: "stockCost", icon: Boxes, label: "Stock Value (Cost)", value: NGN(stockCostValue), accent: "info", tip: "Quantity × cost price for every product in stock." }] : []),
-    { key: "stockRetail",   icon: Banknote,  label: "Stock Value (Retail)", value: NGN(stockSellValue),               accent: "success",   tip: "Quantity × selling price — what stock is worth at retail." },
-    ...(canSeeMargins ? [{ key: "margin", icon: TrendingUp, label: "Potential Margin", value: NGN(stockSellValue - stockCostValue), accent: "secondary", tip: "Retail value minus cost value — profit if all stock sells." }] : []),
+    // STEP 22a: active products only; archived count shown under Total Products.
+    { key: "totalProducts", icon: Boxes,     label: "Total Products",      value: num(activeProducts.length),         accent: "primary",   tip: "Active products in inventory. Archived products are not counted.",
+      sub: archivedProductCount > 0 ? `+ ${num(archivedProductCount)} archived` : undefined },
+    ...(canSeeMargins ? [{ key: "stockCost", icon: Boxes, label: "Stock Value (Cost)", value: NGN(stockCostValue), accent: "info", tip: "Quantity × cost price for every active product in stock. Archived products are not counted." }] : []),
+    { key: "stockRetail",   icon: Banknote,  label: "Stock Value (Retail)", value: NGN(stockSellValue),               accent: "success",   tip: "Quantity × selling price for active products — what stock is worth at retail. Archived products are not counted." },
+    ...(canSeeMargins ? [{ key: "margin", icon: TrendingUp, label: "Potential Margin", value: NGN(stockSellValue - stockCostValue), accent: "secondary", tip: "Retail value minus cost value of active products — profit if all of it sells." }] : []),
   ];
 
   return (
@@ -554,12 +563,13 @@ export default function Dashboard() {
 
         {/* Stock stats */}
         <div className={`grid grid-cols-2 gap-3 ${GRID_COLS_MD[stockStats.length] || "md:grid-cols-4"}`}>
-          {stockStats.map((s) => <Stat key={s.key} icon={s.icon} label={s.label} value={s.value} accent={s.accent} tip={s.tip} />)}
+          {stockStats.map((s) => <Stat key={s.key} icon={s.icon} label={s.label} value={s.value} accent={s.accent} tip={s.tip} sub={"sub" in s ? s.sub : undefined} />)}
         </div>
 
         {/* Alert cards */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <AlertCard icon={PackageX}      label="Low Stock"         count={lowStock.length} tone="warning"     link="/inventory?filter=low"     hint="At or below reorder level" />
+          {/* STEP 22a: Low Stock counts active products only */}
+          <AlertCard icon={PackageX}      label="Low Stock"         count={lowStock.length} tone="warning"     link="/inventory?filter=low"     hint="Active products at or below reorder level" />
           <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length}   tone="red"         link="/inventory?filter=near"    hint="Urgent action needed" />
           <AlertCard icon={CalendarClock} label="Expiring ≤60 days" count={near60.length}   tone="amber"       link="/inventory?filter=near"    hint="Plan disposal soon" />
           <AlertCard icon={AlertTriangle} label="Expired Items"     count={expiredCount}    tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
@@ -710,7 +720,8 @@ export default function Dashboard() {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-function Stat({ icon: Icon, label, value, accent, tip }: { icon: any; label: string; value: string; accent: string; tip?: string }) {
+// STEP 22a: optional small line under the value (e.g. "+ 12 archived").
+function Stat({ icon: Icon, label, value, accent, tip, sub }: { icon: any; label: string; value: string; accent: string; tip?: string; sub?: string }) {
   const map: Record<string, string> = {
     primary:   "bg-primary/10 text-primary",
     success:   "bg-success/10 text-success",
@@ -734,6 +745,7 @@ function Stat({ icon: Icon, label, value, accent, tip }: { icon: any; label: str
             )}
           </div>
           <div className="truncate text-lg font-semibold">{value}</div>
+          {sub && <div className="truncate text-[11px] text-muted-foreground">{sub}</div>}
         </div>
       </CardContent>
     </Card>
