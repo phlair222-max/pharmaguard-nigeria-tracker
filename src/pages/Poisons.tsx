@@ -39,6 +39,11 @@ function lagosDate(iso: string | Date): Date {
 const pdfNGN = (n: number) =>
   "NGN " + (Number(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// STEP 20f: an email used as a name (no spaces) is broken before "@" so it
+// wraps cleanly in the PDF instead of splitting mid-word.
+const pdfPerson = (s?: string | null) =>
+  !s ? "—" : (s.includes("@") && !s.includes(" ") ? s.replace("@", "\n@") : s);
+
 export default function Poisons() {
   const navigate = useNavigate();
   const products = useStore((s) => s.products);
@@ -78,7 +83,10 @@ export default function Poisons() {
   };
 
   const exportInspectionPdf = () => {
-    const doc = new jsPDF();
+    // STEP 20f: landscape A4 (like the NAFDAC Disposal Inventory). The
+    // dispensing log has 11 statutory columns; on an upright page long values
+    // were split mid-word. Tested with 120 rows of long values: no splits.
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
     const pageW = doc.internal.pageSize.getWidth();
     const pageH = doc.internal.pageSize.getHeight();
 
@@ -105,25 +113,31 @@ export default function Poisons() {
     });
     y = (doc as any).lastAutoTable.finalY + 8;
 
-    if (y > 230) { doc.addPage(); y = 20; }
+    if (y > pageH - 50) { doc.addPage(); y = 20; }
     doc.setFontSize(11); doc.setFont("helvetica", "bold");
     doc.text("2. Statutory dispensing log", 14, y); y += 2;
     autoTable(doc, {
-      startY: y, styles: { fontSize: 7, cellPadding: 1.5 }, headStyles: { fillColor: [180, 50, 50] },
+      startY: y, styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak" }, headStyles: { fillColor: [180, 50, 50] },
+      columnStyles: {
+        0: { cellWidth: 17 },
+        3: { cellWidth: 10, halign: "right" },
+        4: { cellWidth: 25, halign: "right" },
+        9: { cellWidth: 17 },
+      },
       // STEP 20e: phone moved into the Patient cell (as on screen) to make room for "Authorized by".
       head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient / Phone", "Prescriber", "Reg No", "Rx Ref", "Sale", "Authorized by"]],
       body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] :
         dispenses.map((d) => [
-          format(lagosDate(d.at), "dd-MM-yy HH:mm"), d.productName, d.batch, String(d.quantity),
+          `${format(lagosDate(d.at), "dd-MM-yy")}\n${format(lagosDate(d.at), "HH:mm")}`, d.productName, d.batch, String(d.quantity),
           pdfNGN(d.amount), d.patientPhone ? `${d.patientName}\n${d.patientPhone}` : d.patientName,
           d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
           d.saleId ? receiptNo(d.saleId) : "Not linked",
-          d.authorizedByName || "—",
+          pdfPerson(d.authorizedByName),
         ]),
     });
     y = (doc as any).lastAutoTable.finalY + 14;
 
-    if (y > 250) { doc.addPage(); y = 30; }
+    if (y > pageH - 35) { doc.addPage(); y = 30; }
     doc.setFontSize(9); doc.setFont("helvetica", "normal");
     doc.text("Certified true record of controlled drugs dispensed at the above premise.", 14, y); y += 14;
     doc.text("Superintendent Pharmacist: _______________________________", 14, y); y += 8;
