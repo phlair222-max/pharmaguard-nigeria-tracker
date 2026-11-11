@@ -17,6 +17,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { usePlan } from "@/lib/store";
 import { UpgradePrompt } from "@/components/UpgradePrompt";
+import { resolveEffectiveRole } from "@/lib/permissions";
 
 // STEP 19d: same receipt number the POS prints (first 8 characters, upper case).
 const receiptNo = (saleId?: string | null) => (saleId ? saleId.slice(0, 8).toUpperCase() : "");
@@ -43,6 +44,12 @@ export default function Poisons() {
   const products = useStore((s) => s.products);
   const dispenses = useStore((s) => s.controlledDispense);
   const settings = useStore((s) => s.settings);
+  const user = useStore((s) => s.user);
+  // STEP 20e: adding a missing register entry is a pharmacist's job. The
+  // database also refuses a Cashier's entry without a pharmacist PIN, so the
+  // form is shown to the Owner and Pharmacists only.
+  const role = resolveEffectiveRole(user);
+  const canAddMissingEntry = role === "Owner" || role === "Pharmacist";
   const controlled = products.filter((p) => p.controlled);
 
   // Running balances per product (current quantity is already net of sales;
@@ -55,11 +62,12 @@ export default function Poisons() {
 
   const exportCsv = () => {
     const rows = [
-      ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt"].join(","),
+      ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt","Authorized by"].join(","),
       ...dispenses.map((d) => [
         format(lagosDate(d.at), "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount,
         d.patientName, d.patientPhone || "", d.prescriber, d.prescriberRegNo || "", d.prescriptionRef, d.cashier,
         d.saleId ? receiptNo(d.saleId) : "Not linked",
+        d.authorizedByName || "",
       ].map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")),
     ].join("\n");
     const blob = new Blob([rows], { type: "text/csv" });
@@ -102,13 +110,15 @@ export default function Poisons() {
     doc.text("2. Statutory dispensing log", 14, y); y += 2;
     autoTable(doc, {
       startY: y, styles: { fontSize: 7, cellPadding: 1.5 }, headStyles: { fillColor: [180, 50, 50] },
-      head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient", "Phone", "Prescriber", "Reg No", "Rx Ref", "Sale"]],
+      // STEP 20e: phone moved into the Patient cell (as on screen) to make room for "Authorized by".
+      head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient / Phone", "Prescriber", "Reg No", "Rx Ref", "Sale", "Authorized by"]],
       body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] :
         dispenses.map((d) => [
           format(lagosDate(d.at), "dd-MM-yy HH:mm"), d.productName, d.batch, String(d.quantity),
-          pdfNGN(d.amount), d.patientName, d.patientPhone || "—",
+          pdfNGN(d.amount), d.patientPhone ? `${d.patientName}\n${d.patientPhone}` : d.patientName,
           d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
           d.saleId ? receiptNo(d.saleId) : "Not linked",
+          d.authorizedByName || "—",
         ]),
     });
     y = (doc as any).lastAutoTable.finalY + 14;
@@ -155,7 +165,7 @@ export default function Poisons() {
             <Button variant="ghost" size="sm" onClick={exportCsv}><FileDown className="mr-1.5 h-4 w-4" />Export CSV</Button>
             <Button variant="ghost" size="sm" onClick={exportInspectionPdf}><ShieldCheck className="mr-1.5 h-4 w-4" />Inspection PDF</Button>
           </div>
-          <DispenseDialog products={controlled} />
+          {canAddMissingEntry && <DispenseDialog products={controlled} />}
         </div>
       </div>
 
@@ -201,10 +211,11 @@ export default function Poisons() {
                 <TableHead>Patient</TableHead><TableHead>Prescriber</TableHead>
                 <TableHead>Rx Ref</TableHead><TableHead>Cashier</TableHead>
                 <TableHead>Sale</TableHead>
+                <TableHead>Authorized by</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {dispenses.length === 0 && <TableRow><TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
+                {dispenses.length === 0 && <TableRow><TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
                 {dispenses.map((d) => (
                   <TableRow key={d.id}>
                     <TableCell className="text-xs">{format(lagosDate(d.at), "dd MMM yyyy HH:mm")}</TableCell>
@@ -221,6 +232,12 @@ export default function Poisons() {
                       {d.saleId
                         ? <span className="font-mono">#{receiptNo(d.saleId)}</span>
                         : <span className="text-muted-foreground" title="Recorded before register entries were linked to sales">Not linked</span>}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {/* STEP 20e: the pharmacist who authorized the entry (PIN for Cashier sales). */}
+                      {d.authorizedByName
+                        ? d.authorizedByName
+                        : <span className="text-muted-foreground" title="Recorded before pharmacist authorization was stored">—</span>}
                     </TableCell>
                     <TableCell className="text-xs">
                       {/* COMPLIANCE FIX: surfaces sync status on the register itself so a
