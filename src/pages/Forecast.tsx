@@ -140,6 +140,27 @@ export default function Forecast() {
       // ── Expiry overrides everything ───────────────────────────────────
       // Expired stock physically cannot be sold — treat as zero sellable
       // stock regardless of quantity on shelf.
+      // STEP 22c: same rule as every expiry alert — only stock with quantity > 0
+      // is "expired stock". An expired batch with 0 units left is simply out of
+      // stock: no Expired badge, no quarantine message.
+      const hasStock = p.quantity > 0;
+      if (d !== null && d < 0 && !hasStock) {
+        return {
+          id: p.id,
+          name: p.name,
+          generic: p.generic,
+          currentStock: p.quantity,
+          predictedUnits14d: 0,
+          avgDailyDemand: 0,
+          trend: "no-data",
+          daysOfStock: 0,
+          urgency: "urgent",
+          suggestedReorderQty: p.reorderQuantity || p.reorderLevel * 3,
+          reason: "Expired batch — no stock left. Restock with a fresh batch if you still sell this product.",
+          hasSalesData: p.hasSalesData,
+          expiryFlag: null,
+        };
+      }
       if (d !== null && d < 0) {
         return {
           id: p.id,
@@ -159,7 +180,8 @@ export default function Forecast() {
       }
 
       // Expiring within 30 days — flag but still run demand analysis
-      const expiryFlag: Forecast["expiryFlag"] = (d !== null && d <= 30) ? "expiring-soon" : null;
+      // STEP 22c: only flag "expiring" when there is stock left to expire.
+      const expiryFlag: Forecast["expiryFlag"] = (hasStock && d !== null && d <= 30) ? "expiring-soon" : null;
 
       const daily = p.daily;
       const n = daily.length;
@@ -490,7 +512,7 @@ export default function Forecast() {
       </Card>
 
       <p className="text-xs text-muted-foreground">
-        Forecasts are based on weighted moving average + trend analysis from your last 30 days of sales. Expired products are flagged regardless of stock quantity. Review against seasonality, promotions, and supplier lead times before ordering.
+        Forecasts are based on weighted moving average + trend analysis from your last 30 days of sales. Expired and expiring products are flagged only when stock is left on the shelf (quantity above 0). Review against seasonality, promotions, and supplier lead times before ordering.
       </p>
     </div>
   );
