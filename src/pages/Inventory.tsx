@@ -53,12 +53,18 @@ const empty: Omit<Product, "id"> = {
   manufacturer: "", countryOfSource: "",
 };
 
+// STEP 23a: expiry filters opened from the Dashboard alerts (and the dropdown).
+// "near" = expiring within 90 days (kept for older links).
+const EXPIRY_FILTERS = new Set(["expired", "exp30", "exp60", "exp90", "near"]);
+
 export default function Inventory() {
   const products = useStore((s) => s.products);
   const sales = useStore((s) => s.sales);
   const suppliers = useStore((s) => s.suppliers);
   const [params, setParams] = useSearchParams();
   const filter = params.get("filter") || "all";
+  // STEP 23a: filters that follow the Dashboard expiry rule (see the list below).
+  const isExpiryFilter = EXPIRY_FILTERS.has(filter);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("all");
   const [supFilter, setSupFilter] = useState("all");
@@ -146,14 +152,24 @@ export default function Inventory() {
   const list = useMemo(() => {
     const filtered = products.filter((p) => {
       const isActive = p.active !== false;
-      if (showArchived) { if (isActive) return false; }
+      // STEP 23a: the expiry filters use the SAME rule as the Dashboard alerts:
+      // only stock with quantity > 0, and active AND archived products
+      // (archived rows are labelled). So the number on the Dashboard matches
+      // the number of rows here. The Archive button does not apply to them.
+      if (isExpiryFilter) {
+        if (!(p.quantity > 0) || !Number.isFinite(daysUntil(p.expiry))) return false;
+        const d = daysUntil(p.expiry);
+        if (filter === "expired" && !(d < 0)) return false;
+        if (filter === "exp30" && !(d >= 0 && d <= 30)) return false;
+        if (filter === "exp60" && !(d > 30 && d <= 60)) return false;
+        if (filter === "exp90" && !(d > 60 && d <= 90)) return false;
+        if (filter === "near" && !(d >= 0 && d <= 90)) return false;
+      } else if (showArchived) { if (isActive) return false; }
       else { if (!isActive) return false; }
       const t = expiryTier(p.expiry);
       const sold30 = velocity.get(p.id) || 0;
       const speed = movementSpeed(sold30);
       if (filter === "low" && p.quantity > p.reorderLevel) return false;
-      if (filter === "near" && t !== "red" && t !== "yellow") return false;
-      if (filter === "expired" && daysUntil(p.expiry) >= 0) return false;
       if (filter === "controlled" && !p.controlled) return false;
       // STEP 18: helps pharmacies fill in manufacturers on older products.
       if (filter === "nomanufacturer" && (p.manufacturer || "").trim()) return false;
@@ -184,7 +200,7 @@ export default function Inventory() {
       if (av > bv) return 1 * dir;
       return 0;
     });
-  }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir, showArchived]);
+  }, [products, q, cat, filter, supFilter, expFilter, moveFilter, velocity, sortKey, sortDir, showArchived, isExpiryFilter]);
 
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(1);
@@ -425,24 +441,37 @@ export default function Inventory() {
                 <SelectContent>
                   <SelectItem value="all">All items</SelectItem>
                   <SelectItem value="low">Low stock</SelectItem>
-                  <SelectItem value="near">Near expiry</SelectItem>
-                  <SelectItem value="expired">Expired</SelectItem>
+                  {/* STEP 23a: expiry filters match the Dashboard (stock > 0, incl. archived) */}
+                  <SelectItem value="expired">Expired (in stock)</SelectItem>
+                  <SelectItem value="exp30">Expiring ≤30 days</SelectItem>
+                  <SelectItem value="exp60">Expiring 31–60 days</SelectItem>
+                  <SelectItem value="exp90">Expiring 61–90 days</SelectItem>
+                  <SelectItem value="near">Expiring within 90 days</SelectItem>
                   <SelectItem value="controlled">Controlled drugs</SelectItem>
                   <SelectItem value="nomanufacturer">Missing manufacturer</SelectItem>
                 </SelectContent>
               </Select>
               <div className="h-6 w-px shrink-0 bg-border" />
               <Button
-                variant={showArchived ? "default" : "outline"}
+                variant={showArchived && !isExpiryFilter ? "default" : "outline"}
                 size="sm"
                 className="shrink-0 gap-1.5"
                 onClick={() => setShowArchived((v) => !v)}
-                title="Products with sales or dispense history are archived instead of deleted"
+                disabled={isExpiryFilter /* STEP 23a: expiry filters always include archived */}
+                title={isExpiryFilter
+                  ? "Expiry filters already include archived products (labelled \"Archived\")"
+                  : "Products with sales or dispense history are archived instead of deleted"}
               >
                 <Archive className="h-3.5 w-3.5" />
                 {showArchived ? "Archived" : "Archive"}
               </Button>
             </div>
+            {/* STEP 23a: explain the expiry-filter rule so the count is trusted */}
+            {isExpiryFilter && (
+              <p className="text-[11px] text-muted-foreground">
+                Same rule as the Dashboard alerts: only stock above 0, and both active and archived products (archived ones are labelled).
+              </p>
+            )}
           </div>
         </CardHeader>
         <CardContent className="p-0 lg:min-h-0 lg:flex-1 lg:overflow-hidden">
@@ -553,6 +582,12 @@ export default function Inventory() {
                             </span>
                           )}
                           {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
+                          {/* STEP 23a: label archived rows (they appear in the expiry filters) */}
+                          {p.active === false && (
+                            <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-muted-foreground/40 bg-muted px-1 py-0 text-[10px] font-medium text-muted-foreground">
+                              <Archive className="h-2.5 w-2.5" /> Archived
+                            </span>
+                          )}
                         </div>
                         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
                           <span className="truncate">
