@@ -498,9 +498,10 @@ export default function Dashboard() {
   const expiryBannerTiers: BannerTier[] = [
     { key: "expired", count: expiredCount,  tone: "expired", label: "still in stock — quarantine immediately", link: "/inventory?filter=expired", dismissible: false,
       extra: expiredArchivedCount > 0 ? `(${expiredArchivedCount} archived)` : undefined },
-    { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed", link: "/inventory?filter=near", dismissible: true },
-    { key: "amber",  count: near60.length, tone: "amber",  label: "expiring within 31–60 days — plan disposal soon", link: "/inventory?filter=near", dismissible: true },
-    { key: "yellow", count: near90.length, tone: "yellow", label: "expiring within 61–90 days — monitor closely", link: "/inventory?filter=near", dismissible: true },
+    // STEP 23b: each banner opens the Inventory filter with exactly its own rows.
+    { key: "red",    count: near30.length, tone: "red",    label: "expiring within 30 days — urgent action needed", link: "/inventory?filter=exp30", dismissible: true },
+    { key: "amber",  count: near60.length, tone: "amber",  label: "expiring within 31–60 days — plan disposal soon", link: "/inventory?filter=exp60", dismissible: true },
+    { key: "yellow", count: near90.length, tone: "yellow", label: "expiring within 61–90 days — monitor closely", link: "/inventory?filter=exp90", dismissible: true },
   ];
 
   const trend = Array.from({ length: 7 }).map((_, i) => {
@@ -570,8 +571,9 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           {/* STEP 22a: Low Stock counts active products only */}
           <AlertCard icon={PackageX}      label="Low Stock"         count={lowStock.length} tone="warning"     link="/inventory?filter=low"     hint="Active products at or below reorder level" />
-          <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length}   tone="red"         link="/inventory?filter=near"    hint="Urgent action needed" />
-          <AlertCard icon={CalendarClock} label="Expiring ≤60 days" count={near60.length}   tone="amber"       link="/inventory?filter=near"    hint="Plan disposal soon" />
+          {/* STEP 23b: matching Inventory filters; the second card counts 31–60 days, so it now says so */}
+          <AlertCard icon={CalendarClock} label="Expiring ≤30 days" count={near30.length}   tone="red"         link="/inventory?filter=exp30"   hint="Urgent action needed" />
+          <AlertCard icon={CalendarClock} label="Expiring 31–60 days" count={near60.length} tone="amber"       link="/inventory?filter=exp60"   hint="Plan disposal soon" />
           <AlertCard icon={AlertTriangle} label="Expired Items"     count={expiredCount}    tone="destructive" link="/inventory?filter=expired" hint="Quarantine immediately" />
         </div>
 
@@ -653,7 +655,7 @@ export default function Dashboard() {
                     const archived = p.active === false;
                     const loc = formatShelfLocation(p);
                     return (
-                      <Link key={p.id} to={d < 0 ? "/inventory?filter=expired" : "/inventory?filter=near"} className="flex items-center justify-between gap-2 rounded-md border p-2 hover:bg-muted/50">
+                      <Link key={p.id} to={d < 0 ? "/inventory?filter=expired" : "/inventory?filter=exp30" /* STEP 23b */} className="flex items-center justify-between gap-2 rounded-md border p-2 hover:bg-muted/50">
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5 text-sm font-medium">
                             <span className="truncate">{p.name}</span>
