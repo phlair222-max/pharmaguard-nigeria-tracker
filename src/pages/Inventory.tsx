@@ -57,6 +57,30 @@ const empty: Omit<Product, "id"> = {
 // "near" = expiring within 90 days (kept for older links).
 const EXPIRY_FILTERS = new Set(["expired", "exp30", "exp60", "exp90", "near"]);
 
+// STEP 24: NEML search helpers (word-by-word matching).
+// Splits the typed text into lower-case words and keeps only safe characters.
+function nemlSearchWords(term: string): string[] {
+  return term
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}\p{N}./+-]/gu, ""))
+    .filter((w) => w.length > 0)
+    .slice(0, 6);
+}
+
+// Best matches first: (0) name has every word and starts with the first word,
+// (1) name has every word, (2) name starts with the first word, (3) the rest
+// (matched partly via forms/strengths). A–Z within each group.
+function rankNemlResults<T extends { name: string }>(rows: T[], words: string[]): T[] {
+  const score = (r: T) => {
+    const n = r.name.toLowerCase();
+    const all = words.every((w) => n.includes(w));
+    const starts = words.length > 0 && n.startsWith(words[0]);
+    return all && starts ? 0 : all ? 1 : starts ? 2 : 3;
+  };
+  return [...rows].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name));
+}
+
 export default function Inventory() {
   const products = useStore((s) => s.products);
   const sales = useStore((s) => s.sales);
@@ -93,20 +117,35 @@ export default function Inventory() {
   const [selectedNeml, setSelectedNeml] = useState<NemlDrug | null>(null);
   const nemlDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // STEP 24: NEML search matches WORD BY WORD. Before, the whole text had to
+  // appear as one piece of the name, so "amoxicillin clav" or
+  // "paracetamol 500" found nothing. Now every word typed must appear in the
+  // drug name OR its forms/strengths, in any order. Words are cleaned to
+  // letters, digits and . / + - (so % _ , ( ) can't change the query).
+  // Results are ranked: names containing every word first, then A–Z.
+  // A request counter makes sure a slow older reply never replaces a newer one.
+  const nemlRequestRef = useRef(0);
   const searchNeml = useCallback((term: string) => {
     if (nemlDebounceRef.current) clearTimeout(nemlDebounceRef.current);
-    if (!term.trim() || term.trim().length < 2) {
+    const words = nemlSearchWords(term);
+    if (words.length === 0 || words.join("").length < 2) {
+      nemlRequestRef.current++;
       setNemlResults([]); setNemlOpen(false);
       return;
     }
     nemlDebounceRef.current = setTimeout(async () => {
-      const { data, error } = await (supabase.from as any)("neml_drugs")
-        .select("id, name, forms_and_strengths, category, is_controlled, requires_trained_personnel, notes")
-        .ilike("name", `%${term.trim()}%`)
-        .limit(8);
+      const requestId = ++nemlRequestRef.current;
+      let query = (supabase.from as any)("neml_drugs")
+        .select("id, name, forms_and_strengths, category, is_controlled, requires_trained_personnel, notes");
+      // One explicit filter: (word 1 in name or forms) AND (word 2 in name or forms) AND …
+      const perWord = words.map((w) => `or(name.ilike.%${w}%,forms_and_strengths.ilike.%${w}%)`);
+      query = query.or(`and(${perWord.join(",")})`);
+      const { data, error } = await query.order("name").limit(40);
+      if (requestId !== nemlRequestRef.current) return; // a newer search is running
       if (error) { console.error(error); return; }
-      setNemlResults(data || []);
-      setNemlOpen((data || []).length > 0);
+      const ranked = rankNemlResults((data || []) as NemlDrug[], words).slice(0, 8);
+      setNemlResults(ranked);
+      setNemlOpen(ranked.length > 0);
     }, 300);
   }, []);
 
