@@ -42,7 +42,17 @@ type NemlDrug = {
   is_controlled: boolean;
   requires_trained_personnel: boolean;
   notes: string | null;
+  source_list: string | null; // STEP 25d: "neml_8" (NEML 8th Edition) or "ppmv" (PPMV list)
 };
+
+// STEP 25d: which official list a catalogue entry comes from. The same medicine
+// can be on both lists (e.g. Paracetamol); the tag tells them apart, and a PPMV
+// entry also means a Patent Medicine Vendor may stock it.
+function nemlSourceLabel(src: string | null): string {
+  if (src === "neml_8") return "NEML 8th ed.";
+  if (src === "ppmv") return "PPMV list";
+  return src || "Catalogue";
+}
 
 const empty: Omit<Product, "id"> = {
   name: "", generic: "", nafdac: "", batch: "", expiry: "", quantity: 0,
@@ -78,7 +88,9 @@ function rankNemlResults<T extends { name: string }>(rows: T[], words: string[])
     const starts = words.length > 0 && n.startsWith(words[0]);
     return all && starts ? 0 : all ? 1 : starts ? 2 : 3;
   };
-  return [...rows].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name));
+  // STEP 25d: the same name from two lists sits side by side, NEML first.
+  const srcRank = (r: T) => ((r as { source_list?: string | null }).source_list === "neml_8" ? 0 : 1);
+  return [...rows].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name) || srcRank(a) - srcRank(b));
 }
 
 export default function Inventory() {
@@ -136,7 +148,7 @@ export default function Inventory() {
     nemlDebounceRef.current = setTimeout(async () => {
       const requestId = ++nemlRequestRef.current;
       let query = (supabase.from as any)("neml_drugs")
-        .select("id, name, forms_and_strengths, category, is_controlled, requires_trained_personnel, notes");
+        .select("id, name, forms_and_strengths, category, is_controlled, requires_trained_personnel, notes, source_list"); // STEP 25d
       // One explicit filter: (word 1 in name or forms) AND (word 2 in name or forms) AND …
       const perWord = words.map((w) => `or(name.ilike.%${w}%,forms_and_strengths.ilike.%${w}%)`);
       query = query.or(`and(${perWord.join(",")})`);
@@ -167,6 +179,7 @@ export default function Inventory() {
       nemlDrugId: drug.id,
       category: drug.category || d.category,
     }));
+    setNewCat(""); // STEP 25d: leave "custom category" mode, show the copied category
     setNemlOpen(false);
     setNemlResults([]);
   };
@@ -183,7 +196,26 @@ export default function Inventory() {
     if (sortKey === k) setSortDir((d) => d === "asc" ? "desc" : "asc");
     else { setSortKey(k); setSortDir("asc"); }
   };
-  const CATEGORIES = useMemo(() => [...DEFAULT_CATEGORIES, ...customCats, "Others"], [customCats]);
+  // STEP 25d: the category list also includes every category your products
+  // actually use (e.g. ones copied from the NEML/PPMV catalogue, or older ones
+  // like "Psychiatric"). Before, such products could not be found with the
+  // category filter, and the form showed them as "Others".
+  const CATEGORIES = useMemo(() => {
+    const used = Array.from(new Set(products.map((p) => (p.category || "").trim()).filter(Boolean)));
+    const known = new Set([...DEFAULT_CATEGORIES, ...customCats, "Others"]);
+    const extra = used.filter((c) => !known.has(c)).sort((a, b) => a.localeCompare(b));
+    return [...DEFAULT_CATEGORIES, ...customCats, ...extra, "Others"];
+  }, [customCats, products]);
+  // STEP 25d: "custom mode" = the person chose "Others" and is typing a new
+  // category. Tracked on its own, so a category that is simply not in the
+  // list (e.g. just copied from a NEML medicine) is shown as itself.
+  const customCatMode = draft.category === "" || newCat !== "";
+  const formCategories = useMemo(
+    () => (!customCatMode && draft.category && !CATEGORIES.includes(draft.category)
+      ? [...CATEGORIES.slice(0, -1), draft.category, "Others"]
+      : CATEGORIES),
+    [CATEGORIES, customCatMode, draft.category]
+  );
   const PACK_SIZES = useMemo(() => [...DEFAULT_PACK_SIZES, ...customPacks, "Others"], [customPacks]);
 
   const velocity = useMemo(() => salesVelocityMap(sales, 30), [sales]);
@@ -253,12 +285,12 @@ export default function Inventory() {
 
   const openNew = () => {
     setEditing(null); setDraft(empty); setSelectedNeml(null);
-    setNemlResults([]); setNemlOpen(false);
+    setNemlResults([]); setNemlOpen(false); setNewCat(""); // STEP 25d
     setOpen(true);
   };
   const openEdit = (p: Product) => {
     setEditing(p); setDraft({ ...p, itemType: p.itemType || "pharmaceutical" });
-    setSelectedNeml(null); setNemlResults([]); setNemlOpen(false);
+    setSelectedNeml(null); setNemlResults([]); setNemlOpen(false); setNewCat(""); // STEP 25d
     setOpen(true);
   };
   const performSave = () => {
@@ -782,7 +814,23 @@ export default function Inventory() {
                       onMouseDown={(e) => { e.preventDefault(); selectNemlDrug(drug); }}
                       className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-muted transition-colors border-b last:border-b-0"
                     >
-                      <span className="font-medium">{drug.name}</span>
+                      {/* STEP 25d: list tag, so the same medicine from two lists can be told apart */}
+                      <span className="flex w-full items-center justify-between gap-2">
+                        <span className="font-medium">{drug.name}</span>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium",
+                            drug.source_list === "neml_8"
+                              ? "border-primary/40 bg-primary/10 text-primary"
+                              : "border-muted-foreground/40 bg-muted text-muted-foreground"
+                          )}
+                          title={drug.source_list === "neml_8"
+                            ? "Nigeria Essential Medicines List, 8th Edition"
+                            : "List of products a Patent and Proprietary Medicine Vendor may stock"}
+                        >
+                          {nemlSourceLabel(drug.source_list)}
+                        </span>
+                      </span>
                       {drug.forms_and_strengths && (
                         <span className="text-[11px] text-muted-foreground line-clamp-1">{drug.forms_and_strengths}</span>
                       )}
@@ -797,7 +845,7 @@ export default function Inventory() {
               )}
               {selectedNeml && (
                 <p className="mt-1 flex items-center gap-1 text-[11px] text-success">
-                  <Pill className="h-3 w-3" /> Matched to NEML catalogue
+                  <Pill className="h-3 w-3" /> Matched to {nemlSourceLabel(selectedNeml.source_list)} {/* STEP 25d */}
                 </p>
               )}
               {selectedNeml?.requires_trained_personnel && (
@@ -843,16 +891,16 @@ export default function Inventory() {
             <div>
               <Label>Therapeutic Category</Label>
               <Select
-                value={CATEGORIES.includes(draft.category) ? draft.category : "Others"}
+                value={customCatMode ? "Others" : draft.category /* STEP 25d */}
                 onValueChange={(v) => {
                   if (v === "Others") { setDraft({ ...draft, category: "" }); setNewCat(""); }
                   else setDraft({ ...draft, category: v, controlled: v === "Controlled Substances" ? true : draft.controlled });
                 }}
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <SelectContent>{formCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
-              {(!CATEGORIES.includes(draft.category) || (draft.category === "" )) && (
+              {customCatMode && ( /* STEP 25d */
                 <div className="mt-2 flex gap-2">
                   <Input placeholder="Enter custom category" value={newCat || draft.category} onChange={(e) => { setNewCat(e.target.value); setDraft({ ...draft, category: e.target.value }); }} />
                   <Button type="button" size="sm" variant="outline" onClick={() => {
