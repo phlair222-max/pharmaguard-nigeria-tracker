@@ -19,6 +19,17 @@ const GRID_COLS_MD: Record<number, string> = {
   4: "md:grid-cols-4",
 };
 
+// STEP 26: money labels for the sales chart's left-hand axis. The old label
+// divided by 1,000 and rounded to a whole number, so gridlines such as
+// 600 / 1,200 / 1,800 read "₦1k", "₦1k", "₦2k" — and a small week showed
+// "₦0k" five times. Now: the full amount under ₦1,000, then K (thousands)
+// and M (millions) with up to 2 decimals only when needed, e.g. ₦600,
+// ₦1.2K, ₦1.05M. The chart's gridlines are always round numbers, so every
+// label is exact and no two labels are the same (checked against the chart
+// library's own gridline calculation for ~30,000 different weeks).
+const AXIS_COMPACT = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 });
+const axisNaira = (v: number) => (v < 0 ? "-₦" : "₦") + AXIS_COMPACT.format(Math.abs(v));
+
 // ── Expiry Banner ─────────────────────────────────────────────────────────────
 // STEP 21: new "expired" tier (solid red) for expired stock still on hand.
 // It links to the Expired filter and CANNOT be dismissed — expired stock must
@@ -511,6 +522,10 @@ export default function Dashboard() {
     const day = sales.filter((s) => { const t = new Date(s.createdAt).getTime(); return t >= start && t < end; });
     return { day: format(d, "EEE"), revenue: day.reduce((a, s) => a + s.total, 0) };
   });
+  // STEP 26: with no sales in these 7 days the chart would be a flat line on
+  // a meaningless ₦0–₦4 axis, so a message is shown instead (like the
+  // "Top 10" chart beside it). A week whose sales total ₦0 counts as none.
+  const trendHasSales = trend.some((d) => d.revenue > 0);
 
   const velocity = salesVelocityMap(sales, 30);
   const fastMovers = products
@@ -608,15 +623,20 @@ export default function Dashboard() {
           <Card className="shadow-card">
             <CardHeader><CardTitle className="text-base">Sales — Last 7 Days</CardTitle></CardHeader>
             <CardContent className="h-[260px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={(v) => `₦${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} formatter={(v: number) => NGN(v)} />
-                  <Line type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 3 }} />
-                </LineChart>
-              </ResponsiveContainer>
+              {/* STEP 26: message instead of an empty chart; new axis labels */}
+              {!trendHasSales ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No sales in the last 7 days</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={trend}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={axisNaira} />
+                    <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} formatter={(v: number) => NGN(v)} />
+                    <Line type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
             </CardContent>
           </Card>
 
@@ -629,7 +649,8 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={fastMovers.map((x) => ({ name: x.p.name, units: x.units }))} layout="vertical" margin={{ left: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                    {/* STEP 26: units sold are whole numbers — no "0.5" or "1.5" gridlines */}
+                    <XAxis type="number" allowDecimals={false} stroke="hsl(var(--muted-foreground))" fontSize={12} />
                     <YAxis dataKey="name" type="category" stroke="hsl(var(--muted-foreground))" fontSize={11} width={130} />
                     <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
                     <Bar dataKey="units" fill="hsl(var(--primary))" radius={[0, 6, 6, 0]} />
