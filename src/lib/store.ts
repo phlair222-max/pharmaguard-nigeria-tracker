@@ -56,6 +56,17 @@ export type Sale = {
   customer?: string;
   createdAt: string;
   syncStatus?: "synced" | "pending";
+  // STEP 29: set when the database refused this sale while syncing (not a
+  // network problem). The sale stays queued and later sales still sync.
+  syncError?: string;
+} & UnsentOwner;
+
+// STEP 29: who recorded an unsent sale / register entry. Unsent records are
+// kept on the device through logout and only ever upload for this person.
+export type UnsentOwner = {
+  ownerUid?: string;
+  ownerOrgId?: string;
+  ownerName?: string;
 };
 
 export type AuditEntry = {
@@ -69,6 +80,8 @@ export type AuditEntry = {
 
 export type User = {
   username: string;
+  // STEP 29: the signed-in account's id (labels unsent records).
+  userId?: string;
   role?: "Admin" | "Pharmacist";
   organizationId?: string;
   memberRole?: "Owner" | "Pharmacist" | "Cashier";
@@ -121,7 +134,7 @@ export type ControlledDispense = {
   // STEP 19b: set when the database refused this entry while syncing (not a
   // network problem). The entry stays queued and is shown as needing attention.
   syncError?: string;
-};
+} & UnsentOwner;
 
 export type LoginActivity = {
   id: string;
@@ -176,9 +189,80 @@ type DB = {
   extendedSalesLoaded: boolean;
   authReady: boolean;
   isOffline: boolean;
+  // STEP 29: unsent records on this device that belong to ANOTHER account
+  // (shown as a notice; they upload when that person signs in here).
+  heldForOthers: { count: number; names: string[] };
 };
 
 const KEY = "pharmaguard_db_v3";
+
+// ── STEP 29: unsent records survive logout ────────────────────────────────
+// Logging out (or a sign-in ending by itself) used to delete everything this
+// device held — including sales and Poisons Register entries that had not
+// reached the server yet. Now those unsent records are moved to their own
+// storage entry ("parked"), labelled with the person and pharmacy that
+// recorded them, and are brought back and uploaded only when that SAME person
+// signs in on this device again. Nothing is ever uploaded under someone else.
+const UNSENT_KEY = "pharmaguard_unsent_v1";
+type Parked = { sales: Sale[]; dispenses: ControlledDispense[] };
+
+function readParked(): Parked {
+  const empty: Parked = { sales: [], dispenses: [] };
+  if (typeof window === "undefined") return empty;
+  const raw = localStorage.getItem(UNSENT_KEY);
+  if (!raw) return empty;
+  try {
+    const p = JSON.parse(raw);
+    return {
+      sales: Array.isArray(p?.sales) ? p.sales : [],
+      dispenses: Array.isArray(p?.dispenses) ? p.dispenses : [],
+    };
+  } catch {
+    // Never lose it: keep the unreadable text aside for support.
+    try { localStorage.setItem(`${UNSENT_KEY}_unreadable_${Date.now()}`, raw); } catch { /* storage full */ }
+    return empty;
+  }
+}
+
+// Returns false if the browser refused to save (storage full / blocked).
+function writeParked(p: Parked): boolean {
+  try {
+    if (!p.sales.length && !p.dispenses.length) localStorage.removeItem(UNSENT_KEY);
+    else localStorage.setItem(UNSENT_KEY, JSON.stringify(p));
+    return true;
+  } catch (e) {
+    console.error("[unsent] could not save the unsent-records list:", e);
+    return false;
+  }
+}
+
+function mergeById<T extends { id: string }>(base: T[], add: T[]): T[] {
+  const m = new Map<string, T>();
+  for (const x of base) m.set(x.id, x);
+  for (const x of add) m.set(x.id, x); // the newer copy wins
+  return [...m.values()];
+}
+
+// Does this unsent record belong to the person signed in now?
+function ownedBy(
+  x: UnsentOwner & { cashier?: string },
+  uid: string, orgId: string, email: string | undefined,
+): boolean {
+  if (!x.ownerUid && !x.ownerOrgId && !x.ownerName) {
+    // Recorded before Step 29 (no label). Logging out used to delete these,
+    // so they can only belong to the person signed in when they were made.
+    return !!email && x.cashier === email;
+  }
+  if (x.ownerOrgId && x.ownerOrgId !== orgId) return false;
+  if (x.ownerUid) return x.ownerUid === uid;
+  return !!email && x.ownerName === email;
+}
+
+function summarizeHeld(p: Parked): { count: number; names: string[] } {
+  const all = [...p.sales, ...p.dispenses];
+  const names = [...new Set(all.map((x) => x.ownerName || x.cashier || "an unknown account"))];
+  return { count: all.length, names };
+}
 
 const SALES_HYDRATE_DAYS = 90;
 function salesCutoffISO(): string {
@@ -256,6 +340,7 @@ function emptyDb(): DB {
     extendedSalesLoaded: false,
     authReady: false,
     isOffline: typeof navigator !== "undefined" ? !navigator.onLine : false,
+    heldForOthers: { count: 0, names: [] }, // STEP 29: worked out at sign-in
     controlledDispense: [], loginActivity: [],
     credentials: [
       { username: "admin", passwordHash: hashPwd("admin") },
@@ -294,6 +379,7 @@ function load(): DB {
     parsed.sales = (parsed.sales || []).map((s) => ({ ...s, syncStatus: s.syncStatus ?? "synced" }));
     parsed.authReady = false;
     parsed.isOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
+    parsed.heldForOthers = { count: 0, names: [] }; // STEP 29: worked out at sign-in
     return parsed;
   } catch {
     return emptyDb();
@@ -396,7 +482,11 @@ export const store = {
     | { ok: true; sale: Sale; offline: boolean }
     | { ok: false; error?: string }
   > {
-    const ns: Sale = { ...sale, id: crypto.randomUUID(), createdAt: new Date().toISOString(), syncStatus: "pending" };
+    const ns: Sale = {
+      ...sale, id: crypto.randomUUID(), createdAt: new Date().toISOString(), syncStatus: "pending",
+      // STEP 29: label who recorded it (only used if it has to wait offline)
+      ownerUid: db.user?.userId, ownerOrgId: db.user?.organizationId, ownerName: db.user?.username,
+    };
     // STEP 14b-2: the database works out the real profit (Step 14a). Users
     // without margin access can't see cost, so their screen's figure would
     // be wrong — keep it empty instead.
@@ -436,38 +526,72 @@ export const store = {
     return { ok: false, error: result.error };
   },
 
-  async syncPendingSales(): Promise<void> {
-    if (!db.user?.organizationId) return;
-    if (this._syncingSales) return;
-    const pending = db.sales.filter((s) => s.syncStatus === "pending");
-    if (!pending.length) return;
+  // STEP 29: returns the run already in progress if there is one, so the
+  // logout button can WAIT for it instead of seeing "nothing to do".
+  syncPendingSales(): Promise<void> {
+    if (this._salesSync) return this._salesSync;
+    const run = (async () => {
+      if (!db.user?.organizationId) return;
+      const ctx = await supabasePush._context();
+      if (!ctx) return;
+      // STEP 29: only this person's own unsent sales are ever uploaded.
+      const pending = db.sales.filter(
+        (s) => s.syncStatus === "pending" && ownedBy(s, ctx.uid, ctx.orgId, db.user?.username)
+      );
+      if (!pending.length) return;
 
-    this._syncingSales = true;
-    try {
       const ordered = [...pending].sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
       );
 
       let syncedCount = 0;
+      let changed = false;
       for (const s of ordered) {
         const result = await supabasePush.insertSale(s);
+        const idx = db.sales.findIndex((x) => x.id === s.id);
         if (result.ok) {
-          const idx = db.sales.findIndex((x) => x.id === s.id);
-          if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced" };
+          if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced", syncError: undefined };
           syncedCount++;
-        } else {
-          break;
+          changed = true;
+          continue;
+        }
+        if (result.isNetworkError) break; // still offline — try again later
+
+        // STEP 29: the database refused this sale. Previously this stopped
+        // EVERY later sale from syncing, forever. First check whether it is
+        // already on the server (an earlier attempt can arrive even though
+        // its reply was lost) — if so it is simply done.
+        const exists = await supabasePush.saleExists(s.id);
+        if (exists === true) {
+          if (idx !== -1) db.sales[idx] = { ...db.sales[idx], syncStatus: "synced", syncError: undefined };
+          syncedCount++;
+          changed = true;
+          continue;
+        }
+        if (exists === null) break; // could not check (connection) — try again later
+
+        // Truly refused: keep it queued (never deleted), warn once, carry on.
+        const msg = result.error || "refused by the database";
+        if (idx !== -1 && db.sales[idx].syncError !== msg) {
+          db.sales[idx] = { ...db.sales[idx], syncError: msg };
+          changed = true;
+          toast.error(
+            `A sale recorded offline (₦${s.total.toFixed(2)}, ${new Date(s.createdAt).toLocaleString()}) could not be uploaded: ${msg}. It is kept on this device — please tell the Owner.`,
+            { duration: 12000 }
+          );
         }
       }
+      if (changed) persist();
       if (syncedCount > 0) {
-        persist();
         toast.success(`${syncedCount} offline sale${syncedCount > 1 ? "s" : ""} synced to the cloud`);
       }
-    } finally {
-      this._syncingSales = false;
-    }
-    // STEP 19b: register entries linked to these sales can go now.
-    void this.syncPendingControlledDispenses();
+    })();
+    this._salesSync = run.finally(() => {
+      this._salesSync = null;
+      // STEP 19b: register entries linked to these sales can go now.
+      void this.syncPendingControlledDispenses();
+    });
+    return this._salesSync;
   },
 
   addSupplier(s: Omit<Supplier, "id">) {
@@ -541,11 +665,22 @@ export const store = {
     this.audit("Login", username);
     persist(); return true;
   },
+  // STEP 29: unsent sales / register entries are KEPT on this device (parked,
+  // labelled with who recorded them) and upload when that person signs in
+  // here again; everything else is cleared as before. The "Logout" audit
+  // entry is now written BEFORE signing out (recordLogoutAudit), because
+  // after signing out the server no longer accepts it.
   logout() {
-    if (db.user) this.audit("Logout", db.user.username);
     this.stopRealtime();
+    const parked = this._parkUnsent();
+    // If the browser would not save the parked list, keep the unsent records
+    // in the main store instead of deleting them.
+    const keepSales = parked ? [] : db.sales.filter((s) => s.syncStatus === "pending");
+    const keepCd = parked ? [] : db.controlledDispense.filter((c) => c.syncStatus === "pending");
     localStorage.removeItem(KEY);
     db = emptyDb();
+    db.sales = keepSales;
+    db.controlledDispense = keepCd;
     persist();
   },
   changePassword(username: string, oldPwd: string, newPwd: string): { ok: boolean; error?: string } {
@@ -575,6 +710,8 @@ export const store = {
     const entry: ControlledDispense = {
       ...d, id: crypto.randomUUID(), at: new Date().toISOString(),
       cashier: db.user?.username ?? "system", syncStatus: "pending",
+      // STEP 29: label who recorded it (only used if it has to wait offline)
+      ownerUid: db.user?.userId, ownerOrgId: db.user?.organizationId, ownerName: db.user?.username,
     };
 
     // STEP 19b: a register entry is a RECORD of a sale. It no longer reduces
@@ -629,14 +766,19 @@ export const store = {
     return { ok: false, error: result.error };
   },
 
-  async syncPendingControlledDispenses(): Promise<void> {
-    if (!db.user?.organizationId) return;
-    if (this._syncingControlled) return;
-    const pending = db.controlledDispense.filter((c) => c.syncStatus === "pending");
-    if (!pending.length) return;
+  // STEP 29: returns the run already in progress if there is one (see above).
+  syncPendingControlledDispenses(): Promise<void> {
+    if (this._controlledSync) return this._controlledSync;
+    const run = (async () => {
+      if (!db.user?.organizationId) return;
+      const ctx = await supabasePush._context();
+      if (!ctx) return;
+      // STEP 29: only this person's own unsent entries are ever uploaded.
+      const pending = db.controlledDispense.filter(
+        (c) => c.syncStatus === "pending" && ownedBy(c, ctx.uid, ctx.orgId, db.user?.username)
+      );
+      if (!pending.length) return;
 
-    this._syncingControlled = true;
-    try {
       const ordered = [...pending].sort(
         (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()
       );
@@ -674,10 +816,136 @@ export const store = {
       if (syncedCount > 0) {
         toast.success(`${syncedCount} offline controlled-dispense record${syncedCount > 1 ? "s" : ""} synced to the cloud`);
       }
-    } finally {
-      this._syncingControlled = false;
+    })();
+    this._controlledSync = run.finally(() => {
+      this._controlledSync = null;
+    });
+    return this._controlledSync;
+  },
+
+  // ── STEP 29: logout that never loses unsent records ──────────────────────
+  // How many of the signed-in person's sales / register entries have not
+  // reached the server yet (only their own are in view — see _reconcileQueue).
+  unsentCount(): { sales: number; dispenses: number } {
+    return {
+      sales: db.sales.filter((s) => s.syncStatus === "pending").length,
+      dispenses: db.controlledDispense.filter((c) => c.syncStatus === "pending").length,
+    };
+  },
+
+  // Tries to upload everything unsent (waiting for a run already in progress)
+  // and returns what is STILL unsent afterwards.
+  async syncAllPending(): Promise<{ sales: number; dispenses: number }> {
+    try {
+      await this.syncPendingSales();
+      await this.syncPendingControlledDispenses();
+    } catch (e) {
+      console.error("[unsent] sync before logout failed:", e);
+    }
+    return this.unsentCount();
+  },
+
+  // The "Logout" audit entry is written while still signed in. (It used to
+  // be written AFTER signing out, so the server never received it.)
+  async recordLogoutAudit(detail?: string): Promise<void> {
+    if (!db.user) return;
+    const entry: AuditEntry = {
+      id: crypto.randomUUID(), user: db.user.username, action: "Logout",
+      target: db.user.username, detail, at: new Date().toISOString(),
+    };
+    db.audit.unshift(entry);
+    try {
+      await withTimeout(supabasePush.insertAudit(entry), 5000);
+    } catch {
+      // offline: the logout cannot be recorded on the server
     }
   },
+
+  // Moves the unsent records out of the main store into the parked list.
+  // Returns false if the browser would not save them (they then stay put).
+  parkUnsentNow(): boolean {
+    return this._parkUnsent();
+  },
+
+  // Ends the sign-in on THIS device only (other devices stay signed in).
+  // Supabase normally tells the server first; with no connection it refuses
+  // and keeps the sign-in, so in that case the sign-in is removed from this
+  // device directly (it cannot be used again from here).
+  async signOutThisDevice(): Promise<{ offline: boolean }> {
+    try {
+      const { error } = await supabase.auth.signOut({ scope: "local" });
+      if (!error) return { offline: false };
+      console.warn("[logout] server not reachable — ending the sign-in on this device only:", error.message);
+    } catch (e) {
+      console.warn("[logout] sign-out request failed — ending the sign-in on this device only:", e);
+    }
+    const auth = supabase.auth as unknown as { _removeSession?: () => Promise<void> };
+    if (typeof auth._removeSession === "function") {
+      await auth._removeSession(); // also tells the app "signed out"
+    } else {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("sb-") && k.includes("-auth-token")) localStorage.removeItem(k);
+      }
+    }
+    return { offline: true };
+  },
+
+  _parkUnsent(): boolean {
+    const label = <T extends UnsentOwner & { cashier?: string }>(x: T): T =>
+      x.ownerUid || x.ownerOrgId || x.ownerName
+        ? x
+        : { ...x, ownerUid: db.user?.userId, ownerOrgId: db.user?.organizationId, ownerName: db.user?.username ?? x.cashier };
+    const sales = db.sales.filter((s) => s.syncStatus === "pending").map(label);
+    const dispenses = db.controlledDispense.filter((c) => c.syncStatus === "pending").map(label);
+    if (!sales.length && !dispenses.length) return true;
+    const p = readParked();
+    const ok = writeParked({ sales: mergeById(p.sales, sales), dispenses: mergeById(p.dispenses, dispenses) });
+    if (!ok) return false;
+    db.sales = db.sales.filter((s) => s.syncStatus !== "pending");
+    db.controlledDispense = db.controlledDispense.filter((c) => c.syncStatus !== "pending");
+    return true;
+  },
+
+  // At sign-in: this person's parked records come back into view (and
+  // upload); anyone else's unsent records go (back) to the parked list and
+  // are only counted in a notice.
+  _reconcileQueue(uid: string, orgId: string, email: string) {
+    const mine = (x: UnsentOwner & { cashier?: string }) => ownedBy(x, uid, orgId, email);
+    const label = <T extends UnsentOwner & { cashier?: string }>(x: T): T =>
+      !x.ownerUid && !x.ownerOrgId && !x.ownerName && mine(x)
+        ? { ...x, ownerUid: uid, ownerOrgId: orgId, ownerName: email }
+        : x;
+
+    const foreignSales = db.sales.filter((s) => s.syncStatus === "pending" && !mine(s));
+    const foreignCd = db.controlledDispense.filter((c) => c.syncStatus === "pending" && !mine(c));
+    const p = readParked();
+    const all: Parked = {
+      sales: mergeById(p.sales, foreignSales),
+      dispenses: mergeById(p.dispenses, foreignCd),
+    };
+    const rest: Parked = {
+      sales: all.sales.filter((x) => !mine(x)),
+      dispenses: all.dispenses.filter((x) => !mine(x)),
+    };
+    if (writeParked(rest)) {
+      const back = { sales: all.sales.filter(mine), dispenses: all.dispenses.filter(mine) };
+      const keepSales = db.sales.filter((s) => !(s.syncStatus === "pending" && !mine(s)));
+      const keepCd = db.controlledDispense.filter((c) => !(c.syncStatus === "pending" && !mine(c)));
+      db.sales = mergeById(back.sales, keepSales).map((s) => (s.syncStatus === "pending" ? label(s) : s));
+      db.controlledDispense = mergeById(back.dispenses, keepCd).map((c) => (c.syncStatus === "pending" ? label(c) : c));
+    } else {
+      // Could not update the parked list: leave everything where it is.
+      // Nothing is lost, and only this person's own records ever upload.
+      db.sales = db.sales.map((s) => (s.syncStatus === "pending" ? label(s) : s));
+      db.controlledDispense = db.controlledDispense.map((c) => (c.syncStatus === "pending" ? label(c) : c));
+    }
+    const left = readParked();
+    db.heldForOthers = summarizeHeld({
+      sales: left.sales.filter((x) => !mine(x)),
+      dispenses: left.dispenses.filter((x) => !mine(x)),
+    });
+  },
+
   importProducts(rows: Omit<Product, "id">[]) {
     const newRows = rows.map((r) => ({ ...r, id: crypto.randomUUID() }));
     newRows.forEach((r) => db.products.push(r));
@@ -688,23 +956,42 @@ export const store = {
 
   setAuthUser(u: { id: string; email: string } | null) {
     if (!u) {
+      // STEP 29: the sign-in has ended (logout, or it ended by itself). Unsent
+      // records are parked, not deleted. If the browser would not save them,
+      // they stay in the main store instead.
+      const parked = this._parkUnsent();
       db.user = null;
       db.authReady = false;
-      db.products = []; db.sales = []; db.suppliers = [];
-      db.controlledDispense = []; db.audit = [];
+      db.products = []; db.suppliers = []; db.audit = [];
+      db.sales = parked ? [] : db.sales.filter((s) => s.syncStatus === "pending");
+      db.controlledDispense = parked ? [] : db.controlledDispense.filter((c) => c.syncStatus === "pending");
       db.extendedSalesLoaded = false;
       persist();
       this.stopRealtime();
       return;
     }
 
+    // STEP 29: a DIFFERENT person is signing in on this device. Park the
+    // previous person's unsent records and clear their pharmacy's data from view.
+    if (db.user && db.user.username !== u.email) {
+      const parked = this._parkUnsent();
+      db.products = []; db.suppliers = []; db.audit = [];
+      db.sales = parked ? [] : db.sales.filter((s) => s.syncStatus === "pending");
+      db.controlledDispense = parked ? [] : db.controlledDispense.filter((c) => c.syncStatus === "pending");
+      db.settings = defaultSettings;
+      db.plan = null; db.freePlan = null;
+      db.extendedSalesLoaded = false;
+      db.user = null;
+    }
+
     if (db.user && db.user.username === u.email && db.user.memberRole) {
+      db.user = { ...db.user, userId: u.id }; // STEP 29
       db.authReady = true;
       persist();
       return;
     }
 
-    db.user = { username: u.email, role: undefined };
+    db.user = { username: u.email, role: undefined, userId: u.id }; // STEP 29: userId
     db.authReady = false;
     persist();
   },
@@ -712,8 +999,9 @@ export const store = {
   _realtimeChannel: null as ReturnType<typeof supabase.channel> | null,
   _pollInterval: null as ReturnType<typeof setInterval> | null,
   _hydrating: false,
-  _syncingSales: false,
-  _syncingControlled: false,
+  // STEP 29: the upload run in progress (null = none), so callers can wait for it
+  _salesSync: null as Promise<void> | null,
+  _controlledSync: null as Promise<void> | null,
 
   stopRealtime() {
     if (this._realtimeChannel) {
@@ -902,12 +1190,16 @@ export const store = {
       db.user = {
         ...db.user,
         username: email,
+        userId: uid, // STEP 29
         role: legacyRole,
         organizationId: orgId,
         memberRole,
         canViewMargins,
       };
       db.authReady = true;
+      // STEP 29: bring back this person's parked unsent records (they upload
+      // below); anyone else's stay parked and are shown in a notice.
+      this._reconcileQueue(uid, orgId, email);
       persist();
 
       void this.syncPendingSales();
@@ -1245,6 +1537,20 @@ const supabasePush = {
       return { ok: true };
     } catch (e: any) {
       return { ok: false, error: e?.message || "Network error", isNetworkError: true };
+    }
+  },
+  // STEP 29: true = the sale is on the server, false = it is not,
+  // null = could not check (connection problem).
+  async saleExists(id: string): Promise<boolean | null> {
+    try {
+      const { data, error } = await withTimeout(
+        supabase.from("sales").select("id").eq("id", id).maybeSingle(),
+        SALE_WRITE_TIMEOUT_MS,
+      );
+      if (error) return null;
+      return !!data;
+    } catch {
+      return null;
     }
   },
   async insertSupplier(s: Supplier) {
