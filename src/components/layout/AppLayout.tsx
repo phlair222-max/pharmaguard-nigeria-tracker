@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
   SidebarHeader, SidebarFooter, useSidebar,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles, ShieldCheck, Lock, Zap } from "lucide-react";
+import { LayoutDashboard, Package, ShoppingCart, FileBarChart2, ShieldAlert, History, LogOut, Pill, Moon, Sun, Truck, ReceiptText, Settings as SettingsIcon, Sparkles, ShieldCheck, Lock, Zap, CloudOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+// STEP 29: confirmation box when logging out with unsent records
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import { store, useStore, usePlan } from "@/lib/store";
 import { useTheme } from "next-themes";
 import HeaderTicker from "./HeaderTicker";
@@ -146,7 +150,56 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
   const user = useStore((s) => s.user);
   const plan = usePlan();
   const navigate = useNavigate();
+  // STEP 29: logout never deletes unsent sales / Poisons Register entries.
+  const [busy, setBusy] = useState(false);
+  const [unsent, setUnsent] = useState<{ sales: number; dispenses: number } | null>(null);
   if (!user) return null;
+
+  const finishLogout = async (keptCount: number) => {
+    setBusy(true);
+    try {
+      // Recorded while still signed in (it used to be sent after signing out,
+      // so the server never received it).
+      await store.recordLogoutAudit(
+        keptCount > 0 ? `${keptCount} unsent record${keptCount !== 1 ? "s" : ""} kept on this device` : undefined
+      );
+      // Put the unsent records somewhere safe BEFORE signing out.
+      if (!store.parkUnsentNow()) {
+        toast.error("The unsent records could not be stored safely on this device, so you are still signed in. Connect to the internet and try again.", { duration: 10000 });
+        return;
+      }
+      const { offline } = await store.signOutThisDevice(); // this device only
+      store.logout();
+      if (keptCount > 0) {
+        toast.info(`Logged out. ${keptCount} unsent record${keptCount !== 1 ? "s are" : " is"} kept on this device and will upload when you sign in here again.`, { duration: 10000 });
+      } else if (offline) {
+        toast.info("Logged out on this device (no connection).");
+      }
+      navigate("/login");
+    } finally {
+      setBusy(false);
+      setUnsent(null);
+    }
+  };
+
+  const onLogoutClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    let left = store.unsentCount();
+    try {
+      if (left.sales + left.dispenses > 0 && navigator.onLine) {
+        toast.info("Uploading unsent records before logging out…");
+        left = await store.syncAllPending();
+      }
+    } finally {
+      setBusy(false);
+    }
+    if (left.sales + left.dispenses > 0) {
+      setUnsent(left); // ask first
+      return;
+    }
+    await finishLogout(0);
+  };
 
   // FIX: upgrade entry point placed at the sidebar footer, right next to
   // the signed-in user's email — only shown to the Owner (non-Owner roles
@@ -169,14 +222,11 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
         <Button
           variant="ghost" size="icon"
           className="h-8 w-8 text-sidebar-foreground hover:bg-sidebar-accent shrink-0"
-          onClick={async () => {
-            const { supabase } = await import("@/integrations/supabase/client");
-            await supabase.auth.signOut();
-            store.logout();
-            navigate("/login");
-          }}
+          title="Log out"
+          disabled={busy}
+          onClick={() => { void onLogoutClick(); }}
         >
-          <LogOut className="h-4 w-4" />
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
         </Button>
       </div>
       {!collapsed && canUpgrade && (
@@ -190,6 +240,56 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
           {plan.tier === "free" ? "Upgrade plan" : "Upgrade to Pro"}
         </Button>
       )}
+
+      {/* STEP 29: unsent records — never deleted; the person chooses to stay or to log out and keep them */}
+      <AlertDialog open={!!unsent} onOpenChange={(o) => { if (!o) setUnsent(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <CloudOff className="h-5 w-5 text-amber-500" /> Unsent records on this device
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  {unsent && unsent.sales > 0 && <><strong>{unsent.sales} sale{unsent.sales !== 1 ? "s" : ""}</strong></>}
+                  {unsent && unsent.sales > 0 && unsent.dispenses > 0 && " and "}
+                  {unsent && unsent.dispenses > 0 && <><strong>{unsent.dispenses} Poisons Register entr{unsent.dispenses !== 1 ? "ies" : "y"}</strong></>}
+                  {" "}have not reached the server yet (no connection, or the server refused them).
+                </p>
+                <p>
+                  If you log out, they stay safely on this device and upload automatically the next time
+                  {" "}<strong>{user.username}</strong> signs in here. Do not clear this browser&apos;s data until then.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay signed in</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { const n = (unsent?.sales ?? 0) + (unsent?.dispenses ?? 0); void finishLogout(n); }}
+            >
+              Log out and keep them
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+// STEP 29: this device holds unsent records that belong to ANOTHER account.
+// They are not shown or uploaded here; they upload when that person signs in.
+function HeldRecordsNotice() {
+  const held = useStore((s) => s.heldForOthers);
+  if (!held || held.count === 0) return null;
+  return (
+    <div role="status" className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+      <CloudOff className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>
+        This device holds <strong>{held.count} unsent record{held.count !== 1 ? "s" : ""}</strong> (sales / Poisons Register)
+        recorded by <strong>{held.names.join(", ")}</strong>. They will upload automatically when that person signs in on
+        this device. Do not clear this browser&apos;s data until then.
+      </span>
     </div>
   );
 }
@@ -236,6 +336,7 @@ export default function AppLayout() {
               same root-cause pattern as the two earlier fixes, one level
               deeper in the tree. */}
           <main className="flex-1 min-h-0 overflow-auto p-4 md:p-6">
+            <HeldRecordsNotice /> {/* STEP 29 */}
             <Outlet />
           </main>
         </div>
