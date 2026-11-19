@@ -114,21 +114,12 @@ export default function Poisons() {
     doc.text("Statutory record per Pharmacists Council of Nigeria (PCN) & NDLEA requirements", pageW / 2, 41, { align: "center" });
     doc.text(`Generated: ${format(lagosDate(new Date()), "dd MMM yyyy HH:mm")} (Lagos time, WAT)  ·  Total entries: ${dispenses.length}  ·  Controlled SKUs: ${controlled.length}`, pageW / 2, 46, { align: "center" });
 
+    // STEP 31c: the statutory dispensing log comes first (it is the register
+    // itself), then the controlled stock on hand. Same two tables as before,
+    // in the opposite order; the certification stays at the end.
     let y = 54;
     doc.setFontSize(11); doc.setFont("helvetica", "bold");
-    doc.text("1. Controlled substances on hand", 14, y); y += 2;
-    autoTable(doc, {
-      startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [180, 50, 50] },
-      head: [["Drug", "NAFDAC", "Batch", "Balance", "Reorder", "Expiry"]],
-      body: controlled.length === 0 ? [["—", "—", "—", "—", "—", "—"]] :
-        // STEP 31b: say so when a controlled product has no expiry date (was an empty cell).
-        controlled.map((p) => [p.name, p.nafdac, p.batch, String(p.quantity), String(p.reorderLevel), p.expiry || "No expiry"]),
-    });
-    y = (doc as any).lastAutoTable.finalY + 8;
-
-    if (y > pageH - 50) { doc.addPage(); y = 20; }
-    doc.setFontSize(11); doc.setFont("helvetica", "bold");
-    doc.text("2. Statutory dispensing log", 14, y); y += 2;
+    doc.text("1. Statutory dispensing log", 14, y); y += 2;
     autoTable(doc, {
       startY: y, styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak" }, headStyles: { fillColor: [180, 50, 50] },
       columnStyles: {
@@ -149,6 +140,18 @@ export default function Poisons() {
           d.saleId ? receiptNo(d.saleId) : "Not linked",
           pdfPerson(d.authorizedByName),
         ]),
+    });
+    y = (doc as any).lastAutoTable.finalY + 8;
+
+    if (y > pageH - 50) { doc.addPage(); y = 20; }
+    doc.setFontSize(11); doc.setFont("helvetica", "bold");
+    doc.text("2. Controlled substances on hand", 14, y); y += 2;
+    autoTable(doc, {
+      startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [180, 50, 50] },
+      head: [["Drug", "NAFDAC", "Batch", "Balance", "Reorder", "Expiry"]],
+      body: controlled.length === 0 ? [["—", "—", "—", "—", "—", "—"]] :
+        // STEP 31b: say so when a controlled product has no expiry date (was an empty cell).
+        controlled.map((p) => [p.name, p.nafdac, p.batch, String(p.quantity), String(p.reorderLevel), p.expiry || "No expiry"]),
     });
     y = (doc as any).lastAutoTable.finalY + 14;
 
@@ -198,42 +201,7 @@ export default function Poisons() {
         </div>
       </div>
 
-      <Card className="shadow-card border-l-4 border-l-destructive">
-        <CardHeader className="pb-2"><CardTitle className="text-base">Controlled substances on hand — running balance</CardTitle></CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader><TableRow>
-              <TableHead>Drug</TableHead><TableHead>NAFDAC</TableHead><TableHead>Batch</TableHead>
-              <TableHead className="text-right">Balance</TableHead><TableHead>Reorder Lvl</TableHead><TableHead>Expiry</TableHead>
-            </TableRow></TableHeader>
-            <TableBody>
-              {controlled.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No controlled substances on file</TableCell></TableRow>}
-              {controlled.map((p) => {
-                const bal = balances.get(p.id) ?? 0;
-                const low = bal <= p.reorderLevel;
-                return (
-                  <TableRow key={p.id} className={low ? "bg-destructive/5" : ""}>
-                    <TableCell className="font-medium">{p.name} <span className="text-xs text-muted-foreground">{p.packSize}</span></TableCell>
-                    <TableCell className="text-xs">{p.nafdac}</TableCell>
-                    <TableCell className="text-xs">{p.batch}</TableCell>
-                    <TableCell className="text-right">
-                      <span className={`font-bold ${low ? "text-destructive" : ""}`}>{bal}</span>
-                    </TableCell>
-                    <TableCell className="text-xs">{p.reorderLevel}</TableCell>
-                    <TableCell className="text-xs">
-                      {/* STEP 31b: this line crashed the page for a product with no expiry date. */}
-                      {isValidDate(p.expiry)
-                        ? format(new Date(p.expiry), "dd MMM yyyy")
-                        : <span className="text-warning" title="No expiry date on file — add it in Inventory">No expiry</span>}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
+      {/* STEP 31c: the statutory dispensing log (the register itself) comes first; stock on hand follows. */}
       <Card className="shadow-card">
         <CardHeader className="pb-2"><CardTitle className="text-base">Statutory dispensing log ({dispenses.length}) <span className="text-xs font-normal text-muted-foreground">· times in Lagos time (WAT)</span></CardTitle></CardHeader>
         <CardContent className="p-0">
@@ -289,6 +257,42 @@ export default function Poisons() {
               </TableBody>
             </Table>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="shadow-card border-l-4 border-l-destructive">
+        <CardHeader className="pb-2"><CardTitle className="text-base">Controlled substances on hand — running balance</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader><TableRow>
+              <TableHead>Drug</TableHead><TableHead>NAFDAC</TableHead><TableHead>Batch</TableHead>
+              <TableHead className="text-right">Balance</TableHead><TableHead>Reorder Lvl</TableHead><TableHead>Expiry</TableHead>
+            </TableRow></TableHeader>
+            <TableBody>
+              {controlled.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No controlled substances on file</TableCell></TableRow>}
+              {controlled.map((p) => {
+                const bal = balances.get(p.id) ?? 0;
+                const low = bal <= p.reorderLevel;
+                return (
+                  <TableRow key={p.id} className={low ? "bg-destructive/5" : ""}>
+                    <TableCell className="font-medium">{p.name} <span className="text-xs text-muted-foreground">{p.packSize}</span></TableCell>
+                    <TableCell className="text-xs">{p.nafdac}</TableCell>
+                    <TableCell className="text-xs">{p.batch}</TableCell>
+                    <TableCell className="text-right">
+                      <span className={`font-bold ${low ? "text-destructive" : ""}`}>{bal}</span>
+                    </TableCell>
+                    <TableCell className="text-xs">{p.reorderLevel}</TableCell>
+                    <TableCell className="text-xs">
+                      {/* STEP 31b: this line crashed the page for a product with no expiry date. */}
+                      {isValidDate(p.expiry)
+                        ? format(new Date(p.expiry), "dd MMM yyyy")
+                        : <span className="text-warning" title="No expiry date on file — add it in Inventory">No expiry</span>}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
     </div>
