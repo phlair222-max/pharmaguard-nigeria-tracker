@@ -63,11 +63,14 @@ import {
 } from "lucide-react";
 import {
   ALL_SCOPES,
+  SCOPE_INFO,                 // STEP 30f
   type ApiScope,
   type ApiKey,
   type ApiClientOrg,
+  type ApiEligiblePharmacy,   // STEP 30f
   createApiOnlyOrg,
   listApiClientOrgs,
+  listApiEligiblePharmacies,  // STEP 30f
   setOrgApiAccess,
   createApiKey,
   listApiKeys,
@@ -904,8 +907,11 @@ function PlanConfigTab() {
                   ["can_poisons_register", "Poisons Register"],
                   ["can_audit_trail", "Audit Trail"],
                   ["can_ai_forecast", "AI Forecast"],
-                  // STEP 15d: the Dashboard's AI Disposal Report (Pro only today).
-                  ["can_disposal_report", "AI Disposal Report"],
+                  // STEP 15d: the Dashboard's Disposal Report (Pro only today).
+                  // STEP 30f: renamed — since Step 17 it is the NAFDAC disposal
+                  // inventory, not AI; the same switch now also controls the API's
+                  // /disposal_report route.
+                  ["can_disposal_report", "Disposal Report (NAFDAC)"],
                 ] as [keyof PlanRow, string][]).map(([field, label]) => (
                   <div key={field} className="flex items-center justify-between">
                     <Label className="text-xs font-normal">{label}</Label>
@@ -940,6 +946,8 @@ function PlanConfigTab() {
 // API clients (hospitals, chains, developers) never log into the pharmacy app.
 // They exist here only: create the client, flip access on, generate a key,
 // hand the key to the client. No pharmacy owner ever sees this tab or these orgs.
+// STEP 30f: a pharmacy whose plan includes API access (today: Pro) can also be
+// given API access here; it then appears in this list and gets keys the same way.
 function ApiClientsTab() {
   const [orgs, setOrgs] = useState<ApiClientOrg[]>([]);
   const [loading, setLoading] = useState(true);
@@ -953,16 +961,39 @@ function ApiClientsTab() {
   const [editingQuotaId, setEditingQuotaId] = useState<string | null>(null);
   const [quotaDraft, setQuotaDraft] = useState<string>("");
   const [savingQuotaId, setSavingQuotaId] = useState<string | null>(null);
+  // STEP 30f: pharmacies whose plan includes API access but whose access is off
+  const [eligible, setEligible] = useState<ApiEligiblePharmacy[]>([]);
+  const [pharmacyToEnable, setPharmacyToEnable] = useState<string>("");
+  const [enablingPharmacy, setEnablingPharmacy] = useState(false);
 
   const fetchOrgs = useCallback(async () => {
     setLoading(true);
     try {
-      const [orgData, usageData] = await Promise.all([
+      // STEP 30f: the client list no longer depends on the usage counts or the
+      // list of pharmacies that could be given access — if one of those cannot
+      // load, the clients are still shown and the problem is reported.
+      const [orgRes, usageRes, eligibleRes] = await Promise.allSettled([
         listApiClientOrgs(),
         getMonthlyUsage(),
+        listApiEligiblePharmacies(),
       ]);
-      setOrgs(orgData);
-      setUsage(usageData);
+      if (orgRes.status === "rejected") throw orgRes.reason;
+      setOrgs(orgRes.value);
+      if (usageRes.status === "fulfilled") {
+        setUsage(usageRes.value);
+      } else {
+        setUsage({});
+        const r = usageRes.reason;
+        toast.error("Could not load this month's usage: " + (r instanceof Error ? r.message : String(r)));
+      }
+      if (eligibleRes.status === "fulfilled") {
+        setEligible(eligibleRes.value);
+        setPharmacyToEnable((prev) => (eligibleRes.value.some((p) => p.id === prev) ? prev : ""));
+      } else {
+        setEligible([]);
+        const r = eligibleRes.reason;
+        toast.error("Could not load pharmacies that can be given API access: " + (r instanceof Error ? r.message : String(r)));
+      }
     } catch (e: unknown) {
       toast.error("Failed to load API clients: " + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -1022,6 +1053,23 @@ function ApiClientsTab() {
     }
   };
 
+  // STEP 30f: switch API access on for an existing pharmacy (its plan allows it)
+  const enablePharmacyApi = async () => {
+    const target = eligible.find((p) => p.id === pharmacyToEnable);
+    if (!target) return;
+    setEnablingPharmacy(true);
+    try {
+      await setOrgApiAccess(target.id, true);
+      toast.success(`API access turned on for "${target.name}" — open its Keys to create one`);
+      setPharmacyToEnable("");
+      fetchOrgs();
+    } catch (e: unknown) {
+      toast.error("Failed to turn on API access: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setEnablingPharmacy(false);
+    }
+  };
+
   const toggleAccess = async (org: ApiClientOrg) => {
     setTogglingId(org.id);
     try {
@@ -1044,7 +1092,8 @@ function ApiClientsTab() {
           <h2 className="text-lg font-semibold">API Clients</h2>
           <p className="text-sm text-muted-foreground">
             Standalone B2B API access — hospitals, chains, and developers who use the API only.
-            They never log into the pharmacy app.
+            They never log into the pharmacy app. Pharmacies whose plan includes API access
+            can be given keys here too.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1092,6 +1141,37 @@ function ApiClientsTab() {
               Cancel
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* STEP 30f: give an existing pharmacy API access (its plan must allow it) */}
+      {!loading && eligible.length > 0 && (
+        <div className="rounded-xl border bg-card p-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            Give a pharmacy API access (its plan includes it):
+          </span>
+          <Select value={pharmacyToEnable} onValueChange={setPharmacyToEnable}>
+            <SelectTrigger className="h-8 w-[240px] text-xs" aria-label="Pharmacy to give API access">
+              <SelectValue placeholder="Choose a pharmacy" />
+            </SelectTrigger>
+            <SelectContent>
+              {eligible.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name} ({p.subscriptionTier})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={!pharmacyToEnable || enablingPharmacy}
+            onClick={enablePharmacyApi}
+          >
+            <KeyRound className="h-3.5 w-3.5" />
+            {enablingPharmacy ? "Turning on…" : "Turn on API access"}
+          </Button>
         </div>
       )}
 
@@ -1245,6 +1325,11 @@ function KeyManager({ org }: { org: ApiClientOrg }) {
       toast.error("Select at least one scope");
       return;
     }
+    // STEP 30f: "Set cost prices" is only used by the product routes
+    if (selectedScopes.includes("margins:write") && !selectedScopes.includes("inventory:write")) {
+      toast.error("\"Set cost prices\" (margins:write) only works together with \"Add / change products\" (inventory:write)");
+      return;
+    }
     setCreating(true);
     try {
       const created = await createApiKey({
@@ -1340,22 +1425,38 @@ function KeyManager({ org }: { org: ApiClientOrg }) {
           </div>
           <div>
             <Label className="text-xs">Scopes</Label>
-            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-              {ALL_SCOPES.map((scope) => (
-                <label
-                  key={scope}
-                  className="flex items-center gap-2 text-xs rounded border px-2 py-1.5 cursor-pointer hover:bg-muted/40"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedScopes.includes(scope)}
-                    onChange={() => toggleScope(scope)}
-                    className="accent-primary"
-                  />
-                  {scope}
-                </label>
-              ))}
+            {/* STEP 30f: plain-English label and hint for every permission; the two
+                profit permissions are highlighted and never ticked by default */}
+            <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {ALL_SCOPES.map((scope) => {
+                const info = SCOPE_INFO[scope];
+                return (
+                  <label
+                    key={scope}
+                    className={`flex items-start gap-2 text-xs rounded border px-2 py-1.5 cursor-pointer hover:bg-muted/40 ${
+                      info.sensitive ? "border-amber-500/40 bg-amber-500/5" : ""
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedScopes.includes(scope)}
+                      onChange={() => toggleScope(scope)}
+                      className="accent-primary mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="font-medium">{info.label}</span>{" "}
+                      <code className="text-[10px] text-muted-foreground">{scope}</code>
+                      {info.sensitive && <Lock className="inline h-3 w-3 ml-1 text-amber-400" />}
+                      <span className="block text-[11px] text-muted-foreground">{info.hint}</span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              Give only what this client needs. Cost and profit stay hidden unless you tick
+              "See cost &amp; profit".
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={handleCreateKey} disabled={creating} className="gap-2">
@@ -1399,7 +1500,14 @@ function KeyManager({ org }: { org: ApiClientOrg }) {
                 </div>
                 <div className="text-muted-foreground mt-1 flex flex-wrap gap-1">
                   {key.scopes.map((s) => (
-                    <span key={s} className="bg-muted rounded px-1.5 py-0.5">{s}</span>
+                    <span
+                      key={s}
+                      className={`rounded px-1.5 py-0.5 ${
+                        SCOPE_INFO[s]?.sensitive ? "bg-amber-500/15 text-amber-400" : "bg-muted" // STEP 30f
+                      }`}
+                    >
+                      {s}
+                    </span>
                   ))}
                 </div>
                 <p className="text-muted-foreground mt-1">
