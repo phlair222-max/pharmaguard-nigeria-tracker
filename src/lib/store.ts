@@ -309,6 +309,9 @@ function applyMargins(sales: Sale[], margins: Map<string, MarginRow> | null): Sa
 }
 
 const SALE_WRITE_TIMEOUT_MS = 15000;
+// STEP 29b: longest the till waits to learn who is signed in before treating
+// the sale as offline (see supabasePush._quickContext).
+const CONTEXT_TIMEOUT_MS = 4000;
 function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Request timed out — weak or no connection")), ms);
@@ -532,7 +535,7 @@ export const store = {
     if (this._salesSync) return this._salesSync;
     const run = (async () => {
       if (!db.user?.organizationId) return;
-      const ctx = await supabasePush._context();
+      const ctx = await supabasePush._quickContext(); // STEP 29b: never hang (e.g. at logout)
       if (!ctx) return;
       // STEP 29: only this person's own unsent sales are ever uploaded.
       const pending = db.sales.filter(
@@ -771,7 +774,7 @@ export const store = {
     if (this._controlledSync) return this._controlledSync;
     const run = (async () => {
       if (!db.user?.organizationId) return;
-      const ctx = await supabasePush._context();
+      const ctx = await supabasePush._quickContext(); // STEP 29b: never hang (e.g. at logout)
       if (!ctx) return;
       // STEP 29: only this person's own unsent entries are ever uploaded.
       const pending = db.controlledDispense.filter(
@@ -837,8 +840,12 @@ export const store = {
   // and returns what is STILL unsent afterwards.
   async syncAllPending(): Promise<{ sales: number; dispenses: number }> {
     try {
-      await this.syncPendingSales();
-      await this.syncPendingControlledDispenses();
+      // STEP 29b: one quick connection check first, so that with no
+      // connection the logout button waits about 4 seconds, not twice that.
+      if (await supabasePush._quickContext()) {
+        await this.syncPendingSales();
+        await this.syncPendingControlledDispenses();
+      }
     } catch (e) {
       console.error("[unsent] sync before logout failed:", e);
     }
@@ -855,6 +862,8 @@ export const store = {
     };
     db.audit.unshift(entry);
     try {
+      // STEP 29b: skip straight away if there is no connection
+      if (!(await supabasePush._quickContext())) return;
       await withTimeout(supabasePush.insertAudit(entry), 5000);
     } catch {
       // offline: the logout cannot be recorded on the server
@@ -873,7 +882,9 @@ export const store = {
   // device directly (it cannot be used again from here).
   async signOutThisDevice(): Promise<{ offline: boolean }> {
     try {
-      const { error } = await supabase.auth.signOut({ scope: "local" });
+      // STEP 29b: with an expired sign-in and no connection this can take
+      // a long time — give up after 5 seconds and end it on this device.
+      const { error } = await withTimeout(supabase.auth.signOut({ scope: "local" }), 5000);
       if (!error) return { offline: false };
       console.warn("[logout] server not reachable — ending the sign-in on this device only:", error.message);
     } catch (e) {
@@ -1464,6 +1475,20 @@ const supabasePush = {
       return null;
     }
   },
+  // STEP 29b: the sale / Poisons Register path must never wait for the
+  // sign-in to be renewed. With no connection and an expired sign-in token,
+  // Supabase keeps retrying the renewal (about 25 seconds per attempt) before
+  // it answers — that left the till stuck on "Saving sale…". If the device
+  // says it is offline, or there is no answer within 4 seconds, treat it as
+  // offline: the sale is already saved on this device and uploads later.
+  async _quickContext(): Promise<{ uid: string; orgId: string } | null> {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return null;
+    try {
+      return await withTimeout(this._context(), CONTEXT_TIMEOUT_MS);
+    } catch {
+      return null;
+    }
+  },
   async insertProduct(p: Product) {
     const ctx = await this._context(); if (!ctx) return;
     const { error } = await supabase.from("products").insert(productToRow(p, ctx.uid, ctx.orgId));
@@ -1502,7 +1527,7 @@ const supabasePush = {
     }
   },
   async insertSale(s: Sale): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
-    const ctx = await this._context();
+    const ctx = await this._quickContext(); // STEP 29b
     if (!ctx) {
       return { ok: false, error: "offline", isNetworkError: true };
     }
@@ -1589,7 +1614,7 @@ const supabasePush = {
     }
   },
   async insertControlled(d: ControlledDispense): Promise<{ ok: boolean; error?: string; isNetworkError?: boolean }> {
-    const ctx = await this._context();
+    const ctx = await this._quickContext(); // STEP 29b
     if (!ctx) {
       return { ok: false, error: "offline", isNetworkError: true };
     }
