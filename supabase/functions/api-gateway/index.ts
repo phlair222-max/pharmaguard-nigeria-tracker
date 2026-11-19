@@ -4,12 +4,17 @@
 //
 // SECURITY INVARIANTS:
 // 1. org_id is resolved ONLY from the api_keys row — never from caller input.
-// 2. Every request checks SIX gates, in order:
+//    STEP 30e: every write goes through a database function (Step 30d) that
+//    receives only the key id and looks the organization up again itself.
+// 2. Every request checks these gates, in order:
 //    a. Key validity: is this key active and unrevoked?
 //    b. Rate limit: has this key exceeded its per-minute request budget?
 //       (anti-abuse — protects infra, not tied to billing)
 //    c. Org gate: does this org have api_access_enabled = true?
 //    d. Tier gate: does this org's subscription tier have can_api_access?
+//       STEP 30e: and does the plan include the feature this route uses?
+//       (Poisons Register, Reports, Audit trail, Disposal report, sales
+//       history days — the same switches as the pharmacy app's plans)
 //    e. Monthly quota: has this org exceeded its included monthly request
 //       count? (billing gate — separate from the rate limit above)
 //    f. Scope gate: does this key have the scope this route requires?
@@ -21,9 +26,14 @@
 //    Invalid rows are skipped and reported; valid rows are still created.
 //    This is ONE request against rate limit + quota, regardless of how
 //    many products are in the array.
-// 5. STEP 14 (temporary): POST /sales and POST /poison_register are
-//    SWITCHED OFF (they answer 503). See the comments on those handlers.
-//    All reading routes and the inventory routes are unchanged.
+// 5. STEP 30e: POST /sales and POST /poison_register are back, rebuilt on
+//    the database functions api_record_sale and api_record_register_entries:
+//    all-or-nothing, a named pharmacist + PIN for controlled medicines, safe
+//    to resend. POST and PATCH /inventory use api_create_products and
+//    api_update_product (atomic "adjust by", optional expected quantity).
+// 6. STEP 30e: cost prices and profit are only returned to keys with the
+//    margins:read permission. Request bodies (they can contain a PIN) are
+//    never logged.
 // =====================================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -51,12 +61,40 @@ const ROUTE_SCOPES: Record<string, string> = {
   "audit_trail:GET":        "audit_trail:read",
 };
 
+// STEP 30e: plan switches per route (plan_config columns)
+const PLAN_FEATURES: Record<string, { flag: string; label: string }> = {
+  poison_register: { flag: "can_poisons_register", label: "The Poisons Register" },
+  reports:         { flag: "can_reports",          label: "Reports" },
+  audit_trail:     { flag: "can_audit_trail",      label: "The audit trail" },
+  disposal_report: { flag: "can_disposal_report",  label: "The disposal report" },
+};
+
 const BULK_INVENTORY_MAX = 100;
+const MAX_BODY_CHARS = 1_000_000;   // STEP 30e
+const PAGE_SIZE = 1000;             // STEP 30e: the most rows the database returns per request
+const MAX_PAGES = 50;               // STEP 30e: reports read at most 50,000 rows
+const LAGOS_TZ = "Africa/Lagos";    // STEP 30e: "today" for expiry, as in the app
+
+// STEP 30e: database error codes from the Step 30d functions -> HTTP status
+const DB_ERROR_STATUS: Record<string, number> = {
+  PGA40: 400,   // the request is wrong (message says what)
+  PGA43: 403,   // key / plan / permission
+  PGA44: 404,   // not found in this pharmacy
+  PGA49: 409,   // an id was already used for something else
+  "23505": 409, // an id is already in use
+};
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey, x-client-info",
+};
+
+type Ctx = {
+  orgId: string;
+  keyId: string;
+  scopes: string[];
+  historyDays: number;   // plan's max_sales_history_days (-1 = unlimited)
 };
 
 async function sha256Hex(input: string): Promise<string> {
@@ -86,6 +124,84 @@ function currentWindowStart(): string {
   const ms = Date.now();
   const flooredMs = Math.floor(ms / 60000) * 60000;
   return new Date(flooredMs).toISOString();
+}
+
+// STEP 30e helpers ──────────────────────────────────────────────────────
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// A database error: known codes become a clear 4xx; anything else is logged
+// (code and message only — never the request) and answered with a plain 500.
+function dbError(err: { code?: string; message?: string }, context: string) {
+  const status = DB_ERROR_STATUS[err.code ?? ""];
+  if (status) {
+    const message = err.code === "23505"
+      ? "An id in this request is already in use — send new ids for new records"
+      : (err.message ?? "Request refused");
+    return json({ error: message }, status);
+  }
+  console.error(`[api-gateway] ${context} failed`, err.code, err.message);
+  return json({ error: "Internal server error" }, 500);
+}
+
+// Result of api_record_sale / api_record_register_entries
+// deno-lint-ignore no-explicit-any
+function writeResult(r: any) {
+  if (r && r.ok === true) {
+    const { ok: _ok, ...data } = r;
+    return json({ data }, data.status === "already_recorded" ? 200 : 201);
+  }
+  // The pharmacist's PIN was refused: nothing was recorded.
+  // deno-lint-ignore no-explicit-any
+  const { ok: _ok, error: _error, message, reason, ...rest } = (r ?? {}) as any;
+  const status = reason === "locked" ? 423 : reason === "format" ? 400 : 403;
+  const headers: Record<string, string> =
+    reason === "locked" && rest.minutes ? { "Retry-After": String(Number(rest.minutes) * 60) } : {};
+  return json({ error: message ?? "The pharmacist's PIN was not accepted", code: reason ?? "pin_refused", ...rest }, status, headers);
+}
+
+// ?since= must be a real date/time; returns an ISO string, null, or "invalid"
+function readSince(url: URL): string | null | "invalid" {
+  const raw = url.searchParams.get("since");
+  if (raw === null || raw.trim() === "") return null;
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? "invalid" : new Date(t).toISOString();
+}
+
+// Today's date in Lagos as YYYY-MM-DD (the app shows expiry by the local date)
+function lagosToday(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: LAGOS_TZ, year: "numeric", month: "2-digit", day: "2-digit" })
+    .format(new Date());
+}
+
+function addDays(isoDate: string, days: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function daysBetween(fromIso: string, toIso: string): number {
+  return Math.round((Date.parse(`${toIso}T00:00:00Z`) - Date.parse(`${fromIso}T00:00:00Z`)) / 86_400_000);
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Reads every row of a query, page by page (the database returns at most
+// PAGE_SIZE rows per request). Used by the totals in /reports and the
+// disposal report so large pharmacies are not silently cut off.
+// deno-lint-ignore no-explicit-any
+async function selectAll(build: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>) {
+  // deno-lint-ignore no-explicit-any
+  const rows: any[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE;
+    const { data, error } = await build(from, from + PAGE_SIZE - 1);
+    if (error) return { rows, error };
+    rows.push(...(data ?? []));
+    if (!data || data.length < PAGE_SIZE) return { rows, error: null };
+  }
+  return { rows, error: { code: "too_many_rows", message: `more than ${PAGE_SIZE * MAX_PAGES} rows` } };
 }
 
 Deno.serve(async (req) => {
@@ -181,7 +297,7 @@ Deno.serve(async (req) => {
     // ── 4b. Tier gate ───────────────────────────────────────────────────
     const { data: planRow, error: planErr } = await admin
       .from("plan_config")
-      .select("can_api_access, can_disposal_report")
+      .select("can_api_access, can_disposal_report, can_poisons_register, can_reports, can_audit_trail, max_sales_history_days")
       .eq("tier", orgRow.subscription_tier)
       .maybeSingle();
 
@@ -193,8 +309,15 @@ Deno.serve(async (req) => {
       return json({ error: "API access is not available on your current plan." }, 403);
     }
 
-    if (resource === "disposal_report" && !planRow.can_disposal_report) {
-      return json({ error: "AI Disposal Report is not available on your current plan." }, 403);
+    // STEP 30e: the plan must include the feature this route uses
+    const feature = PLAN_FEATURES[resource];
+    // deno-lint-ignore no-explicit-any
+    if (feature && !(planRow as any)[feature.flag]) {
+      return json({ error: `${feature.label} is not included in your current plan.` }, 403);
+    }
+    const historyDays = Number(planRow.max_sales_history_days ?? 0);
+    if (resource === "sales_history" && historyDays === 0) {
+      return json({ error: "Sales history is not included in your current plan." }, 403);
     }
 
     // ── 4c. Monthly quota gate — billing, separate from the per-minute
@@ -233,23 +356,39 @@ Deno.serve(async (req) => {
       .from("api_keys")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", keyRow.id)
-      .then(() => {})
-      .catch(e => console.error("[api-gateway] last_used_at update failed", e));
+      .then(() => {}, (e: unknown) => console.error("[api-gateway] last_used_at update failed", e));
 
     // ── 7. Parse body ────────────────────────────────────────────────────
-    const body = method !== "GET" ? await req.json().catch(() => ({})) : null;
+    // STEP 30e: invalid JSON is refused instead of being treated as {}.
+    // deno-lint-ignore no-explicit-any
+    let body: any = null;
+    if (method !== "GET") {
+      const text = await req.text();
+      if (text.length > MAX_BODY_CHARS) return json({ error: "The request body is too large" }, 413);
+      if (text.trim() === "") {
+        body = {};
+      } else {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          return json({ error: "The request body is not valid JSON" }, 400);
+        }
+      }
+    }
+
+    const ctx: Ctx = { orgId, keyId: keyRow.id, scopes: grantedScopes, historyDays };
 
     // ── 8. Dispatch ──────────────────────────────────────────────────────
     let response: Response;
     switch (resource) {
-      case "inventory":        response = await handleInventory(method, orgId, url, body); break;
-      case "inventory_bulk":   response = await handleInventoryBulk(orgId, body); break;
-      case "sales":             response = await handleSalesWrite(orgId, body); break;
-      case "sales_history":    response = await handleSalesHistory(orgId, url); break;
-      case "poison_register":  response = await handlePoisonRegister(method, orgId, url, body); break;
-      case "disposal_report":  response = await handleDisposalReport(orgId, url); break;
-      case "reports":          response = await handleReports(orgId, url); break;
-      case "audit_trail":      response = await handleAuditTrail(orgId, url); break;
+      case "inventory":        response = await handleInventory(method, ctx, url, body); break;
+      case "inventory_bulk":   response = await handleInventoryBulk(ctx, body); break;
+      case "sales":            response = await handleSalesWrite(ctx, body); break;
+      case "sales_history":    response = await handleSalesHistory(ctx, url); break;
+      case "poison_register":  response = await handlePoisonRegister(method, ctx, url, body); break;
+      case "disposal_report":  response = await handleDisposalReport(ctx, url); break;
+      case "reports":          response = await handleReports(ctx, url); break;
+      case "audit_trail":      response = await handleAuditTrail(ctx, url); break;
       default:                 return json({ error: "Unknown resource" }, 404);
     }
 
@@ -260,99 +399,69 @@ Deno.serve(async (req) => {
     return response;
 
   } catch (err) {
-    console.error("[api-gateway] unhandled error", err);
+    console.error("[api-gateway] unhandled error", err instanceof Error ? err.message : "unknown");
     return json({ error: "Internal server error" }, 500);
   }
 });
 
 // =====================================================================
-// Resource handlers — all columns verified against live schema
+// Resource handlers — all columns verified against live schema (Step 30c)
 // =====================================================================
 
-async function handleInventory(method: string, orgId: string, url: URL, body: any) {
+// deno-lint-ignore no-explicit-any
+async function handleInventory(method: string, ctx: Ctx, url: URL, body: any) {
   if (method === "GET") {
     const limit      = clamp(Number(url.searchParams.get("limit")), 500, 100);
     const page       = Math.max(Number(url.searchParams.get("page") || "1") || 1, 1);
     const from       = (page - 1) * limit;
     const to         = from + limit - 1;
     const controlled = url.searchParams.get("controlled");
+    // STEP 30e: archived flag and reorder level added; cost price only with margins:read;
+    // a fixed order so pages never overlap or skip products
+    const margins    = ctx.scopes.includes("margins:read");
 
     let q = admin
       .from("products")
-      .select("id, name, generic, nafdac, batch, expiry, quantity, selling_price, controlled, category, neml_drug_id", { count: "exact" })
-      .eq("organization_id", orgId)
+      .select(
+        "id, name, generic, nafdac, batch, expiry, quantity, selling_price, controlled, category, neml_drug_id, reorder_level, active"
+          + (margins ? ", cost_price" : ""),
+        { count: "exact" },
+      )
+      .eq("organization_id", ctx.orgId)
+      .order("name", { ascending: true })
+      .order("id", { ascending: true })
       .range(from, to);
 
     if (controlled === "true")  q = q.eq("controlled", true);
     if (controlled === "false") q = q.eq("controlled", false);
 
     const { data, error, count } = await q;
-    if (error) return json({ error: error.message }, 500);
+    if (error) return dbError(error, "inventory read");
     return json({
       data,
       meta: { total: count, page, limit, pages: Math.ceil((count ?? 0) / limit) }
     });
   }
 
+  // STEP 30e: one product, through api_create_products (owner recorded, plan
+  // product limit, cost price only with margins:write, audited)
   if (method === "POST") {
-    const { name, quantity, selling_price, controlled, category, neml_drug_id } = body ?? {};
-    if (!name || quantity == null || selling_price == null) {
-      return json({ error: "name, quantity, selling_price are required" }, 400);
-    }
-
-    // products.user_id is NOT NULL but API clients have no user of their
-    // own — use the org's owner_id (the nominal platform-admin owner for
-    // API-only orgs) so callers never need to know this column exists.
-    const { data: ownerRow, error: ownerErr } = await admin
-      .from("organizations")
-      .select("owner_id")
-      .eq("id", orgId)
-      .maybeSingle();
-
-    if (ownerErr || !ownerRow) {
-      return json({ error: "Could not resolve organization owner" }, 500);
-    }
-
-    const { data, error } = await admin
-      .from("products")
-      .insert({
-        organization_id: orgId,
-        user_id: ownerRow.owner_id,
-        name, quantity, selling_price,
-        controlled: controlled ?? false,
-        category:   category   ?? null,
-        neml_drug_id: neml_drug_id ?? null,
-        item_type: "pharmaceutical",
-      })
-      .select()
-      .single();
-
-    if (error) return json({ error: error.message }, 500);
-    return json({ data }, 201);
+    if (!isPlainObject(body)) return json({ error: "The request body must be a JSON object" }, 400);
+    const { data, error } = await admin.rpc("api_create_products", {
+      p_key_id: ctx.keyId, p_products: [body], p_partial: false,
+    });
+    if (error) return dbError(error, "create product");
+    return json({ data: data.products?.[0] ?? null }, 201);
   }
 
+  // STEP 30e: through api_update_product — "quantity_change" adds/removes stock
+  // safely; "expected_quantity" refuses the change if someone else changed the
+  // stock in the meantime; every change is audited
   if (method === "PATCH") {
-    const { id, ...updates } = body ?? {};
-    if (!id) return json({ error: "id is required" }, 400);
-
-    const allowed = ["quantity", "selling_price", "batch", "expiry", "reorder_level"];
-    const safe = Object.fromEntries(
-      Object.entries(updates).filter(([k]) => allowed.includes(k))
-    );
-    if (Object.keys(safe).length === 0) {
-      return json({ error: `No updatable fields. Allowed: ${allowed.join(", ")}` }, 400);
-    }
-
-    const { data, error } = await admin
-      .from("products")
-      .update(safe)
-      .eq("id", id)
-      .eq("organization_id", orgId)
-      .select()
-      .single();
-
-    if (error) return json({ error: error.message }, 500);
-    return json({ data });
+    if (!isPlainObject(body)) return json({ error: "The request body must be a JSON object" }, 400);
+    const { data, error } = await admin.rpc("api_update_product", { p_key_id: ctx.keyId, p_body: body });
+    if (error) return dbError(error, "update product");
+    return json({ data: data.product, meta: { quantity_before: data.quantity_before, quantity_after: data.quantity_after } });
   }
 
   return json({ error: "Method not allowed" }, 405);
@@ -360,11 +469,12 @@ async function handleInventory(method: string, orgId: string, url: URL, body: an
 
 // ── INVENTORY BULK ───────────────────────────────────────────────────
 // POST /inventory/bulk — up to 100 products in one request.
-// Partial success: rows missing required fields are skipped and
-// reported individually; valid rows are still created. If the batch
-// insert itself fails (rare — e.g. a DB constraint), falls back to
-// inserting one at a time so the caller still learns which rows failed.
-async function handleInventoryBulk(orgId: string, body: any) {
+// Partial success: rows with a problem are skipped and reported
+// individually (by their position in the request); valid rows are still
+// created. STEP 30e: done inside api_create_products, so the owner, the
+// plan's product limit and the cost-price permission apply to every row.
+// deno-lint-ignore no-explicit-any
+async function handleInventoryBulk(ctx: Ctx, body: any) {
   const products = body?.products;
   if (!Array.isArray(products) || products.length === 0) {
     return json({ error: "products array is required (max 100 items)" }, 400);
@@ -373,212 +483,221 @@ async function handleInventoryBulk(orgId: string, body: any) {
     return json({ error: `Max ${BULK_INVENTORY_MAX} products per bulk request. Received ${products.length}.` }, 400);
   }
 
-  // products.user_id is NOT NULL — resolve the org's owner once, reuse
-  // for every row, same fix as the single-item POST /inventory handler.
-  const { data: ownerRow, error: ownerErr } = await admin
-    .from("organizations")
-    .select("owner_id")
-    .eq("id", orgId)
-    .maybeSingle();
-
-  if (ownerErr || !ownerRow) {
-    return json({ error: "Could not resolve organization owner" }, 500);
-  }
-
-  const skipped: { index: number; error: string }[] = [];
-  // Each entry keeps its ORIGINAL position in the caller's products array,
-  // so error reporting always refers to the row the caller actually sent —
-  // even after invalid rows are filtered out or a fallback path runs.
-  const validRows: { originalIndex: number; row: any }[] = [];
-
-  products.forEach((p: any, originalIndex: number) => {
-    const { name, quantity, selling_price, controlled, category, neml_drug_id } = p ?? {};
-    if (!name || quantity == null || selling_price == null) {
-      skipped.push({ index: originalIndex, error: "name, quantity, selling_price are required" });
-      return;
-    }
-    validRows.push({
-      originalIndex,
-      row: {
-        organization_id: orgId,
-        user_id: ownerRow.owner_id,
-        name, quantity, selling_price,
-        controlled: controlled ?? false,
-        category:   category   ?? null,
-        neml_drug_id: neml_drug_id ?? null,
-        item_type: "pharmaceutical",
-      },
-    });
+  const { data, error } = await admin.rpc("api_create_products", {
+    p_key_id: ctx.keyId, p_products: products, p_partial: true,
   });
+  if (error) return dbError(error, "bulk create products");
 
-  if (validRows.length === 0) {
-    return json({ data: { created: 0, products: [] }, skipped }, 400);
-  }
-
-  // Try one batch insert first — fastest path when all rows are clean.
-  const batchResult = await admin.from("products").insert(validRows.map(v => v.row)).select();
-
-  if (!batchResult.error) {
-    return json({
-      data: { created: batchResult.data.length, products: batchResult.data },
-      skipped,
-    }, 201);
-  }
-
-  // Batch failed (e.g. one row hit a DB constraint) — fall back to
-  // inserting one at a time so we can identify exactly which row(s)
-  // failed instead of losing the whole batch.
-  console.error("[api-gateway] bulk batch insert failed, falling back to per-row", batchResult.error);
-  const created: any[] = [];
-  for (const { originalIndex, row } of validRows) {
-    const { data, error } = await admin.from("products").insert(row).select().single();
-    if (error) {
-      skipped.push({ index: originalIndex, error: error.message });
-    } else {
-      created.push(data);
-    }
-  }
-
-  return json({ data: { created: created.length, products: created }, skipped }, 201);
+  return json(
+    { data: { created: data.created, products: data.products }, skipped: data.skipped },
+    data.created === 0 ? 400 : 201,
+  );
 }
 
-// STEP 14 (temporary): recording sales through the API is SWITCHED OFF.
-// The previous version saved the sale and its items in two separate
-// writes (if the second failed, an empty sale was left behind that can
-// never be deleted, because sales are permanent records), did not reduce
-// stock, did not check that the products belong to this organization,
-// recorded no seller and no profit, and trusted any cost/price sent.
-// It will return when it uses the same server-side sale function as the
-// pharmacy app (Step 14c).
-async function handleSalesWrite(_orgId: string, _body: any) {
-  return json({
-    error: "Recording sales through the API is temporarily unavailable. Contact PharmaGuard NG support.",
-  }, 503);
+// STEP 30e: POST /sales — the sale, stock and any Poisons Register entries
+// in one go (api_record_sale). Controlled lines need register details and
+// the pharmacist's email + PIN; the key also needs poison_register:write.
+// deno-lint-ignore no-explicit-any
+async function handleSalesWrite(ctx: Ctx, body: any) {
+  if (!isPlainObject(body)) return json({ error: "The request body must be a JSON object" }, 400);
+  const { data, error } = await admin.rpc("api_record_sale", { p_key_id: ctx.keyId, p_body: body });
+  if (error) return dbError(error, "record sale");
+  return writeResult(data);
 }
 
-async function handleSalesHistory(orgId: string, url: URL) {
+async function handleSalesHistory(ctx: Ctx, url: URL) {
   const limit = clamp(Number(url.searchParams.get("limit")), 200, 50);
-  const since = url.searchParams.get("since");
+  const since = readSince(url);
+  if (since === "invalid") return json({ error: "since must be a date like 2026-11-01 or 2026-11-01T08:00:00Z" }, 400);
+  // STEP 30e: profit and line costs only with margins:read; void details shown
+  const margins = ctx.scopes.includes("margins:read");
+
+  // STEP 30e: the plan's sales-history limit (days; -1 = unlimited)
+  let from = since;
+  if (ctx.historyDays > 0) {
+    const earliest = new Date(Date.now() - ctx.historyDays * 86_400_000).toISOString();
+    if (!from || from < earliest) from = earliest;
+  }
 
   let q = admin
     .from("sales")
-    .select("id, total, profit, payment, cashier, customer, created_at, sale_items(id, product_id, name, qty, price)")
-    .eq("organization_id", orgId)
+    .select(
+      "id, total, " + (margins ? "profit, " : "")
+        + "payment, cashier, customer, created_at, voided_at, void_reason, sale_items(id, product_id, name, qty, price"
+        + (margins ? ", cost" : "") + ")",
+    )
+    .eq("organization_id", ctx.orgId)
     .order("created_at", { ascending: false })
     .limit(limit);
 
-  if (since) q = q.gte("created_at", since);
+  if (from) q = q.gte("created_at", from);
 
   const { data, error } = await q;
-  if (error) return json({ error: error.message }, 500);
-  return json({ data });
+  if (error) return dbError(error, "sales history");
+  return json({ data, meta: { history_days: ctx.historyDays === -1 ? "unlimited" : ctx.historyDays } });
 }
 
-async function handlePoisonRegister(method: string, orgId: string, url: URL, body: any) {
+// deno-lint-ignore no-explicit-any
+async function handlePoisonRegister(method: string, ctx: Ctx, url: URL, body: any) {
   if (method === "GET") {
     const limit = clamp(Number(url.searchParams.get("limit")), 500, 100);
-    const since = url.searchParams.get("since");
+    const since = readSince(url);
+    if (since === "invalid") return json({ error: "since must be a date like 2026-11-01 or 2026-11-01T08:00:00Z" }, 400);
 
+    // STEP 30e: the authorising pharmacist, the linked sale, the client's
+    // receipt number and sale time are now included
     let q = admin
       .from("controlled_dispense")
-      .select("id, product_name, batch, quantity, amount, patient_name, patient_phone, prescriber, prescriber_reg_no, prescription_ref, cashier, at")
-      .eq("organization_id", orgId)
+      .select("id, product_id, product_name, batch, quantity, amount, patient_name, patient_phone, prescriber, prescriber_reg_no, prescription_ref, cashier, authorized_by_name, sale_id, external_sale_ref, sold_at, at")
+      .eq("organization_id", ctx.orgId)
       .order("at", { ascending: false })
       .limit(limit);
 
     if (since) q = q.gte("at", since);
 
     const { data, error } = await q;
-    if (error) return json({ error: error.message }, 500);
+    if (error) return dbError(error, "poisons register read");
     return json({ data });
   }
 
-  // STEP 14 (temporary): writing to the Poisons Register through the API
-  // is SWITCHED OFF. The previous version did not check that the product
-  // belongs to this organization, did not reduce stock, and recorded no
-  // responsible user — not acceptable for a regulated register. It will
-  // return when it uses the same server-side function as the app.
+  // STEP 30e: register-only entries (the sale is in the client's own system),
+  // through api_record_register_entries: each product must be in this
+  // pharmacy's PharmaGuard list and marked Controlled; no stock change.
   if (method === "POST") {
-    return json({
-      error: "Recording Poisons Register entries through the API is temporarily unavailable. Contact PharmaGuard NG support.",
-    }, 503);
+    if (!isPlainObject(body)) return json({ error: "The request body must be a JSON object" }, 400);
+    const { data, error } = await admin.rpc("api_record_register_entries", { p_key_id: ctx.keyId, p_body: body });
+    if (error) return dbError(error, "record register entries");
+    return writeResult(data);
   }
 
   return json({ error: "Method not allowed" }, 405);
 }
 
-async function handleDisposalReport(orgId: string, url: URL) {
-  const days  = clamp(Number(url.searchParams.get("days")), 90, 30);
-  const cutoff = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+// STEP 30e: the same rule as the app's NAFDAC disposal inventory — only
+// EXPIRED stock still on hand (expiry before today's Lagos date, quantity
+// above 0), archived products included and marked, controlled medicines
+// listed separately. Near-expiry stock is still sellable and is reported in
+// a separate list, never as part of the disposal inventory.
+async function handleDisposalReport(ctx: Ctx, url: URL) {
+  const days    = clamp(Number(url.searchParams.get("days")), 90, 30);   // near-expiry window
+  const today   = lagosToday();
+  const horizon = addDays(today, days);
 
-  const { data, error } = await admin
+  const { rows, error } = await selectAll((from, to) => admin
     .from("products")
-    .select("id, name, generic, nafdac, batch, expiry, quantity, selling_price, category, controlled")
-    .eq("organization_id", orgId)
-    .lte("expiry", cutoff)
+    .select("id, name, generic, nafdac, manufacturer, country_of_source, batch, expiry, quantity, selling_price, category, controlled, item_type, active")
+    .eq("organization_id", ctx.orgId)
     .gt("quantity", 0)
-    .order("expiry", { ascending: true });
+    .not("expiry", "is", null)
+    .lte("expiry", horizon)
+    .order("expiry", { ascending: true })
+    .order("id", { ascending: true })
+    .range(from, to));
+  if (error) return dbError(error, "disposal report");
 
-  if (error) return json({ error: error.message }, 500);
-
-  const products = data ?? [];
-  const totalEstimatedLoss = products.reduce(
-    (sum, p) => sum + (p.quantity * Number(p.selling_price)), 0
-  );
+  // deno-lint-ignore no-explicit-any
+  const shape = (p: any) => {
+    const { active, ...rest } = p;
+    return {
+      ...rest,
+      archived: active === false,
+      market_value: round2(Number(p.quantity) * Number(p.selling_price ?? 0)),
+    };
+  };
+  const expired  = rows.filter((p) => p.expiry < today).map((p) => ({ ...shape(p), days_since_expiry: daysBetween(p.expiry, today) }));
+  const nearList = rows.filter((p) => p.expiry >= today).map((p) => ({ ...shape(p), days_to_expiry: daysBetween(today, p.expiry) }));
+  const general    = expired.filter((p) => !p.controlled);
+  const controlled = expired.filter((p) => p.controlled);
+  const sum = (list: { market_value: number }[]) => round2(list.reduce((s, p) => s + p.market_value, 0));
 
   return json({
     data: {
       generated_at: new Date().toISOString(),
-      expiry_window_days: days,
-      product_count: products.length,
-      total_estimated_loss_ngn: totalEstimatedLoss,
-      products,
+      as_of_date: today,
+      timezone: LAGOS_TZ,
+      disposal_inventory: {
+        rule: "Expired stock still on hand (expiry before today, quantity above 0), archived products included — the same list the app prints for a NAFDAC destruction application.",
+        general,
+        controlled,
+        totals: {
+          items: expired.length,
+          quantity: expired.reduce((s, p) => s + Number(p.quantity), 0),
+          market_value: sum(expired),
+          general_items: general.length,
+          general_value: sum(general),
+          controlled_items: controlled.length,
+          controlled_value: sum(controlled),
+          archived_items: expired.filter((p) => p.archived).length,
+          missing_batch: expired.filter((p) => !p.batch).length,
+          missing_manufacturer: expired.filter((p) => !p.manufacturer).length,
+        },
+      },
+      near_expiry: {
+        rule: `Still sellable — expires within ${days} days. Not part of the disposal inventory.`,
+        window_days: days,
+        items: nearList.length,
+        market_value: sum(nearList),
+        products: nearList,
+      },
     },
   });
 }
 
-async function handleReports(orgId: string, url: URL) {
-  const days  = clamp(Number(url.searchParams.get("days")), 90, 30);
+// STEP 30e: voided sales are left out of the totals (and counted separately);
+// profit only with margins:read; every row is read (no silent 1,000-row cut).
+async function handleReports(ctx: Ctx, url: URL) {
+  const maxDays = ctx.historyDays > 0 ? Math.min(90, ctx.historyDays) : 90;
+  const days  = clamp(Number(url.searchParams.get("days")), maxDays, Math.min(30, maxDays));
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const margins = ctx.scopes.includes("margins:read");
 
   const [salesRes, cdRes] = await Promise.all([
-    admin.from("sales").select("total, profit, created_at").eq("organization_id", orgId).gte("created_at", since),
-    admin.from("controlled_dispense").select("quantity, amount, at").eq("organization_id", orgId).gte("at", since),
+    selectAll((from, to) => admin.from("sales")
+      .select("id, total, " + (margins ? "profit, " : "") + "voided_at")
+      .eq("organization_id", ctx.orgId).gte("created_at", since)
+      .order("id", { ascending: true }).range(from, to)),
+    selectAll((from, to) => admin.from("controlled_dispense")
+      .select("id, quantity")
+      .eq("organization_id", ctx.orgId).gte("at", since)
+      .order("id", { ascending: true }).range(from, to)),
   ]);
 
-  if (salesRes.error) return json({ error: salesRes.error.message }, 500);
-  if (cdRes.error)    return json({ error: cdRes.error.message },    500);
+  if (salesRes.error) return dbError(salesRes.error, "reports (sales)");
+  if (cdRes.error)    return dbError(cdRes.error, "reports (register)");
 
-  const sales = salesRes.data ?? [];
-  const cd    = cdRes.data   ?? [];
+  const sales  = salesRes.rows.filter((r) => !r.voided_at);
+  const voided = salesRes.rows.length - sales.length;
+  const cd     = cdRes.rows;
 
   return json({
     data: {
       period_days:                days,
       since,
-      total_revenue:              sales.reduce((s, r) => s + (Number(r.total)  || 0), 0),
-      total_profit:               sales.reduce((s, r) => s + (Number(r.profit) || 0), 0),
+      total_revenue:              round2(sales.reduce((s, r) => s + (Number(r.total) || 0), 0)),
+      ...(margins ? { total_profit: round2(sales.reduce((s, r) => s + (Number(r.profit) || 0), 0)) } : {}),
       sale_count:                 sales.length,
+      voided_sale_count:          voided,
       controlled_dispense_count:  cd.length,
       controlled_units_dispensed: cd.reduce((s, r) => s + (r.quantity || 0), 0),
     },
   });
 }
 
-async function handleAuditTrail(orgId: string, url: URL) {
+async function handleAuditTrail(ctx: Ctx, url: URL) {
   const limit = clamp(Number(url.searchParams.get("limit")), 500, 100);
-  const since = url.searchParams.get("since");
+  const since = readSince(url);
+  if (since === "invalid") return json({ error: "since must be a date like 2026-11-01 or 2026-11-01T08:00:00Z" }, 400);
 
   let q = admin
     .from("audit_logs")
     .select("id, username, action, target, detail, at")
-    .eq("organization_id", orgId)
+    .eq("organization_id", ctx.orgId)
     .order("at", { ascending: false })
     .limit(limit);
 
   if (since) q = q.gte("at", since);
 
   const { data, error } = await q;
-  if (error) return json({ error: error.message }, 500);
+  if (error) return dbError(error, "audit trail");
   return json({ data });
 }
