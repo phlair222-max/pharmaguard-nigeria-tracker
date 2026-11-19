@@ -34,6 +34,18 @@ function lagosDate(iso: string | Date): Date {
   return new Date(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
 }
 
+// STEP 31b: one missing date must never take the register down. A product
+// saved without an expiry date reaches this page as "" (store.ts turns an
+// empty expiry into ""), and format(new Date(""), …) throws "Invalid time
+// value" — that blanked the whole page ("Something went wrong"). Every date on
+// this page now goes through these checks: a missing or unreadable date shows
+// "—" (or "No expiry") on screen, in the CSV and in the Inspection PDF.
+const isValidDate = (v?: string | Date | null): v is string | Date =>
+  v != null && v !== "" && !Number.isNaN(new Date(v).getTime());
+
+const lagosFormat = (iso: string | Date | null | undefined, pattern: string): string =>
+  isValidDate(iso) ? format(lagosDate(iso), pattern) : "—";
+
 // STEP 19e: the PDF's built-in font has no Naira sign (it printed "¦"), which
 // also broke the column widths. The PDF prints "NGN 1,401.00" instead.
 const pdfNGN = (n: number) =>
@@ -69,7 +81,7 @@ export default function Poisons() {
     const rows = [
       ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt","Authorized by"].join(","),
       ...dispenses.map((d) => [
-        format(lagosDate(d.at), "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount,
+        lagosFormat(d.at, "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount, // STEP 31b
         d.patientName, d.patientPhone || "", d.prescriber, d.prescriberRegNo || "", d.prescriptionRef, d.cashier,
         d.saleId ? receiptNo(d.saleId) : "Not linked",
         d.authorizedByName || "",
@@ -109,7 +121,8 @@ export default function Poisons() {
       startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [180, 50, 50] },
       head: [["Drug", "NAFDAC", "Batch", "Balance", "Reorder", "Expiry"]],
       body: controlled.length === 0 ? [["—", "—", "—", "—", "—", "—"]] :
-        controlled.map((p) => [p.name, p.nafdac, p.batch, String(p.quantity), String(p.reorderLevel), p.expiry]),
+        // STEP 31b: say so when a controlled product has no expiry date (was an empty cell).
+        controlled.map((p) => [p.name, p.nafdac, p.batch, String(p.quantity), String(p.reorderLevel), p.expiry || "No expiry"]),
     });
     y = (doc as any).lastAutoTable.finalY + 8;
 
@@ -128,7 +141,9 @@ export default function Poisons() {
       head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient / Phone", "Prescriber", "Reg No", "Rx Ref", "Sale", "Authorized by"]],
       body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] :
         dispenses.map((d) => [
-          `${format(lagosDate(d.at), "dd-MM-yy")}\n${format(lagosDate(d.at), "HH:mm")}`, d.productName, d.batch, String(d.quantity),
+          // STEP 31b: "—" instead of failing the whole PDF if an entry's time is missing.
+          isValidDate(d.at) ? `${format(lagosDate(d.at), "dd-MM-yy")}\n${format(lagosDate(d.at), "HH:mm")}` : "—",
+          d.productName, d.batch, String(d.quantity),
           pdfNGN(d.amount), d.patientPhone ? `${d.patientName}\n${d.patientPhone}` : d.patientName,
           d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
           d.saleId ? receiptNo(d.saleId) : "Not linked",
@@ -205,7 +220,12 @@ export default function Poisons() {
                       <span className={`font-bold ${low ? "text-destructive" : ""}`}>{bal}</span>
                     </TableCell>
                     <TableCell className="text-xs">{p.reorderLevel}</TableCell>
-                    <TableCell className="text-xs">{format(new Date(p.expiry), "dd MMM yyyy")}</TableCell>
+                    <TableCell className="text-xs">
+                      {/* STEP 31b: this line crashed the page for a product with no expiry date. */}
+                      {isValidDate(p.expiry)
+                        ? format(new Date(p.expiry), "dd MMM yyyy")
+                        : <span className="text-warning" title="No expiry date on file — add it in Inventory">No expiry</span>}
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -232,7 +252,7 @@ export default function Poisons() {
                 {dispenses.length === 0 && <TableRow><TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
                 {dispenses.map((d) => (
                   <TableRow key={d.id}>
-                    <TableCell className="text-xs">{format(lagosDate(d.at), "dd MMM yyyy HH:mm")}</TableCell>
+                    <TableCell className="text-xs">{lagosFormat(d.at, "dd MMM yyyy HH:mm") /* STEP 31b */}</TableCell>
                     <TableCell><Badge variant="outline" className="border-destructive text-destructive">{d.productName}</Badge></TableCell>
                     <TableCell className="text-xs font-mono">{d.batch}</TableCell>
                     <TableCell className="text-right font-medium">{d.quantity}</TableCell>
@@ -446,7 +466,7 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
                 <SelectContent>
                   {openLines.map((l) => (
                     <SelectItem key={l.key} value={l.key}>
-                      {format(lagosDate(l.createdAt), "dd MMM yyyy HH:mm")} · #{receiptNo(l.saleId)} · {l.name} — {l.remaining} of {l.sold} without entry{l.salePending ? " (sale not synced yet)" : ""}
+                      {lagosFormat(l.createdAt, "dd MMM yyyy HH:mm") /* STEP 31b */} · #{receiptNo(l.saleId)} · {l.name} — {l.remaining} of {l.sold} without entry{l.salePending ? " (sale not synced yet)" : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
