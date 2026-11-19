@@ -131,6 +131,12 @@ export type ControlledDispense = {
   authorizationId?: string | null;
   // STEP 20b: who authorized the entry (filled in by the database).
   authorizedByName?: string | null;
+  // STEP 31d: an entry sent through the API from the pharmacy's own till
+  // (POST /poison_register) has no PharmaGuard sale. It carries that till's
+  // receipt number and, when the client sent it, the time of sale. Shown on
+  // the Poisons Register; never written by the app.
+  externalSaleRef?: string | null;
+  soldAt?: string | null;
   // STEP 19b: set when the database refused this entry while syncing (not a
   // network problem). The entry stays queued and is shown as needing attention.
   syncError?: string;
@@ -1434,6 +1440,8 @@ function rowToControlled(r: any): ControlledDispense {
     syncStatus: "synced",
     saleId: r.sale_id ?? null,
     authorizedByName: r.authorized_by_name ?? null,
+    externalSaleRef: r.external_sale_ref ?? null, // STEP 31d
+    soldAt: r.sold_at ?? null,                    // STEP 31d
   };
 }
 function rowToAudit(r: any): AuditEntry {
