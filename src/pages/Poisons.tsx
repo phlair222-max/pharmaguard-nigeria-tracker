@@ -46,6 +46,39 @@ const isValidDate = (v?: string | Date | null): v is string | Date =>
 const lagosFormat = (iso: string | Date | null | undefined, pattern: string): string =>
   isValidDate(iso) ? format(lagosDate(iso), pattern) : "—";
 
+// STEP 31d: an entry sent through the API from the pharmacy's own till
+// (POST /poison_register) may arrive up to 7 days after the sale. The
+// register's date is the date of supply: the time of sale when the client
+// sent it (soldAt), otherwise the time the entry was recorded (at). When the
+// time of sale is known, the recorded time is shown underneath it.
+type Timed = { at: string; soldAt?: string | null };
+const supplyTime = (d: Timed): string => (isValidDate(d.soldAt) ? d.soldAt : d.at);
+const hasSaleTime = (d: Timed): boolean => isValidDate(d.soldAt);
+// Recorded time: just the clock time when it is the same Lagos day as the sale.
+const recordedText = (d: Timed, otherDayPattern: string): string =>
+  lagosFormat(d.at, lagosFormat(d.at, "yyyy-MM-dd") === lagosFormat(supplyTime(d), "yyyy-MM-dd") ? "HH:mm" : otherDayPattern);
+// Receipt shown in the Sale column: PharmaGuard's own, or the pharmacy's own till's.
+const saleText = (d: { saleId?: string | null; externalSaleRef?: string | null }): string =>
+  d.saleId ? receiptNo(d.saleId) : d.externalSaleRef ? `${d.externalSaleRef} (own POS)` : "Not linked";
+// STEP 31d: receipt numbers from the pharmacy's own till can be long and have
+// no spaces, and the PDF would cut them at any letter. Break them only after
+// "/", "-", "_" or "." (and only where they don't fit the Sale column).
+const PDF_SALE_COL_MM = 17; // same width as before (Step 20f layout)
+function wrapCode(doc: jsPDF, text: string, maxWidthMm: number): string {
+  const parts = text.match(/[^/\-_.]+[/\-_.]*|[/\-_.]+/g) || [text];
+  const lines: string[] = [];
+  let cur = "";
+  for (const part of parts) {
+    if (cur && doc.getTextWidth(cur + part) > maxWidthMm) { lines.push(cur); cur = part; }
+    else cur += part;
+  }
+  if (cur) lines.push(cur);
+  return lines.join("\n");
+}
+const PDF_API_NOTE =
+  'Entries marked "(own POS)" were sold at the pharmacy\'s own till and sent to PharmaGuard through the API: the date is the time of sale, ' +
+  '"rec." is when PharmaGuard recorded the entry, and the Sale column shows that till\'s receipt number.';
+
 // STEP 19e: the PDF's built-in font has no Naira sign (it printed "¦"), which
 // also broke the column widths. The PDF prints "NGN 1,401.00" instead.
 const pdfNGN = (n: number) =>
@@ -68,6 +101,11 @@ export default function Poisons() {
   const role = resolveEffectiveRole(user);
   const canAddMissingEntry = role === "Owner" || role === "Pharmacist";
   const controlled = products.filter((p) => p.controlled);
+  // STEP 31d: "on hand" lists archived controlled products only while they
+  // still hold stock (labelled "archived"). The "Add missing register entry"
+  // form still gets every controlled product (a past sale of an archived one
+  // can still need its entry).
+  const onHand = controlled.filter((p) => p.active !== false || p.quantity > 0);
 
   // Running balances per product (current quantity is already net of sales;
   // since Step 19 a register entry no longer changes stock by itself)
@@ -79,12 +117,15 @@ export default function Poisons() {
 
   const exportCsv = () => {
     const rows = [
-      ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt","Authorized by"].join(","),
+      // STEP 31d: "Date" is the date of supply (time of sale when sent through
+      // the API); "Recorded at" (new, last column) is when PharmaGuard recorded it.
+      ["Date","Drug","Batch","Qty","Amount","Patient","Phone","Prescriber","Reg No","Rx Ref","Cashier","Sale receipt","Authorized by","Recorded at"].join(","),
       ...dispenses.map((d) => [
-        lagosFormat(d.at, "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount, // STEP 31b
+        lagosFormat(supplyTime(d), "yyyy-MM-dd HH:mm"), d.productName, d.batch, d.quantity, d.amount, // STEP 31b/31d
         d.patientName, d.patientPhone || "", d.prescriber, d.prescriberRegNo || "", d.prescriptionRef, d.cashier,
-        d.saleId ? receiptNo(d.saleId) : "Not linked",
+        saleText(d), // STEP 31d
         d.authorizedByName || "",
+        lagosFormat(d.at, "yyyy-MM-dd HH:mm"), // STEP 31d
       ].map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")),
     ].join("\n");
     const blob = new Blob([rows], { type: "text/csv" });
@@ -112,46 +153,70 @@ export default function Poisons() {
     doc.text("POISONS REGISTER / CONTROLLED DRUGS LOG", pageW / 2, 36, { align: "center" });
     doc.setFontSize(8); doc.setFont("helvetica", "normal");
     doc.text("Statutory record per Pharmacists Council of Nigeria (PCN) & NDLEA requirements", pageW / 2, 41, { align: "center" });
-    doc.text(`Generated: ${format(lagosDate(new Date()), "dd MMM yyyy HH:mm")} (Lagos time, WAT)  ·  Total entries: ${dispenses.length}  ·  Controlled SKUs: ${controlled.length}`, pageW / 2, 46, { align: "center" });
+    doc.text(`Generated: ${format(lagosDate(new Date()), "dd MMM yyyy HH:mm")} (Lagos time, WAT)  ·  Total entries: ${dispenses.length}  ·  Controlled SKUs: ${onHand.length}`, pageW / 2, 46, { align: "center" });
 
     // STEP 31c: the statutory dispensing log comes first (it is the register
     // itself), then the controlled stock on hand. Same two tables as before,
     // in the opposite order; the certification stays at the end.
+    // STEP 31d: receipt numbers are measured in the table's font (7.5 pt, normal).
+    doc.setFontSize(7.5); doc.setFont("helvetica", "normal");
+    const pdfSaleCell = (d: { saleId?: string | null; externalSaleRef?: string | null }) =>
+      d.saleId ? receiptNo(d.saleId)
+        : d.externalSaleRef ? `${wrapCode(doc, d.externalSaleRef, PDF_SALE_COL_MM - 3)}\n(own POS)`
+        : "Not linked";
+    const logRows = dispenses.map((d) => [
+      // STEP 31b: "—" instead of failing the whole PDF if an entry's time is missing.
+      // STEP 31d: date of supply (time of sale when sent through the API) + "rec." time.
+      isValidDate(supplyTime(d))
+        ? `${format(lagosDate(supplyTime(d)), "dd-MM-yy")}\n${format(lagosDate(supplyTime(d)), "HH:mm")}` +
+          (hasSaleTime(d) ? `\nrec. ${recordedText(d, "dd-MM-yy HH:mm")}` : "")
+        : "—",
+      d.productName, d.batch, String(d.quantity),
+      pdfNGN(d.amount), d.patientPhone ? `${d.patientName}\n${d.patientPhone}` : d.patientName,
+      d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
+      pdfSaleCell(d), // STEP 31d: or the pharmacy's own till receipt
+      pdfPerson(d.authorizedByName),
+    ]);
+
     let y = 54;
     doc.setFontSize(11); doc.setFont("helvetica", "bold");
     doc.text("1. Statutory dispensing log", 14, y); y += 2;
     autoTable(doc, {
       startY: y, styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak" }, headStyles: { fillColor: [180, 50, 50] },
+      rowPageBreak: "avoid", // STEP 31d: an entry is never split across two pages
       columnStyles: {
         0: { cellWidth: 17 },
         3: { cellWidth: 10, halign: "right" },
         4: { cellWidth: 25, halign: "right" },
-        9: { cellWidth: 17 },
+        9: { cellWidth: PDF_SALE_COL_MM }, // STEP 31d: named, used by wrapCode too
       },
       // STEP 20e: phone moved into the Patient cell (as on screen) to make room for "Authorized by".
       head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient / Phone", "Prescriber", "Reg No", "Rx Ref", "Sale", "Authorized by"]],
-      body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] :
-        dispenses.map((d) => [
-          // STEP 31b: "—" instead of failing the whole PDF if an entry's time is missing.
-          isValidDate(d.at) ? `${format(lagosDate(d.at), "dd-MM-yy")}\n${format(lagosDate(d.at), "HH:mm")}` : "—",
-          d.productName, d.batch, String(d.quantity),
-          pdfNGN(d.amount), d.patientPhone ? `${d.patientName}\n${d.patientPhone}` : d.patientName,
-          d.prescriber, d.prescriberRegNo || "—", d.prescriptionRef,
-          d.saleId ? receiptNo(d.saleId) : "Not linked",
-          pdfPerson(d.authorizedByName),
-        ]),
+      body: dispenses.length === 0 ? [["—","—","—","—","—","—","—","—","—","—","—"]] : logRows, // STEP 31d: rows built above
     });
     y = (doc as any).lastAutoTable.finalY + 8;
+
+    // STEP 31d: explain "(own POS)" and "rec." when the log has such entries.
+    if (dispenses.some((d) => d.externalSaleRef || hasSaleTime(d))) {
+      const note: string[] = doc.splitTextToSize(PDF_API_NOTE, pageW - 28);
+      let ny = (doc as any).lastAutoTable.finalY + 5;
+      if (ny + note.length * 3 > pageH - 14) { doc.addPage(); ny = 20; }
+      doc.setFontSize(7); doc.setFont("helvetica", "normal");
+      doc.text(note, 14, ny);
+      y = ny + note.length * 3 + 6;
+    }
 
     if (y > pageH - 50) { doc.addPage(); y = 20; }
     doc.setFontSize(11); doc.setFont("helvetica", "bold");
     doc.text("2. Controlled substances on hand", 14, y); y += 2;
     autoTable(doc, {
       startY: y, styles: { fontSize: 8 }, headStyles: { fillColor: [180, 50, 50] },
+      rowPageBreak: "avoid", // STEP 31d
       head: [["Drug", "NAFDAC", "Batch", "Balance", "Reorder", "Expiry"]],
-      body: controlled.length === 0 ? [["—", "—", "—", "—", "—", "—"]] :
+      body: onHand.length === 0 ? [["—", "—", "—", "—", "—", "—"]] :
         // STEP 31b: say so when a controlled product has no expiry date (was an empty cell).
-        controlled.map((p) => [p.name, p.nafdac, p.batch, String(p.quantity), String(p.reorderLevel), p.expiry || "No expiry"]),
+        // STEP 31d: archived products (listed only while they hold stock) are labelled.
+        onHand.map((p) => [p.active === false ? `${p.name} (archived)` : p.name, p.nafdac, p.batch, String(p.quantity), String(p.reorderLevel), p.expiry || "No expiry"]),
     });
     y = (doc as any).lastAutoTable.finalY + 14;
 
@@ -220,7 +285,15 @@ export default function Poisons() {
                 {dispenses.length === 0 && <TableRow><TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">No controlled dispensings recorded yet</TableCell></TableRow>}
                 {dispenses.map((d) => (
                   <TableRow key={d.id}>
-                    <TableCell className="text-xs">{lagosFormat(d.at, "dd MMM yyyy HH:mm") /* STEP 31b */}</TableCell>
+                    <TableCell className="text-xs">
+                      {/* STEP 31d: date of supply — the time of sale for entries sent from the pharmacy's own till. */}
+                      {lagosFormat(supplyTime(d), "dd MMM yyyy HH:mm") /* STEP 31b */}
+                      {hasSaleTime(d) && (
+                        <div className="text-muted-foreground" title="When PharmaGuard recorded this entry. The date above is the time of sale at the pharmacy's own till (sent through the API).">
+                          recorded {recordedText(d, "dd MMM yyyy HH:mm")}
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell><Badge variant="outline" className="border-destructive text-destructive">{d.productName}</Badge></TableCell>
                     <TableCell className="text-xs font-mono">{d.batch}</TableCell>
                     <TableCell className="text-right font-medium">{d.quantity}</TableCell>
@@ -233,6 +306,9 @@ export default function Poisons() {
                       {/* STEP 19d: the sale this entry belongs to (POS receipt number). */}
                       {d.saleId
                         ? <span className="font-mono">#{receiptNo(d.saleId)}</span>
+                        : d.externalSaleRef
+                        // STEP 31d: sold at the pharmacy's own till; its receipt number came through the API.
+                        ? <span title="Receipt number from the pharmacy's own till (sent through the API)"><span className="font-mono">{d.externalSaleRef}</span><div className="text-muted-foreground">own POS receipt</div></span>
                         : <span className="text-muted-foreground" title="Recorded before register entries were linked to sales">Not linked</span>}
                     </TableCell>
                     <TableCell className="text-xs">
@@ -269,13 +345,17 @@ export default function Poisons() {
               <TableHead className="text-right">Balance</TableHead><TableHead>Reorder Lvl</TableHead><TableHead>Expiry</TableHead>
             </TableRow></TableHeader>
             <TableBody>
-              {controlled.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No controlled substances on file</TableCell></TableRow>}
-              {controlled.map((p) => {
+              {/* STEP 31d: archived products only while they hold stock (see onHand). */}
+              {onHand.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No controlled substances on file</TableCell></TableRow>}
+              {onHand.map((p) => {
                 const bal = balances.get(p.id) ?? 0;
                 const low = bal <= p.reorderLevel;
                 return (
                   <TableRow key={p.id} className={low ? "bg-destructive/5" : ""}>
-                    <TableCell className="font-medium">{p.name} <span className="text-xs text-muted-foreground">{p.packSize}</span></TableCell>
+                    <TableCell className="font-medium">
+                      {p.name} <span className="text-xs text-muted-foreground">{p.packSize}</span>
+                      {p.active === false && <span className="ml-1 text-xs text-muted-foreground">(archived)</span> /* STEP 31d */}
+                    </TableCell>
                     <TableCell className="text-xs">{p.nafdac}</TableCell>
                     <TableCell className="text-xs">{p.batch}</TableCell>
                     <TableCell className="text-right">
@@ -368,7 +448,8 @@ function DispenseDialog({ products }: { products: ReturnType<typeof useStore<any
     }
     // Pass 2: older entries without a link — nearest matching sale.
     for (const d of dispenses) {
-      if (d.saleId) continue;
+      // STEP 31d: an entry from the pharmacy's own till (API) has no PharmaGuard sale — never match it to one.
+      if (d.saleId || d.externalSaleRef) continue;
       const t = new Date(d.at).getTime();
       let best: OpenLine | undefined;
       let bestGap = Infinity;
