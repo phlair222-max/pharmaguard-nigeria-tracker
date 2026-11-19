@@ -14,6 +14,11 @@
 // This is a STANDALONE B2B product. API clients are their own org rows
 // (subscription_tier = 'api_only') with no relationship to pharmacy app
 // tiers (free/basic/pro). Nothing here is invoked from the pharmacy app.
+// STEP 30f: a pharmacy whose plan includes API access (today: Pro) can also
+// be given API access and keys from the Admin page (listApiEligiblePharmacies).
+// STEP 30f: two new permissions, margins:read and margins:write, decide
+// whether a key may see cost prices / profit or set cost prices. They are
+// never given unless the admin ticks them.
 // =====================================================================
 
 import { supabase } from "@/integrations/supabase/client";
@@ -46,9 +51,28 @@ export const ALL_SCOPES = [
   "disposal_report:read",
   "reports:read",
   "audit_trail:read",
+  // STEP 30f: profit permissions (checked by the database since Step 30d)
+  "margins:read",
+  "margins:write",
 ] as const;
 
 export type ApiScope = (typeof ALL_SCOPES)[number];
+
+// STEP 30f: what each permission lets a key do, shown next to the tick boxes
+// on the Admin page. "sensitive" permissions are highlighted there.
+export const SCOPE_INFO: Record<ApiScope, { label: string; hint: string; sensitive?: boolean }> = {
+  "inventory:read":        { label: "Read products",           hint: "Product list and stock (no cost prices)" },
+  "inventory:write":       { label: "Add / change products",   hint: "Add products; change stock, selling price, batch, expiry" },
+  "sales:write":           { label: "Record sales",            hint: "Reduces stock. A sale with a controlled medicine also needs \"Write Poisons Register\"" },
+  "sales_history:read":    { label: "Read sales history",      hint: "Past sales (no profit)" },
+  "poison_register:read":  { label: "Read Poisons Register",   hint: "Register entries" },
+  "poison_register:write": { label: "Write Poisons Register",  hint: "Every entry needs the pharmacist's email and PIN" },
+  "disposal_report:read":  { label: "Disposal report",         hint: "Expired stock for a NAFDAC destruction application" },
+  "reports:read":          { label: "Reports",                 hint: "Sales totals (no profit)" },
+  "audit_trail:read":      { label: "Audit trail",             hint: "Who did what, including PIN attempts" },
+  "margins:read":          { label: "See cost & profit",       hint: "Adds cost prices and profit to products, sales history and reports", sensitive: true },
+  "margins:write":         { label: "Set cost prices",         hint: "Only works together with \"Add / change products\"", sensitive: true },
+};
 
 export interface ApiKey {
   id:           string;
@@ -124,6 +148,41 @@ export async function listApiClientOrgs(): Promise<ApiClientOrg[]> {
     status:           r.status,
     createdAt:        r.created_at,
     apiMonthlyQuota:  r.api_monthly_quota ?? 500,
+  }));
+}
+
+// ── Pharmacies that could be given API access (Platform Admin only) ──────────
+// STEP 30f: pharmacies (not API-only clients) whose plan includes API access
+// but whose API access is switched off. Switching it on (setOrgApiAccess)
+// makes them appear in the API Clients list, where keys can be made.
+
+export interface ApiEligiblePharmacy {
+  id:               string;
+  name:             string;
+  subscriptionTier: string;
+}
+
+export async function listApiEligiblePharmacies(): Promise<ApiEligiblePharmacy[]> {
+  const { data: plans, error: planErr } = await (supabase.from as any)("plan_config")
+    .select("tier, can_api_access");
+  if (planErr) throw new Error(planErr.message);
+
+  const tiers: string[] = (plans ?? [])
+    .filter((p: any) => p.can_api_access && p.tier !== "api_only")
+    .map((p: any) => p.tier);
+  if (tiers.length === 0) return [];
+
+  const { data, error } = await (supabase.from as any)("organizations")
+    .select("id, name, subscription_tier")
+    .in("subscription_tier", tiers)
+    .eq("api_access_enabled", false)
+    .order("name", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((r: any) => ({
+    id:               r.id,
+    name:             r.name,
+    subscriptionTier: r.subscription_tier,
   }));
 }
 
