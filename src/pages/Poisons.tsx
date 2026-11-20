@@ -63,9 +63,13 @@ const saleText = (d: { saleId?: string | null; externalSaleRef?: string | null }
 // STEP 31d: receipt numbers from the pharmacy's own till can be long and have
 // no spaces, and the PDF would cut them at any letter. Break them only after
 // "/", "-", "_" or "." (and only where they don't fit the Sale column).
-const PDF_SALE_COL_MM = 17; // same width as before (Step 20f layout)
+// STEP 31d-fix: a piece without those marks (e.g. "202611191444") was still cut
+// in a 17 mm column, so the column now widens as far as needed (see below).
+const PDF_SALE_COL_MIN_MM = 17; // as before (Step 20f layout) when nothing needs more
+const PDF_SALE_COL_MAX_MM = 22; // 12 digits in a row; wider squeezed other columns into cut words in the worst-case test
+const CODE_PARTS = /[^/\-_.]+[/\-_.]*|[/\-_.]+/g;
 function wrapCode(doc: jsPDF, text: string, maxWidthMm: number): string {
-  const parts = text.match(/[^/\-_.]+[/\-_.]*|[/\-_.]+/g) || [text];
+  const parts = text.match(CODE_PARTS) || [text];
   const lines: string[] = [];
   let cur = "";
   for (const part of parts) {
@@ -160,9 +164,16 @@ export default function Poisons() {
     // in the opposite order; the certification stays at the end.
     // STEP 31d: receipt numbers are measured in the table's font (7.5 pt, normal).
     doc.setFontSize(7.5); doc.setFont("helvetica", "normal");
+    // STEP 31d-fix: Sale column = 17 mm as before, widened only as far as the
+    // longest unbreakable piece of a till receipt number needs (max 22 mm).
+    // 3 mm = the cell's padding (1.5 mm each side), 0.5 mm spare for rounding.
+    const widestPiece = Math.max(0, ...dispenses
+      .filter((d) => !d.saleId && d.externalSaleRef)
+      .flatMap((d) => (d.externalSaleRef!.match(CODE_PARTS) || [d.externalSaleRef!]).map((part) => doc.getTextWidth(part))));
+    const saleColMm = Math.min(PDF_SALE_COL_MAX_MM, Math.max(PDF_SALE_COL_MIN_MM, Math.ceil(widestPiece + 3 + 0.5)));
     const pdfSaleCell = (d: { saleId?: string | null; externalSaleRef?: string | null }) =>
       d.saleId ? receiptNo(d.saleId)
-        : d.externalSaleRef ? `${wrapCode(doc, d.externalSaleRef, PDF_SALE_COL_MM - 3)}\n(own POS)`
+        : d.externalSaleRef ? `${wrapCode(doc, d.externalSaleRef, saleColMm - 3)}\n(own POS)`
         : "Not linked";
     const logRows = dispenses.map((d) => [
       // STEP 31b: "—" instead of failing the whole PDF if an entry's time is missing.
@@ -188,7 +199,7 @@ export default function Poisons() {
         0: { cellWidth: 17 },
         3: { cellWidth: 10, halign: "right" },
         4: { cellWidth: 25, halign: "right" },
-        9: { cellWidth: PDF_SALE_COL_MM }, // STEP 31d: named, used by wrapCode too
+        9: { cellWidth: saleColMm }, // STEP 31d-fix: 17 mm unless a till receipt number needs more
       },
       // STEP 20e: phone moved into the Patient cell (as on screen) to make room for "Authorized by".
       head: [["Date", "Drug", "Batch", "Qty", "Amount", "Patient / Phone", "Prescriber", "Reg No", "Rx Ref", "Sale", "Authorized by"]],
